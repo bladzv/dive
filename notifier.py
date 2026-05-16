@@ -25,11 +25,13 @@ from __future__ import annotations
 import logging
 import smtplib
 import sqlite3
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Any
 
 import httpx
 
+import db
 from config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -64,7 +66,7 @@ def send_findings_alert(
     if not findings:
         return
 
-    if not config.notifications.has_any_notification_channel:
+    if not config.has_any_notification_channel:
         logger.debug("No notification channels configured — skipping alert")
         return
 
@@ -74,18 +76,206 @@ def send_findings_alert(
     _dispatch(config, subject=f"🚨 {len(findings)} new security finding(s)", text=text_body, slack_blocks=slack_blocks)
 
 
-def send_failure_alert(config: AppConfig, error_msg: str) -> None:
-    """Send a pipeline-failure alert to all configured channels."""
-    if not config.notifications.has_any_notification_channel:
+def send_weekly_digest(config: AppConfig, conn: sqlite3.Connection) -> None:
+    """Build and send the weekly security digest, then persist it for the /weekly view.
+
+    Fired by a Monday 08:00 cron job. Stored even when no channels are configured
+    so the /weekly view always has something to show.
+    """
+    items_count   = db.get_weekly_items_collected(conn)
+    new_count     = db.get_weekly_new_findings_count(conn)
+    resolved_count = db.get_weekly_resolved_count(conn)
+    top_findings  = db.get_weekly_digest_top_findings(conn)
+    top_repos     = db.get_top_affected_repos(conn, limit=5)
+
+    now = datetime.now(timezone.utc)
+    week_label = now.strftime("Week of %B %-d, %Y")
+
+    # Build serialisable snapshot for /weekly view
+    digest_data = {
+        "generated_at":  now.isoformat(),
+        "week_label":    week_label,
+        "items_collected": items_count,
+        "new_findings":  new_count,
+        "resolved_count": resolved_count,
+        "top_findings": [
+            {
+                "repo":       r["repo_full_name"],
+                "id":         r["cve_id"] or r["ghsa_id"] or "—",
+                "package":    r["package_name"],
+                "cvss":       r["cvss_score"],
+                "priority":   r["priority_score"],
+                "is_kev":     bool(r["is_kev"]),
+                "has_patch":  bool(r["patch_available"]),
+                "state":      r["state"],
+            }
+            for r in top_findings
+        ],
+        "top_repos": [
+            {
+                "repo":         r["repo_full_name"],
+                "finding_count": r["finding_count"],
+            }
+            for r in top_repos
+        ],
+    }
+    db.save_weekly_digest(conn, digest_data)
+    logger.info("Weekly digest saved (%d findings, %d repos)", new_count, len(top_repos))
+
+    if not config.has_any_notification_channel:
+        logger.debug("No notification channels — weekly digest stored but not sent")
         return
 
-    body = f"⚠️ Security Automation pipeline error:\n\n{error_msg}"
-    _dispatch(config, subject="⚠️ Security Automation pipeline error", text=body)
+    lines = [
+        f"📅 {week_label} — Security Weekly Digest\n",
+        f"News items collected:  {items_count}",
+        f"New findings this week: {new_count}",
+        f"Resolved this week:     {resolved_count}",
+    ]
+    if top_findings:
+        lines.append("\nTop active findings (by priority):")
+        for r in top_findings[:10]:
+            cve = r["cve_id"] or r["ghsa_id"] or "no-id"
+            kev = " [KEV]" if r["is_kev"] else ""
+            patch = " [patch available]" if r["patch_available"] else ""
+            lines.append(f"  • {r['repo_full_name']} | {cve} | {r['package_name']}{kev}{patch}")
+    if top_repos:
+        lines.append("\nMost affected repos:")
+        for r in top_repos:
+            lines.append(f"  • {r['repo_full_name']} — {r['finding_count']} finding(s)")
+
+    text_body = "\n".join(lines)
+    _dispatch(config, subject=f"📅 {week_label} — Security Weekly Digest", text=text_body)
+
+
+def send_failure_alert(config: AppConfig, error_msg: str) -> None:
+    """Send a pipeline-failure alert to all configured channels."""
+    if not config.has_any_notification_channel:
+        return
+
+    body = f"⚠️ DIVE pipeline error:\n\n{error_msg}"
+    _dispatch(config, subject="⚠️ DIVE pipeline error", text=body)
+
+
+def send_pipeline_start_alert(config: AppConfig) -> None:
+    """Send a notification when the pipeline begins running."""
+    if not config.has_any_notification_channel:
+        return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    body = f"⚙️ DIVE pipeline started at {now}"
+    _dispatch(config, subject="⚙️ DIVE pipeline started", text=body)
+
+
+def send_pipeline_summary_alert(
+    config: AppConfig,
+    *,
+    items_collected: int,
+    items_categorized: int,
+    findings_new: int,
+    secrets_new: int,
+    duration_secs: float,
+) -> None:
+    """Send a summary notification after a successful pipeline run."""
+    if not config.has_any_notification_channel:
+        return
+
+    mins = int(duration_secs // 60)
+    secs = int(duration_secs % 60)
+    duration_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+    lines = [
+        f"✅ DIVE pipeline completed in {duration_str}",
+        "",
+        f"📰 News items collected:  {items_collected}",
+        f"🏷️  Items categorized:     {items_categorized}",
+        f"🔍 New findings:          {findings_new}",
+        f"🔑 New secrets detected:  {secrets_new}",
+    ]
+    text = "\n".join(lines)
+    slack_blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"✅ Pipeline completed in {duration_str}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*News collected:*\n{items_collected}"},
+                {"type": "mrkdwn", "text": f"*Categorized:*\n{items_categorized}"},
+                {"type": "mrkdwn", "text": f"*New findings:*\n{findings_new}"},
+                {"type": "mrkdwn", "text": f"*New secrets:*\n{secrets_new}"},
+            ],
+        },
+    ]
+    _dispatch(config, subject="✅ DIVE pipeline completed", text=text, slack_blocks=slack_blocks)
+
+
+def send_secrets_alert(
+    config: AppConfig,
+    secret_findings: list[sqlite3.Row],
+) -> None:
+    """Send an urgent secrets-detected alert to all configured channels.
+
+    New secrets always alert regardless of severity threshold.
+    Does nothing when secret_findings is empty.
+    """
+    if not secret_findings:
+        return
+
+    if not config.has_any_notification_channel:
+        logger.debug("No notification channels configured — skipping secrets alert")
+        return
+
+    text_body = _build_secrets_text(secret_findings)
+    slack_blocks = _build_secrets_slack_blocks(secret_findings)
+
+    _dispatch(
+        config,
+        subject=f"🔑 {len(secret_findings)} new secret(s) detected",
+        text=text_body,
+        slack_blocks=slack_blocks,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Message builders
 # ---------------------------------------------------------------------------
+
+
+def _secret_line(row: sqlite3.Row) -> str:
+    sha = (row["commit_sha"] or "")[:8]
+    return f"🔑 {row['repo_full_name']} | {row['secret_type']} | {row['file_path']}:{row['line_number'] or '?'} | {sha}"
+
+
+def _build_secrets_text(secret_findings: list[sqlite3.Row]) -> str:
+    shown = secret_findings[:MAX_FINDINGS_PER_ALERT]
+    lines = [f"🔑 {len(secret_findings)} new secret(s) detected in your repositories:\n"]
+    for row in shown:
+        lines.append(_secret_line(row))
+    if len(secret_findings) > MAX_FINDINGS_PER_ALERT:
+        lines.append(f"\n+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view.")
+    return "\n".join(lines)
+
+
+def _build_secrets_slack_blocks(secret_findings: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    shown = secret_findings[:MAX_FINDINGS_PER_ALERT]
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"🔑 {len(secret_findings)} new secret(s) detected"},
+        }
+    ]
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "\n".join(_secret_line(r) for r in shown)},
+    })
+    if len(secret_findings) > MAX_FINDINGS_PER_ALERT:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view"}],
+        })
+    return blocks
 
 
 def _severity_label(row: sqlite3.Row) -> str:

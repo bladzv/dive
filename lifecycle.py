@@ -1,5 +1,5 @@
 """
-lifecycle.py — Finding state-machine for the security automation pipeline.
+lifecycle.py — Finding state-machine for the DIVE pipeline.
 
 States
 ------

@@ -1,10 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Findings — Security Automation{% endblock %}
+{% block title %}Findings — DIVE{% endblock %}
 
 {% block content %}
 <div class="page-heading">
   <h1>Findings</h1>
-  <span style="font-size:0.8rem;color:var(--text-dim)">{{ findings | length }} shown</span>
+  <div style="display:flex;gap:0.5rem;align-items:center">
+    <span style="font-size:0.8rem;color:var(--text-dim)">{{ pagination.total }} total</span>
+    <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">JSON</a>
+    <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">CSV</a>
+  </div>
 </div>
 
 <!-- ── Filter bar ───────────────────────────────────── -->
@@ -60,11 +64,14 @@
           <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
 
-          <!-- Package + manifest -->
+          <!-- Package + manifest + annotation -->
           <td>
             <span style="font-weight:500">{{ f.package_name }}</span>
             {% if f.manifest_path %}
             <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
+            {% endif %}
+            {% if f.annotation %}
+            <br><span class="annotation-text" title="{{ f.annotation }}">📝 {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
             {% endif %}
           </td>
 
@@ -108,6 +115,9 @@
               {% elif f.state == 'resolved' %}
                 <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'reopen')">Reopen</button>
               {% endif %}
+              <button class="btn btn-outline btn-sm"
+                      onclick="openAnnotation({{ f.id }}, {{ f.annotation | tojson }})"
+                      title="Add/edit note">&#128221;</button>
             </div>
           </td>
 
@@ -120,11 +130,64 @@
 
 {% else %}
 <div class="card empty-state">
-  <div class="empty-icon">✅</div>
+  <div class="empty-icon">&#9989;</div>
   <p>No findings match the current filter.</p>
 </div>
 {% endif %}
 
+<!-- ── Pagination ────────────────────────────────────── -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination-bar">
+  <div class="pagination-info">
+    Showing {{ pagination.offset + 1 }}–{{ [pagination.offset + pagination.per_page, pagination.total] | min }} of {{ pagination.total }}
+  </div>
+  <div class="pagination-controls">
+    {% if pagination.has_prev %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page - 1) }}" class="btn btn-outline btn-sm">‹ Prev</a>
+    {% endif %}
+    <span class="pagination-pages">
+      {% for p in range(1, pagination.total_pages + 1) %}
+        {% if p == pagination.page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none">{{ p }}</span>
+        {% elif p == 1 or p == pagination.total_pages or (p >= pagination.page - 2 and p <= pagination.page + 2) %}
+        <a href="{{ request.url | replace_query_param('page', p) }}" class="btn btn-outline btn-sm">{{ p }}</a>
+        {% elif p == pagination.page - 3 or p == pagination.page + 3 %}
+        <span class="pagination-ellipsis">…</span>
+        {% endif %}
+      {% endfor %}
+    </span>
+    {% if pagination.has_next %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page + 1) }}" class="btn btn-outline btn-sm">Next ›</a>
+    {% endif %}
+  </div>
+  <div class="pagination-size">
+    <select onchange="setPageSize(this.value)" title="Rows per page">
+      {% for s in pagination.page_size_options %}
+      <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Annotation modal ──────────────────────────────── -->
+<div id="annotation-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
+     onclick="closeAnnotation()"></div>
+<div id="annotation-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+     padding:1.25rem;width:min(440px,90vw);z-index:201;box-shadow:var(--shadow)">
+  <p style="font-weight:600;font-size:0.9rem;margin-bottom:0.75rem">Add / edit note</p>
+  <textarea id="annotation-input" rows="3"
+            style="width:100%;background:var(--surface-2);border:1px solid var(--border);
+                   color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
+                   font-size:0.875rem;font-family:inherit;resize:vertical"
+            placeholder="e.g. fixing in v2.1 · accepted risk · discussed with team"></textarea>
+  <p style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">Leave blank to clear the note.</p>
+  <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.85rem">
+    <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
+    <button class="btn btn-primary btn-sm" onclick="saveAnnotation()">Save</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -133,7 +196,15 @@ function applyRepoFilter(repo) {
   const params = new URLSearchParams(window.location.search);
   if (repo) params.set('repo', repo);
   else params.delete('repo');
+  params.delete('page');
   window.location = '/findings' + (params.toString() ? '?' + params.toString() : '');
+}
+
+function setPageSize(size) {
+  const params = new URLSearchParams(window.location.search);
+  params.set('per_page', size);
+  params.set('page', '1');
+  window.location = '/findings?' + params.toString();
 }
 
 function doAction(id, action) {
@@ -155,6 +226,43 @@ function doAction(id, action) {
     showToast(err.message, 'error');
     btn.disabled = false;
   });
+}
+
+/* ── Annotation modal ───────────────────────────────── */
+let _annotatingId = null;
+
+function openAnnotation(id, current) {
+  _annotatingId = id;
+  document.getElementById('annotation-input').value = current || '';
+  document.getElementById('annotation-backdrop').style.display = '';
+  document.getElementById('annotation-modal').style.display = '';
+  setTimeout(() => document.getElementById('annotation-input').focus(), 50);
+}
+
+function closeAnnotation() {
+  _annotatingId = null;
+  document.getElementById('annotation-backdrop').style.display = 'none';
+  document.getElementById('annotation-modal').style.display = 'none';
+}
+
+function saveAnnotation() {
+  const text = document.getElementById('annotation-input').value.trim();
+  fetch('/api/findings/' + _annotatingId + '/annotate', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ annotation: text }),
+  })
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+    return r.json();
+  })
+  .then(() => {
+    showToast('Note saved', 'success');
+    closeAnnotation();
+    setTimeout(() => location.reload(), 500);
+  })
+  .catch(err => showToast(err.message, 'error'));
 }
 </script>
 {% endblock %}

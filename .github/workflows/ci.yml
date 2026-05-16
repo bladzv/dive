@@ -46,4 +46,4 @@ jobs:
       # (the Dockerfile deletes it, but the COPY . . step needs the file absent
       # from the build context — .dockerignore handles that)
       - name: Build Docker image
-        run: docker build -t security-automation:ci .
+        run: docker build -t dive:ci .

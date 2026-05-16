@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}News — DIVE{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Security News</h1>
+  <div style="display:flex;gap:0.5rem;align-items:center">
+    <span style="font-size:0.8rem;color:var(--text-dim)">{{ pagination.total }} items</span>
+    <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">CSV</a>
+    <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">JSON</a>
+  </div>
+</div>
+
+<!-- ── Filters ───────────────────────────────────────── -->
+<div class="filter-bar" style="flex-wrap:wrap;gap:0.5rem">
+
+  <!-- Category filter -->
+  <select onchange="applyFilter('category', this.value)" style="max-width:160px">
+    <option value="">All categories</option>
+    {% for cat in categories %}
+    <option value="{{ cat }}" {{ 'selected' if category_filter == cat else '' }}>{{ cat }}</option>
+    {% endfor %}
+  </select>
+
+  <!-- Severity filter -->
+  <select onchange="applyFilter('severity', this.value)" style="max-width:150px">
+    <option value="">All severities</option>
+    {% for sev in ['Critical','High','Medium','Low','Info'] %}
+    <option value="{{ sev }}" {{ 'selected' if severity_filter == sev else '' }}>{{ sev }}</option>
+    {% endfor %}
+  </select>
+
+  <!-- Search box -->
+  <form id="search-form" onsubmit="applySearch(event)" style="display:flex;gap:0.35rem">
+    <input type="text" id="search-input" placeholder="Search title or summary…"
+           value="{{ search_filter or '' }}"
+           style="max-width:240px">
+    <button type="submit" class="btn btn-outline btn-sm">Search</button>
+    {% if search_filter %}
+    <a href="{{ request.url | replace_query_param('search', '') | replace_query_param('page', 1) }}"
+       class="btn btn-outline btn-sm" title="Clear search">✕</a>
+    {% endif %}
+  </form>
+
+  {% if category_filter or severity_filter or search_filter %}
+  <a href="/news" class="btn btn-outline btn-sm">Clear all</a>
+  {% endif %}
+</div>
+
+<!-- ── News list ─────────────────────────────────────── -->
+{% if news_items %}
+<div class="card" style="padding:0">
+  {% for item in news_items %}
+  <div class="news-item" id="ni-{{ item.id }}"
+       style="padding:0.85rem 1rem;border-bottom:1px solid var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem">
+      <div style="flex:1;min-width:0">
+        <div class="news-title">
+          <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+        </div>
+        <div class="news-meta" style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin-top:0.25rem">
+          <span style="font-size:0.78rem;color:var(--text-dim)">{{ item.source }}</span>
+          {% if item.category %}
+          <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
+          {% endif %}
+          {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+          <span class="badge badge-{{ item.severity | lower }}" style="font-size:0.65rem">{{ item.severity }}</span>
+          {% endif %}
+          <span style="font-size:0.75rem;color:var(--text-dim)">{{ item.time_ago }}</span>
+        </div>
+        {% if item.summary %}
+        <div class="news-summary" style="margin-top:0.35rem;font-size:0.82rem;color:var(--text-dim)">
+          {{ item.summary[:280] }}{% if item.summary | length > 280 %}…{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      <button class="bm-btn" id="bm-btn-{{ item.id }}"
+              onclick="toggleBookmark({{ item.id }})"
+              title="Bookmark"
+              style="background:none;border:none;cursor:pointer;font-size:1rem;
+                     padding:0.15rem;line-height:1;flex-shrink:0;color:var(--text-dim)">
+        {{ '🔖' if item.id in bookmarked_ids else '🔗' }}
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% else %}
+<div class="card empty-state">
+  <div class="empty-icon">📰</div>
+  <p>No news items match the current filter.</p>
+</div>
+{% endif %}
+
+<!-- ── Pagination ────────────────────────────────────── -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination-bar">
+  <div class="pagination-info">
+    Showing {{ pagination.offset + 1 }}–{{ [pagination.offset + pagination.per_page, pagination.total] | min }} of {{ pagination.total }}
+  </div>
+  <div class="pagination-controls">
+    {% if pagination.has_prev %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page - 1) }}" class="btn btn-outline btn-sm">‹ Prev</a>
+    {% endif %}
+    <span class="pagination-pages">
+      {% for p in range(1, pagination.total_pages + 1) %}
+        {% if p == pagination.page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none">{{ p }}</span>
+        {% elif p == 1 or p == pagination.total_pages or (p >= pagination.page - 2 and p <= pagination.page + 2) %}
+        <a href="{{ request.url | replace_query_param('page', p) }}" class="btn btn-outline btn-sm">{{ p }}</a>
+        {% elif p == pagination.page - 3 or p == pagination.page + 3 %}
+        <span class="pagination-ellipsis">…</span>
+        {% endif %}
+      {% endfor %}
+    </span>
+    {% if pagination.has_next %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page + 1) }}" class="btn btn-outline btn-sm">Next ›</a>
+    {% endif %}
+  </div>
+  <div class="pagination-size">
+    <select onchange="setPageSize(this.value)" title="Rows per page">
+      {% for s in pagination.page_size_options %}
+      <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyFilter(key, value) {
+  const params = new URLSearchParams(window.location.search);
+  if (value) params.set(key, value);
+  else params.delete(key);
+  params.delete('page');
+  window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
+}
+
+function applySearch(e) {
+  e.preventDefault();
+  const value = document.getElementById('search-input').value.trim();
+  const params = new URLSearchParams(window.location.search);
+  if (value) params.set('search', value);
+  else params.delete('search');
+  params.delete('page');
+  window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
+}
+
+function setPageSize(size) {
+  const params = new URLSearchParams(window.location.search);
+  params.set('per_page', size);
+  params.set('page', '1');
+  window.location = '/news?' + params.toString();
+}
+
+function toggleBookmark(itemId) {
+  fetch('/api/news/' + itemId + '/bookmark', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  .then(r => r.json())
+  .then(data => {
+    const btn = document.getElementById('bm-btn-' + itemId);
+    if (btn) btn.textContent = data.bookmarked ? '🔖' : '🔗';
+    showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+  })
+  .catch(() => showToast('Failed to toggle bookmark', 'error'));
+}
+</script>
+{% endblock %}

@@ -22,11 +22,18 @@ from github_scanner import (
     _extract_fixed_version,
     _extract_severity,
     _extract_version,
+    _parse_build_gradle,
+    _parse_cargo_lock,
+    _parse_cargo_toml,
+    _parse_gemfile,
+    _parse_gemfile_lock,
     _parse_github_actions,
+    _parse_go_mod,
     _parse_next_steps,
     _parse_package_json,
     _parse_package_lock,
     _parse_pipfile,
+    _parse_pom_xml,
     _parse_pyproject_toml,
     _parse_requirements_txt,
     _priority_score,
@@ -516,3 +523,338 @@ def test_get_kev_cve_ids_from_news_items(db_conn):
 
 def test_get_kev_cve_ids_empty_when_no_kev(db_conn):
     assert db.get_kev_cve_ids(db_conn) == set()
+
+
+# ---------------------------------------------------------------------------
+# _parse_go_mod
+# ---------------------------------------------------------------------------
+
+_GO_MOD = """\
+module github.com/user/myapp
+
+go 1.21
+
+require (
+    github.com/gin-gonic/gin v1.9.1
+    golang.org/x/net v0.20.0 // indirect
+)
+
+require github.com/user/pkg v1.2.3
+"""
+
+
+def test_parse_go_mod_extracts_block_deps():
+    pkgs = _parse_go_mod(_GO_MOD, "go.mod")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("github.com/gin-gonic/gin") == "1.9.1"
+    assert names.get("golang.org/x/net") == "0.20.0"
+
+
+def test_parse_go_mod_extracts_single_line_dep():
+    pkgs = _parse_go_mod(_GO_MOD, "go.mod")
+    names = {p.name for p in pkgs}
+    assert "github.com/user/pkg" in names
+
+
+def test_parse_go_mod_strips_v_prefix():
+    pkgs = _parse_go_mod(_GO_MOD, "go.mod")
+    gin = next(p for p in pkgs if p.name == "github.com/gin-gonic/gin")
+    assert gin.version == "1.9.1"
+
+
+def test_parse_go_mod_ecosystem():
+    pkgs = _parse_go_mod(_GO_MOD, "go.mod")
+    assert all(p.ecosystem == "Go" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_cargo_toml
+# ---------------------------------------------------------------------------
+
+_CARGO_TOML = """\
+[package]
+name = "my-app"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+local-dep = { path = "../other" }
+git-dep = { git = "https://github.com/foo/bar" }
+
+[dev-dependencies]
+rand = "0.8"
+"""
+
+
+def test_parse_cargo_toml_extracts_deps():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    names = {p.name for p in pkgs}
+    assert "serde" in names
+    assert "tokio" in names
+
+
+def test_parse_cargo_toml_extracts_dev_deps():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    names = {p.name for p in pkgs}
+    assert "rand" in names
+
+
+def test_parse_cargo_toml_skips_path_deps():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    names = {p.name for p in pkgs}
+    assert "local-dep" not in names
+
+
+def test_parse_cargo_toml_skips_git_deps():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    names = {p.name for p in pkgs}
+    assert "git-dep" not in names
+
+
+def test_parse_cargo_toml_extracts_version():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    serde = next(p for p in pkgs if p.name == "serde")
+    assert serde.version == "1.0"
+
+
+def test_parse_cargo_toml_ecosystem():
+    pkgs = _parse_cargo_toml(_CARGO_TOML, "Cargo.toml")
+    assert all(p.ecosystem == "crates.io" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_cargo_lock
+# ---------------------------------------------------------------------------
+
+_CARGO_LOCK = """\
+[[package]]
+name = "serde"
+version = "1.0.193"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "local-crate"
+version = "0.1.0"
+
+[[package]]
+name = "tokio"
+version = "1.35.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"""
+
+
+def test_parse_cargo_lock_extracts_registry_crates():
+    pkgs = _parse_cargo_lock(_CARGO_LOCK, "Cargo.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("serde") == "1.0.193"
+    assert names.get("tokio") == "1.35.1"
+
+
+def test_parse_cargo_lock_skips_local_crates():
+    pkgs = _parse_cargo_lock(_CARGO_LOCK, "Cargo.lock")
+    names = {p.name for p in pkgs}
+    assert "local-crate" not in names
+
+
+def test_parse_cargo_lock_ecosystem():
+    pkgs = _parse_cargo_lock(_CARGO_LOCK, "Cargo.lock")
+    assert all(p.ecosystem == "crates.io" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_pom_xml
+# ---------------------------------------------------------------------------
+
+_POM_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>5.3.21</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>${junit.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+
+def test_parse_pom_xml_extracts_deps():
+    pkgs = _parse_pom_xml(_POM_XML, "pom.xml")
+    names = {p.name for p in pkgs}
+    assert "org.springframework:spring-core" in names
+
+
+def test_parse_pom_xml_name_is_group_artifact():
+    pkgs = _parse_pom_xml(_POM_XML, "pom.xml")
+    dep = next(p for p in pkgs if "spring-core" in p.name)
+    assert dep.name == "org.springframework:spring-core"
+    assert dep.version == "5.3.21"
+
+
+def test_parse_pom_xml_skips_property_version():
+    pkgs = _parse_pom_xml(_POM_XML, "pom.xml")
+    junit = next((p for p in pkgs if "junit" in p.name), None)
+    assert junit is not None
+    assert junit.version is None
+
+
+def test_parse_pom_xml_no_version_is_none():
+    pkgs = _parse_pom_xml(_POM_XML, "pom.xml")
+    jackson = next(p for p in pkgs if "jackson-databind" in p.name)
+    assert jackson.version is None
+
+
+def test_parse_pom_xml_ecosystem():
+    pkgs = _parse_pom_xml(_POM_XML, "pom.xml")
+    assert all(p.ecosystem == "Maven" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_build_gradle
+# ---------------------------------------------------------------------------
+
+_BUILD_GRADLE = """\
+dependencies {
+    implementation 'org.springframework:spring-core:5.3.21'
+    testImplementation "junit:junit:4.13.2"
+    api 'com.google.guava:guava:32.0.0-jre'
+    implementation group: 'org.apache.commons', name: 'commons-lang3', version: '3.12.0'
+}
+"""
+
+
+def test_parse_build_gradle_string_notation():
+    pkgs = _parse_build_gradle(_BUILD_GRADLE, "build.gradle")
+    names = {p.name for p in pkgs}
+    assert "org.springframework:spring-core" in names
+    assert "junit:junit" in names
+
+
+def test_parse_build_gradle_map_notation():
+    pkgs = _parse_build_gradle(_BUILD_GRADLE, "build.gradle")
+    names = {p.name for p in pkgs}
+    assert "org.apache.commons:commons-lang3" in names
+
+
+def test_parse_build_gradle_extracts_version():
+    pkgs = _parse_build_gradle(_BUILD_GRADLE, "build.gradle")
+    spring = next(p for p in pkgs if p.name == "org.springframework:spring-core")
+    assert spring.version == "5.3.21"
+
+
+def test_parse_build_gradle_ecosystem():
+    pkgs = _parse_build_gradle(_BUILD_GRADLE, "build.gradle")
+    assert all(p.ecosystem == "Maven" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_gemfile
+# ---------------------------------------------------------------------------
+
+_GEMFILE = """\
+source 'https://rubygems.org'
+
+gem 'rails', '~> 7.0.4'
+gem 'puma', '>= 5.0'
+gem 'nokogiri'
+
+group :development do
+  gem 'byebug', '1.1.0'
+end
+"""
+
+
+def test_parse_gemfile_extracts_gems():
+    pkgs = _parse_gemfile(_GEMFILE, "Gemfile")
+    names = {p.name for p in pkgs}
+    assert "rails" in names
+    assert "puma" in names
+    assert "nokogiri" in names
+
+
+def test_parse_gemfile_extracts_group_gems():
+    pkgs = _parse_gemfile(_GEMFILE, "Gemfile")
+    names = {p.name for p in pkgs}
+    assert "byebug" in names
+
+
+def test_parse_gemfile_extracts_version():
+    pkgs = _parse_gemfile(_GEMFILE, "Gemfile")
+    rails = next(p for p in pkgs if p.name == "rails")
+    assert rails.version == "7.0.4"
+
+
+def test_parse_gemfile_no_version_is_none():
+    pkgs = _parse_gemfile(_GEMFILE, "Gemfile")
+    noko = next(p for p in pkgs if p.name == "nokogiri")
+    assert noko.version is None
+
+
+def test_parse_gemfile_ecosystem():
+    pkgs = _parse_gemfile(_GEMFILE, "Gemfile")
+    assert all(p.ecosystem == "RubyGems" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_gemfile_lock
+# ---------------------------------------------------------------------------
+
+_GEMFILE_LOCK = """\
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rails (7.0.8)
+      actioncable (= 7.0.8)
+      activesupport (= 7.0.8)
+    nokogiri (1.15.4-x86_64-linux)
+      racc (~> 1.4)
+
+GIT
+  remote: https://github.com/foo/bar.git
+  specs:
+    bar (1.0.0)
+
+BUNDLED WITH
+   2.4.10
+"""
+
+
+def test_parse_gemfile_lock_extracts_gems():
+    pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
+    names = {p.name for p in pkgs}
+    assert "rails" in names
+    assert "nokogiri" in names
+
+
+def test_parse_gemfile_lock_skips_git_section():
+    pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
+    names = {p.name for p in pkgs}
+    assert "bar" not in names
+
+
+def test_parse_gemfile_lock_strips_platform_suffix():
+    pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
+    noko = next(p for p in pkgs if p.name == "nokogiri")
+    assert noko.version == "1.15.4"
+
+
+def test_parse_gemfile_lock_extracts_version():
+    pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
+    rails = next(p for p in pkgs if p.name == "rails")
+    assert rails.version == "7.0.8"
+
+
+def test_parse_gemfile_lock_ecosystem():
+    pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
+    assert all(p.ecosystem == "RubyGems" for p in pkgs)

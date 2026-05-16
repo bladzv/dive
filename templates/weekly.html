@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Weekly Summary — DIVE{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Weekly Summary</h1>
+  {% if digest %}
+  <span style="font-size:0.8rem;color:var(--text-dim)">
+    Generated {{ digest.generated_at[:16].replace('T', ' ') }} UTC
+  </span>
+  {% endif %}
+</div>
+
+{% if not digest %}
+<div class="card">
+  <div class="empty-state">
+    <div class="empty-icon">📅</div>
+    <p>No weekly digest yet.</p>
+    <p style="font-size:0.82rem;margin-top:0.4rem;color:var(--text-dim)">
+      The digest runs automatically every Monday at 08:00.<br>
+      You can also trigger it manually via the API.
+    </p>
+  </div>
+</div>
+{% else %}
+
+<!-- ── Header stats ──────────────────────────────────── -->
+<div style="margin-bottom:1.25rem">
+  <p style="font-size:1rem;font-weight:600;color:var(--text-bright);margin-bottom:0.85rem">
+    {{ digest.week_label }}
+  </p>
+  <div class="grid-stats">
+    <div class="stat-card">
+      <div class="stat-number" style="color:var(--accent)">{{ digest.items_collected }}</div>
+      <div class="stat-label">Items collected</div>
+    </div>
+    <div class="stat-card {{ 'stat-high' if digest.new_findings > 0 else '' }}">
+      <div class="stat-number">{{ digest.new_findings }}</div>
+      <div class="stat-label">New findings</div>
+    </div>
+    <div class="stat-card {{ 'stat-resolved' if digest.resolved_count > 0 else '' }}">
+      <div class="stat-number" style="color:var(--success)">{{ digest.resolved_count }}</div>
+      <div class="stat-label">Resolved</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Top findings ──────────────────────────────────── -->
+<div class="card" style="margin-bottom:1.25rem">
+  <div class="card-title">🔍 Top Active Findings</div>
+  {% if digest.top_findings %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Repo</th><th>ID</th><th>Package</th><th>CVSS</th><th>Flags</th><th>State</th>
+      </tr></thead>
+      <tbody>
+        {% for f in digest.top_findings %}
+        <tr>
+          <td style="font-size:0.82rem">{{ f.repo }}</td>
+          <td style="font-size:0.78rem;font-family:monospace">{{ f.id }}</td>
+          <td style="font-size:0.82rem">{{ f.package }}</td>
+          <td style="font-size:0.82rem">
+            {% if f.cvss is not none %}
+              {% if f.cvss >= 9 %}
+                <span style="color:var(--critical)">{{ "%.1f"|format(f.cvss) }}</span>
+              {% elif f.cvss >= 7 %}
+                <span style="color:var(--high)">{{ "%.1f"|format(f.cvss) }}</span>
+              {% elif f.cvss >= 4 %}
+                <span style="color:var(--medium)">{{ "%.1f"|format(f.cvss) }}</span>
+              {% else %}
+                <span style="color:var(--low)">{{ "%.1f"|format(f.cvss) }}</span>
+              {% endif %}
+            {% else %}
+              <span style="color:var(--text-dim)">—</span>
+            {% endif %}
+          </td>
+          <td style="display:flex;gap:0.3rem;flex-wrap:wrap">
+            {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+            {% if f.has_patch %}<span class="badge badge-resolved" style="font-size:0.6rem">patch</span>{% endif %}
+          </td>
+          <td>
+            <span class="badge badge-{{ f.state if f.state != 'acknowledged' else 'ack' }}">
+              {{ f.state }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p style="font-size:0.85rem;color:var(--text-dim)">No active findings this week.</p>
+  {% endif %}
+</div>
+
+<!-- ── Most affected repos ───────────────────────────── -->
+<div class="card">
+  <div class="card-title">📦 Most Affected Repositories</div>
+  {% if digest.top_repos %}
+  <div style="display:flex;flex-direction:column;gap:0.6rem">
+    {% for r in digest.top_repos %}
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                padding:0.5rem 0.75rem;background:var(--surface-2);
+                border-radius:var(--radius);border:1px solid var(--border)">
+      <span style="font-size:0.875rem">{{ r.repo }}</span>
+      <span class="badge badge-new">{{ r.finding_count }} finding{{ 's' if r.finding_count != 1 else '' }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p style="font-size:0.85rem;color:var(--text-dim)">No affected repositories this week.</p>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

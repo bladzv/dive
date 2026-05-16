@@ -1,9 +1,10 @@
 /* =====================================================
-   Security Automation Dashboard — Minimal Dark Theme
-   No external dependencies — fully self-contained.
+   DIVE Dashboard
+   Dark (default) + Light themes. No external CSS.
    ===================================================== */
 
-:root {
+:root,
+[data-theme="dark"] {
   --bg:          #0f1117;
   --surface:     #1a1d2e;
   --surface-2:   #22263a;
@@ -26,6 +27,20 @@
   --radius:    6px;
   --radius-lg: 10px;
   --shadow:    0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="light"] {
+  --bg:          #f4f6f9;
+  --surface:     #ffffff;
+  --surface-2:   #eef0f6;
+  --border:      #dde1ea;
+  --text:        #374151;
+  --text-dim:    #9ca3af;
+  --text-bright: #111827;
+  --accent:      #4f46e5;
+  --accent-dim:  #4338ca;
+
+  --shadow:    0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 /* ── Reset ─────────────────────────────────────────── */
@@ -79,6 +94,38 @@ code, pre {
   padding: 0.2rem 0.65rem;
   white-space: nowrap;
 }
+.btn-theme {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: var(--radius);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-theme:hover { color: var(--text-bright); border-color: var(--accent); }
+.nav-toggle {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+}
+/* Ollama status indicator */
+.ollama-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+  cursor: help;
+}
+.ollama-dot.ollama-ok  { background: var(--success); }
+.ollama-dot.ollama-err { background: var(--error); animation: blink 1.8s ease-in-out infinite; }
 
 /* ── Nav ────────────────────────────────────────────── */
 .site-nav {
@@ -87,13 +134,18 @@ code, pre {
   padding: 0 1.5rem;
   display: flex;
   gap: 0.25rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.site-nav::-webkit-scrollbar { display: none; }
 .site-nav a {
   color: var(--text-dim);
   padding: 0.55rem 0.85rem;
   border-bottom: 2px solid transparent;
   font-size: 0.875rem;
   transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
 }
 .site-nav a:hover { color: var(--text); text-decoration: none; }
 .site-nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
@@ -189,7 +241,8 @@ code, pre {
 .status-dot.error   { background: var(--error); }
 .status-dot.idle    { background: var(--text-dim); }
 @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.25; } }
-.status-text { font-size: 0.75rem; color: var(--text-dim); }
+.status-text  { font-size: 0.75rem; color: var(--text-dim); }
+.next-run-text { font-size: 0.75rem; color: var(--text-dim); margin-left: 0.4rem; }
 
 /* ── Tables ─────────────────────────────────────────── */
 .table-wrap { overflow-x: auto; }
@@ -211,6 +264,7 @@ tbody tr:last-child { border-bottom: none; }
 tbody tr:hover { background: var(--surface-2); }
 tbody td { padding: 0.6rem 0.85rem; vertical-align: middle; }
 .td-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.annotation-text { font-size: 0.72rem; color: var(--accent); font-style: italic; }
 
 /* ── Forms ──────────────────────────────────────────── */
 .form-group  { margin-bottom: 1.25rem; }
@@ -334,3 +388,86 @@ select:focus, input:focus { outline: none; border-color: var(--accent); }
 .page-heading h1 { font-size: 1.1rem; font-weight: 600; color: var(--text-bright); }
 .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-dim); }
 .empty-state .empty-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+
+/* ── Mobile ─────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .page-header { padding: 0 0.75rem; gap: 0.5rem; }
+  .nav-toggle  { display: block; }
+  .status-text, .next-run-text { display: none; }
+
+  /* Nav collapses vertically behind a hamburger on small screens */
+  .site-nav {
+    flex-direction: column;
+    overflow: hidden;
+    max-height: 0;
+    padding: 0 0.75rem;
+    transition: max-height 0.25s ease, padding 0.25s ease;
+    border-bottom: none;
+  }
+  .site-nav.nav-open {
+    max-height: 300px;
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .site-nav a {
+    padding: 0.6rem 0.25rem;
+    border-bottom: 1px solid var(--border);
+    border-left: none;
+  }
+  .site-nav a:last-child { border-bottom: none; }
+  .site-nav a.active { border-bottom: 1px solid var(--border); color: var(--accent); }
+
+  .page-main { padding: 1rem 0.75rem; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .model-chip { display: none; }
+}
+
+@media (max-width: 900px) {
+  .grid-stats { grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); }
+}
+
+/* ── Pagination ─────────────────────────────────────── */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.6rem 0;
+}
+.pagination-info {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.pagination-ellipsis {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  padding: 0 0.2rem;
+}
+.pagination-size select {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* ── Clickable table rows ───────────────────────────── */
+tr.clickable-row:hover td {
+  background: var(--surface-2);
+}

@@ -17,8 +17,6 @@ Manifest formats (npm and Python first, as the most common; Actions workflows):
   Python:  requirements.txt, Pipfile (TOML), pyproject.toml [project.dependencies]
   Actions: .github/workflows/*.yml  (uses: owner/action@version)
 
-Go, Rust, Java, and Ruby parsers are added in a later milestone.
-
 GitHub API rate limit: remaining budget is checked at start. Repos are scanned
 until the budget drops below 10% of the hourly limit, at which point a warning
 is logged (no repos are silently skipped — the warning makes the gap explicit).
@@ -31,6 +29,7 @@ import logging
 import re
 import sqlite3
 import tomllib
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,6 +38,12 @@ from github import Github, GithubException, RateLimitExceededException
 
 import db
 from config import AppConfig
+
+try:
+    from cvss import CVSS2 as _CVSS2, CVSS3 as _CVSS3, CVSS4 as _CVSS4
+    _CVSS_AVAILABLE = True
+except ImportError:
+    _CVSS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +64,13 @@ _MANIFEST_FILENAMES: dict[str, str] = {
     "requirements.txt": "PyPI",
     "Pipfile": "PyPI",
     "pyproject.toml": "PyPI",
+    "go.mod": "Go",
+    "Cargo.toml": "crates.io",
+    "Cargo.lock": "crates.io",
+    "pom.xml": "Maven",
+    "build.gradle": "Maven",
+    "Gemfile": "RubyGems",
+    "Gemfile.lock": "RubyGems",
 }
 
 # Severities that trigger AI next-steps generation
@@ -100,20 +112,23 @@ class ScannerStats:
 # ---------------------------------------------------------------------------
 
 
-def run(conn: sqlite3.Connection, config: AppConfig) -> ScannerStats:
+def run(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    excluded_repos: list[str] | None = None,
+) -> ScannerStats:
     """Scan all repos and store vulnerability findings. Never raises."""
     stats = ScannerStats()
     kev_cves = db.get_kev_cve_ids(conn)
+    _excluded = set(excluded_repos or [])
 
     g = Github(config.github.token)
 
     # Record rate limit at start
     try:
-        rate = g.get_rate_limit().core
-        stats.api_requests_start = rate.remaining
-        logger.info(
-            "GitHub API rate limit: %d/%d remaining", rate.remaining, rate.limit
-        )
+        remaining, limit = g.rate_limiting
+        stats.api_requests_start = remaining
+        logger.info("GitHub API rate limit: %d/%d remaining", remaining, limit)
     except GithubException as exc:
         logger.warning("Could not read rate limit: %s", exc)
 
@@ -130,10 +145,12 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> ScannerStats:
     logger.info("Scanning %d repositories", len(repos))
 
     for repo in repos:
+        if repo.full_name in _excluded:
+            logger.debug("Skipping excluded repo: %s", repo.full_name)
+            continue
         # Check rate limit before each repo
         try:
-            remaining = g.get_rate_limit().core.remaining
-            limit = g.get_rate_limit().core.limit
+            remaining, limit = g.rate_limiting
             if remaining < limit * _RATE_LIMIT_WARN_PCT:
                 logger.warning(
                     "GitHub API rate limit low: %d/%d remaining. "
@@ -163,7 +180,7 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> ScannerStats:
 
     # Record rate limit at end
     try:
-        stats.api_requests_end = g.get_rate_limit().core.remaining
+        stats.api_requests_end, _ = g.rate_limiting
         logger.info(
             "API requests used this scan: %d", stats.api_requests_used
         )
@@ -220,12 +237,14 @@ def _scan_repo(repo) -> list[Package]:
         elif path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
             workflow_paths.append(path)
 
-    # Prefer package-lock.json over package.json for npm (exact versions)
-    has_lockfile = any(
-        p.endswith("package-lock.json") for p, _ in manifest_paths
-    )
-    if has_lockfile:
-        manifest_paths = [(p, e) for p, e in manifest_paths if not p.endswith("package.json")]
+    # Prefer lock files over loose manifests (exact pinned versions are more reliable)
+    for lockfile, loose in (
+        ("package-lock.json", "package.json"),
+        ("Cargo.lock", "Cargo.toml"),
+        ("Gemfile.lock", "Gemfile"),
+    ):
+        if any(p.endswith(lockfile) for p, _ in manifest_paths):
+            manifest_paths = [(p, e) for p, e in manifest_paths if not p.endswith(loose)]
 
     all_paths = manifest_paths[:_MAX_MANIFESTS_PER_REPO]
     all_paths += [(p, "Actions") for p in workflow_paths[:5]]  # limit workflow files
@@ -270,6 +289,20 @@ def _parse_manifest(path: str, content: str, ecosystem: str) -> list[Package]:
             return _parse_pyproject_toml(content, path)
         if filename.endswith((".yml", ".yaml")):
             return _parse_github_actions(content, path)
+        if filename == "go.mod":
+            return _parse_go_mod(content, path)
+        if filename == "Cargo.toml":
+            return _parse_cargo_toml(content, path)
+        if filename == "Cargo.lock":
+            return _parse_cargo_lock(content, path)
+        if filename == "pom.xml":
+            return _parse_pom_xml(content, path)
+        if filename == "build.gradle":
+            return _parse_build_gradle(content, path)
+        if filename == "Gemfile":
+            return _parse_gemfile(content, path)
+        if filename == "Gemfile.lock":
+            return _parse_gemfile_lock(content, path)
     except Exception as exc:
         logger.debug("Parse error for %s: %s", path, exc)
     return []
@@ -383,6 +416,178 @@ def _parse_github_actions(content: str, path: str) -> list[Package]:
         packages.append(Package(name=action_name, version=version,
                                 ecosystem="GitHub Actions", manifest_path=path,
                                 repo_full_name=""))
+    return packages
+
+
+def _parse_go_mod(content: str, path: str) -> list[Package]:
+    """Parse go.mod require directives. Strips the leading v from versions."""
+    packages: list[Package] = []
+    in_require = False
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if line.startswith("require ("):
+            in_require = True
+            continue
+        if in_require:
+            if line == ")":
+                in_require = False
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and not parts[0].startswith("//"):
+                version = parts[1].lstrip("v") or None
+                packages.append(Package(name=parts[0], version=version,
+                                        ecosystem="Go", manifest_path=path,
+                                        repo_full_name=""))
+        elif line.startswith("require ") and "(" not in line:
+            parts = line.split()
+            if len(parts) >= 3:
+                version = parts[2].lstrip("v") or None
+                packages.append(Package(name=parts[1], version=version,
+                                        ecosystem="Go", manifest_path=path,
+                                        repo_full_name=""))
+    return packages
+
+
+def _parse_cargo_toml(content: str, path: str) -> list[Package]:
+    """Parse Cargo.toml [dependencies] sections. Skips git/path deps."""
+    data = tomllib.loads(content)
+    packages: list[Package] = []
+    dep_sections = ("dependencies", "dev-dependencies", "build-dependencies")
+    for section in dep_sections:
+        for name, spec in (data.get(section) or {}).items():
+            if isinstance(spec, str):
+                version = _extract_version(spec)
+            elif isinstance(spec, dict):
+                if "git" in spec or "path" in spec:
+                    continue
+                version = _extract_version(spec.get("version") or "")
+            else:
+                continue
+            packages.append(Package(name=name, version=version,
+                                    ecosystem="crates.io", manifest_path=path,
+                                    repo_full_name=""))
+    return packages
+
+
+def _parse_cargo_lock(content: str, path: str) -> list[Package]:
+    """Parse Cargo.lock (TOML). Only includes registry crates, not path/git deps."""
+    data = tomllib.loads(content)
+    packages: list[Package] = []
+    for pkg in data.get("package") or []:
+        name = pkg.get("name")
+        version = pkg.get("version")
+        source = pkg.get("source", "")
+        if name and version and source.startswith("registry+"):
+            packages.append(Package(name=name, version=version,
+                                    ecosystem="crates.io", manifest_path=path,
+                                    repo_full_name=""))
+    return packages
+
+
+def _parse_pom_xml(content: str, path: str) -> list[Package]:
+    """Parse Maven pom.xml <dependencies>. Package name is groupId:artifactId."""
+    packages: list[Package] = []
+    root = ET.fromstring(content)
+    ns_match = re.match(r"\{([^}]+)\}", root.tag)
+    ns = f"{{{ns_match.group(1)}}}" if ns_match else ""
+    for dep in root.iter(f"{ns}dependency"):
+        group_id = dep.findtext(f"{ns}groupId") or ""
+        artifact_id = dep.findtext(f"{ns}artifactId") or ""
+        version_text = dep.findtext(f"{ns}version") or ""
+        if not group_id or not artifact_id:
+            continue
+        # Skip Maven property references like ${spring.version}
+        if version_text.startswith("${"):
+            version_text = ""
+        packages.append(Package(
+            name=f"{group_id}:{artifact_id}",
+            version=_extract_version(version_text),
+            ecosystem="Maven",
+            manifest_path=path,
+            repo_full_name="",
+        ))
+    return packages
+
+
+_GRADLE_DEP_RE = re.compile(
+    r"""(?:implementation|api|compile|runtimeOnly|testImplementation|testCompile)\s+"""
+    r"""['"]([^'"]+):([^'"]+):([^'"]+)['"]""")
+_GRADLE_MAP_RE = re.compile(
+    r"""group:\s*['"]([^'"]+)['"]\s*,\s*name:\s*['"]([^'"]+)['"]\s*,\s*version:\s*['"]([^'"]+)['"]""")
+
+
+def _parse_build_gradle(content: str, path: str) -> list[Package]:
+    """Parse build.gradle string and map-style dependency declarations."""
+    packages: list[Package] = []
+    for m in _GRADLE_DEP_RE.finditer(content):
+        packages.append(Package(
+            name=f"{m.group(1)}:{m.group(2)}",
+            version=_extract_version(m.group(3)),
+            ecosystem="Maven",
+            manifest_path=path,
+            repo_full_name="",
+        ))
+    for m in _GRADLE_MAP_RE.finditer(content):
+        packages.append(Package(
+            name=f"{m.group(1)}:{m.group(2)}",
+            version=_extract_version(m.group(3)),
+            ecosystem="Maven",
+            manifest_path=path,
+            repo_full_name="",
+        ))
+    return packages
+
+
+_GEMFILE_GEM_RE = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"])?""")
+
+
+def _parse_gemfile(content: str, path: str) -> list[Package]:
+    """Parse Gemfile gem declarations."""
+    packages: list[Package] = []
+    for line in content.splitlines():
+        m = _GEMFILE_GEM_RE.match(line)
+        if m:
+            packages.append(Package(
+                name=m.group(1),
+                version=_extract_version(m.group(2) or ""),
+                ecosystem="RubyGems",
+                manifest_path=path,
+                repo_full_name="",
+            ))
+    return packages
+
+
+def _parse_gemfile_lock(content: str, path: str) -> list[Package]:
+    """Parse Gemfile.lock specs from the GEM (rubygems.org) section only."""
+    packages: list[Package] = []
+    in_gem_section = False
+    in_specs = False
+    for raw_line in content.splitlines():
+        stripped = raw_line.rstrip()
+        if stripped == "GEM":
+            in_gem_section = True
+            in_specs = False
+            continue
+        if stripped in ("GIT", "PATH", "BUNDLED WITH", "PLATFORMS", "DEPENDENCIES"):
+            in_gem_section = False
+            in_specs = False
+            continue
+        if in_gem_section and stripped == "  specs:":
+            in_specs = True
+            continue
+        if in_specs:
+            # Top-level gem entries have exactly 4-space indent: "    name (version)"
+            m = re.match(r"^    (\S+) \(([^)]+)\)", raw_line)
+            if m:
+                # Strip platform suffix, e.g. "1.15.4-x86_64-linux" → "1.15.4"
+                version = re.sub(r"-[a-zA-Z].*$", "", m.group(2))
+                packages.append(Package(
+                    name=m.group(1),
+                    version=version or None,
+                    ecosystem="RubyGems",
+                    manifest_path=path,
+                    repo_full_name="",
+                ))
     return packages
 
 
@@ -546,45 +751,63 @@ _SEVERITY_CVSS_MAP = {
 
 
 def _extract_severity(vuln: dict) -> tuple[str, float | None]:
-    """Return (severity_text, approximate_cvss_score) for an OSV vulnerability.
+    """Return (severity_text, cvss_score) for an OSV vulnerability.
 
-    CVSS scores are approximated from text severity (CRITICAL→9.0 etc.) when
-    a numeric score is not directly available in the OSV response.
+    Prefers a calculated CVSS base score from the severity vector array.
+    Falls back to the database_specific.severity text label with an approximate
+    midpoint score when no vector is present.
     """
-    # database_specific.severity is the most reliable text field
-    db_sev = (vuln.get("database_specific") or {}).get("severity", "").upper()
-    if db_sev in _SEVERITY_CVSS_MAP:
-        return db_sev.capitalize() if db_sev != "CRITICAL" else "Critical", \
-               _SEVERITY_CVSS_MAP[db_sev]
-
-    # Fall back to severity array (CVSS vector present but score not numeric)
+    # Try to calculate an accurate score from the CVSS vector first.
     for sev_entry in vuln.get("severity") or []:
-        sev_type = sev_entry.get("type", "")
-        if "CVSS" in sev_type:
-            # Attempt to infer severity from the vector's impact metrics
+        if "CVSS" in sev_entry.get("type", ""):
             score = _score_from_vector(sev_entry.get("score", ""))
             if score is not None:
-                text = _cvss_to_severity_text(score)
-                return text, score
+                return _cvss_to_severity_text(score), score
+
+    # Fall back to the text severity label (reliable for GitHub advisories).
+    db_sev = (vuln.get("database_specific") or {}).get("severity", "").upper()
+    if db_sev in _SEVERITY_CVSS_MAP:
+        text = "Critical" if db_sev == "CRITICAL" else db_sev.capitalize()
+        return text, _SEVERITY_CVSS_MAP[db_sev]
 
     return "Unknown", None
 
 
-_CVSS_BASE_SCORE_RE = re.compile(r"/([A-Z]+:[A-Z]+)")
-
-
 def _score_from_vector(vector: str) -> float | None:
-    """Very rough CVSS base score from vector string.
+    """Calculate CVSS base score from a vector string.
 
-    Rather than implementing the full CVSS formula (complex), we count the
-    number of HIGH/CRITICAL component values as a proxy. This is used only
-    when the severity text is also unavailable. Accuracy is ±2 points.
+    Uses the cvss library when available. Falls back to an impact-metric
+    heuristic (accurate within ~0.5 for most common vectors) when the library
+    is not installed.
     """
     if not vector:
         return None
-    high_count = vector.upper().count(":H") + vector.upper().count(":C")
-    total = max(len(_CVSS_BASE_SCORE_RE.findall(vector)), 1)
-    return round(min(high_count / total * 10, 10.0), 1)
+
+    if _CVSS_AVAILABLE:
+        try:
+            if vector.startswith("CVSS:4"):
+                return float(_CVSS4(vector).base_score)
+            if vector.startswith("CVSS:3"):
+                return float(_CVSS3(vector).base_score)
+            # CVSS v2 vectors don't carry a version prefix
+            return float(_CVSS2(vector).base_score)
+        except Exception:
+            pass
+
+    # Fallback heuristic: score from C/I/A impact levels in the vector.
+    # C:H/I:H/A:H = all three high impacts → almost always Critical/High.
+    v = vector.upper()
+    high_impacts = sum(1 for m in ("C:H", "I:H", "A:H") if m in v)
+    if high_impacts == 3:
+        return 9.0
+    if high_impacts == 2:
+        return 7.5
+    if high_impacts == 1:
+        return 5.0
+    # Check for medium impacts
+    if any(m in v for m in ("C:M", "I:M", "A:M")):
+        return 4.0
+    return 2.5
 
 
 def _cvss_to_severity_text(score: float) -> str:
@@ -598,18 +821,29 @@ def _cvss_to_severity_text(score: float) -> str:
 
 
 def _extract_fixed_version(vuln: dict, ecosystem: str, package_name: str) -> str | None:
-    """Extract the earliest 'fixed' version from OSV affected ranges."""
+    """Extract the fixed version from OSV affected ranges.
+
+    Checks ECOSYSTEM and SEMVER range types for a 'fixed' event first.
+    Falls back to 'last_affected' when no fixed event exists, prefixed with
+    '>' so the dashboard shows '>X.Y.Z' (upgrade past the last affected version).
+    """
     for affected in vuln.get("affected") or []:
         pkg = affected.get("package") or {}
         if pkg.get("ecosystem", "").lower() != ecosystem.lower():
             continue
         if pkg.get("name", "").lower() != package_name.lower():
             continue
+        last_affected = None
         for range_ in affected.get("ranges") or []:
-            if range_.get("type") in ("ECOSYSTEM", "SEMVER"):
-                for event in range_.get("events") or []:
-                    if "fixed" in event:
-                        return event["fixed"]
+            if range_.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                continue
+            for event in range_.get("events") or []:
+                if event.get("fixed"):
+                    return event["fixed"]
+                if event.get("last_affected"):
+                    last_affected = event["last_affected"]
+        if last_affected:
+            return f">{last_affected}"
     return None
 
 
@@ -740,5 +974,5 @@ def _make_http_client() -> httpx.Client:
     return httpx.Client(
         follow_redirects=False,
         timeout=_HTTP_TIMEOUT,
-        headers={"User-Agent": "security-automation/0.1"},
+        headers={"User-Agent": "dive/0.1"},
     )

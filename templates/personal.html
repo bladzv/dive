@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Personal — DIVE{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Personal</h1>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:1.25rem">
+
+  <!-- ── Bookmarks ────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Bookmarks</span>
+      {% if bookmarks %}
+      <div style="display:flex;gap:0.5rem">
+        <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">Export JSON</a>
+        <a href="/api/export/news?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if bookmarks %}
+    <div>
+      {% for item in bookmarks %}
+      <div class="news-item" id="bm-{{ item.id }}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem">
+          <div style="flex:1;min-width:0">
+            <div class="news-title">
+              <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+            </div>
+            <div class="news-meta">
+              <span>{{ item.source }}</span>
+              {% if item.category %}
+              <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
+              {% endif %}
+              {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+              <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
+              {% endif %}
+              <span>bookmarked {{ item.bookmarked_at[:10] }}</span>
+            </div>
+            {% if item.summary %}
+            <div class="news-summary">
+              {{ item.summary[:200] }}{% if item.summary | length > 200 %}…{% endif %}
+            </div>
+            {% endif %}
+          </div>
+          <button class="btn btn-outline btn-sm" style="flex-shrink:0"
+                  onclick="removeBookmark({{ item.id }})">Remove</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:2rem 0">
+      <div class="empty-icon">🔖</div>
+      <p>No bookmarks yet.</p>
+      <p style="font-size:0.82rem;color:var(--text-dim);margin-top:0.35rem">
+        Click the bookmark icon on any news item to save it here.
+      </p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── Annotated Findings ───────────────────────────── -->
+  <div class="card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Annotated Findings</span>
+      {% if annotated %}
+      <div style="display:flex;gap:0.5rem">
+        <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">Export JSON</a>
+        <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if annotated %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Repo</th><th>Package</th><th>CVE / GHSA</th><th>Severity</th><th>State</th><th>Note</th>
+        </tr></thead>
+        <tbody>
+          {% for f in annotated %}
+          <tr>
+            <td style="font-size:0.82rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
+            <td style="font-size:0.82rem">{{ f.package_name }}</td>
+            <td style="font-size:0.75rem;color:var(--text-dim)">{{ f.cve_id or f.ghsa_id or '—' }}</td>
+            <td><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
+            <td><span class="badge badge-{{ 'new' if f.state == 'new' else ('ack' if f.state == 'acknowledged' else 'resolved') }}">{{ f.state }}</span></td>
+            <td style="font-size:0.8rem;color:var(--text-dim);max-width:260px">{{ f.annotation }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:2rem 0">
+      <div class="empty-icon">📝</div>
+      <p>No annotated findings yet.</p>
+      <p style="font-size:0.82rem;color:var(--text-dim);margin-top:0.35rem">
+        Add notes to findings on the <a href="/findings">Findings</a> page.
+      </p>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function removeBookmark(itemId) {
+  fetch('/api/news/' + itemId + '/bookmark', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.bookmarked) {
+      const el = document.getElementById('bm-' + itemId);
+      if (el) el.remove();
+      showToast('Bookmark removed', 'success');
+    }
+  })
+  .catch(() => showToast('Failed to remove bookmark', 'error'));
+}
+</script>
+{% endblock %}

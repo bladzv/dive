@@ -1,26 +1,42 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="run-token" content="{{ run_token }}">
-  <title>{% block title %}Security Automation{% endblock %}</title>
+  <title>{% block title %}DIVE{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script>
+    /* Apply saved theme before first paint to avoid flash */
+    (function() {
+      const t = localStorage.getItem('theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 <body>
 
 <header class="page-header">
-  <span class="brand">🔒 DIVE</span>
+  <span class="brand">DIVE</span>
+  <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" onclick="toggleNav()">&#9776;</button>
   <span class="status-dot idle" id="status-dot" style="display:none"></span>
   <span class="status-text" id="status-text"></span>
+  <span class="next-run-text" id="next-run-text"></span>
   <span class="header-spacer"></span>
+  <span class="ollama-dot" id="ollama-dot" title="Ollama: checking…"></span>
   <span class="model-chip" id="model-chip">{{ current_model }}</span>
-  <button class="btn btn-primary btn-sm" id="run-now-btn" onclick="triggerRun()">▶ Run Now</button>
+  <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
+  <button class="btn btn-primary btn-sm" id="run-now-btn" onclick="triggerRun()">&#9654; Run Now</button>
 </header>
 
-<nav class="site-nav">
+<nav class="site-nav" id="site-nav">
   <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">Dashboard</a>
   <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">Findings</a>
+  <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">News</a>
+  <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">Secrets</a>
+  <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">History</a>
+  <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">Weekly</a>
+  <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">Personal</a>
   <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">Settings</a>
 </nav>
 
@@ -29,13 +45,34 @@
 </main>
 
 <footer class="page-footer">
-  Security Automation &nbsp;·&nbsp;
-  <a href="https://github.com/your-org/security-automation" target="_blank" rel="noopener">GitHub</a>
+  DIVE — DIVE &nbsp;·&nbsp;
+  <a href="https://github.com/your-org/dive" target="_blank" rel="noopener">GitHub</a>
 </footer>
 
 <div id="toast"></div>
 
 <script>
+/* ── Theme ───────────────────────────────────────────── */
+function _applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('theme-btn').textContent = t === 'dark' ? '☀' : '☾';
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  _applyTheme(next);
+}
+
+// Apply correct icon on load (theme was already set before paint)
+_applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
+
+/* ── Mobile nav ─────────────────────────────────────── */
+function toggleNav() {
+  document.getElementById('site-nav').classList.toggle('nav-open');
+}
+
 /* ── Shared helpers ──────────────────────────────────── */
 const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
 
@@ -53,6 +90,14 @@ function timeAgo(iso) {
   if (diff < 3600)  return Math.floor(diff / 60)   + 'm ago';
   if (diff < 86400) return Math.floor(diff / 3600)  + 'h ago';
   return Math.floor(diff / 86400) + 'd ago';
+}
+
+function timeUntil(iso) {
+  const diff = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (diff <= 0)     return 'soon';
+  if (diff < 3600)   return 'in ' + Math.ceil(diff / 60)   + 'm';
+  if (diff < 86400)  return 'in ' + Math.floor(diff / 3600) + 'h';
+  return 'in ' + Math.floor(diff / 86400) + 'd';
 }
 
 /* ── Pipeline status polling ─────────────────────────── */
@@ -85,7 +130,21 @@ function updateStatusBadge(pipeline) {
 function pollStatus() {
   fetch('/api/health')
     .then(r => r.json())
-    .then(data => updateStatusBadge(data.pipeline))
+    .then(data => {
+      updateStatusBadge(data.pipeline);
+
+      const nr = document.getElementById('next-run-text');
+      nr.textContent = data.next_run ? '· next run ' + timeUntil(data.next_run) : '';
+
+      const od = document.getElementById('ollama-dot');
+      if (data.ollama_ok === true) {
+        od.className = 'ollama-dot ollama-ok';
+        od.title = 'Ollama: running';
+      } else if (data.ollama_ok === false) {
+        od.className = 'ollama-dot ollama-err';
+        od.title = 'Ollama: unavailable';
+      }
+    })
     .catch(() => {});
 }
 
@@ -105,7 +164,6 @@ function triggerRun() {
   .then(data => {
     if (data.status === 'started') {
       showToast('Pipeline started', 'success');
-      // Poll faster while running
       clearInterval(_pollTimer);
       _pollTimer = setInterval(pollStatus, 2000);
       setTimeout(() => {

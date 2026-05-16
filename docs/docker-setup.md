@@ -6,7 +6,7 @@ The fastest way to get started. Docker handles all dependencies — Python, Olla
 
 **Time:** approximately 15 minutes.
 
-← Back to [Setup Guide](../SETUP.md) | Also needed: [Credential Preparation](mac-preparation.md) →
+← Back to [Setup Guide](setup.md) | Also needed: [Credential Preparation](mac-preparation.md) →
 
 ---
 
@@ -53,11 +53,11 @@ Both commands should print a version number.
 ## Step 2 — Download the Project
 
 ```bash
-$ git clone https://github.com/<your-username>/security-automation.git
-$ cd security-automation
+$ git clone https://github.com/<your-username>/dive.git
+$ cd dive
 ```
 - `git clone` — downloads a complete copy of the project from GitHub.
-- `cd security-automation` — moves into the project folder. All remaining commands must be run from here.
+- `cd dive` — moves into the project folder. All remaining commands must be run from here.
 
 ---
 
@@ -114,7 +114,7 @@ $ docker compose exec ollama ollama list
 ```
 You should see `qwen2.5:3b` in the list.
 
-> **Want a different model?** See [MODELS.md](../MODELS.md) for all supported options. Replace `qwen2.5:3b` in the command above with your chosen model name, then select it in the dashboard settings after starting the app.
+> **Want a different model?** See [models.md](models.md) for all supported options. Replace `qwen2.5:3b` in the command above with your chosen model name, then select it in the dashboard settings after starting the app.
 
 ---
 
@@ -131,6 +131,14 @@ Wait about 15 seconds, then open a browser and go to:
 http://localhost:8000
 ```
 You should see the dashboard login screen. Sign in with the `dashboard.username` and `dashboard.password` you set in `config.yaml`.
+
+> **Accessing from another device on the same network?** `localhost` only works on the machine running the app. From any other device, use Device A's local IP address instead:
+> ```bash
+> # Run this on Device A to find its IP:
+> hostname -I          # Linux / Raspberry Pi — use the first address shown
+> ipconfig getifaddr en0   # Mac (Wi-Fi); use en1 for Ethernet
+> ```
+> Then open `http://192.168.x.x:8000` from Device B's browser. Docker already maps port 8000 to all network interfaces (`0.0.0.0:8000`), so no extra configuration is needed — just the correct IP.
 
 To confirm both containers are running:
 ```bash

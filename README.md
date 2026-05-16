@@ -34,7 +34,7 @@ Tested on Raspberry Pi 4 (8 GB) running Raspberry Pi OS Bookworm 64-bit, and on 
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/dive.git
+git clone https://github.com/bladzv/dive.git
 cd dive
 
 # 2. Configure
@@ -54,7 +54,7 @@ open http://localhost:8000   # log in with dashboard.username / dashboard.passwo
                              # then click ▶ Run Now to trigger the first scan
 ```
 
-> **Raspberry Pi:** replace `localhost` with the Pi's local IP address or its Tailscale IP if you have Tailscale installed. See [`docs/tailscale-setup.md`](docs/tailscale-setup.md).
+> **Accessing from another device on the same network?** Replace `localhost` with the host machine's local IP address (e.g. `http://192.168.1.x:8000`). Run `hostname -I` (Linux/Pi) or `ipconfig getifaddr en0` (Mac) on the host to find it. Docker already listens on all interfaces — no extra config needed. For remote access outside your network, see [`docs/tailscale-setup.md`](docs/tailscale-setup.md).
 
 ---
 
@@ -106,11 +106,12 @@ See [`config.yaml.example`](config.yaml.example) for all options and inline docu
 
 | Guide | What it covers |
 |-------|----------------|
+| [`docs/setup.md`](docs/setup.md) | Overview of all setup paths and guides |
 | [`docs/raspberry-pi-setup.md`](docs/raspberry-pi-setup.md) | Preparing a fresh Pi: OS, Docker, firewall, SSH hardening |
 | [`docs/docker-setup.md`](docs/docker-setup.md) | Running with Docker Compose; updating; backups |
 | [`docs/tailscale-setup.md`](docs/tailscale-setup.md) | Remote access from any device via Tailscale |
 | [`docs/mac-preparation.md`](docs/mac-preparation.md) | Getting your GitHub PAT and notification webhook URLs |
-| [`MODELS.md`](MODELS.md) | Choosing an Ollama model; trade-offs for Pi vs. larger hardware |
+| [`docs/models.md`](docs/models.md) | Choosing an Ollama model; trade-offs for Pi vs. larger hardware |
 
 ---
 

@@ -6,12 +6,23 @@ Pipeline-specific unit tests are added in M2–M4 alongside the components they 
 """
 
 import os
+import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
 def _exists(*parts: str) -> bool:
     return os.path.exists(os.path.join(ROOT, *parts))
+
+
+def _git_tracked(*parts: str) -> bool:
+    """Return True if the path is currently tracked by git (i.e. committed or staged)."""
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", os.path.join(*parts)],
+        cwd=ROOT,
+        capture_output=True,
+    )
+    return result.returncode == 0
 
 
 def test_docker_files_present():
@@ -25,10 +36,14 @@ def test_config_template_present():
 
 
 def test_config_yaml_not_committed():
-    """config.yaml must never be committed — it contains secrets."""
-    assert not _exists("config.yaml"), (
-        "config.yaml should not exist in the repo — it contains secrets. "
-        "Add it to .gitignore and remove it from version control."
+    """config.yaml must never be committed — it contains secrets.
+
+    Checks git tracking, not local file existence, so the test passes
+    in normal development setups where the file exists but is gitignored.
+    """
+    assert not _git_tracked("config.yaml"), (
+        "config.yaml is tracked by git — it contains secrets. "
+        "Remove it with: git rm --cached config.yaml"
     )
 
 

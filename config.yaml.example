@@ -1,4 +1,4 @@
-# Security Automation — Configuration Template
+# DIVE — Configuration Template
 #
 # Copy this file to config.yaml and fill in your values:
 #   cp config.yaml.example config.yaml
@@ -42,7 +42,7 @@ ollama:
   host: "http://ollama:11434"
 
   # AI model used for news categorization and next-steps generation.
-  # See MODELS.md for all supported options and how to switch models.
+  # See docs/models.md for all supported options and how to switch models.
   model: "qwen2.5:3b"
 
 # ------------------------------------------------------------------

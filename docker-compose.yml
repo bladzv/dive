@@ -3,7 +3,7 @@ services:
     # 'build' is used when developing locally (docker compose build).
     # 'image' is the published tag pulled by end users (docker compose pull).
     build: .
-    image: ghcr.io/YOUR_USERNAME/security-automation:latest
+    image: ghcr.io/bladzv/dive:latest
     ports:
       - "8000:8000"
     volumes:

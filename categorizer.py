@@ -250,21 +250,23 @@ Items:
 def _parse_response(raw: str, expected_count: int) -> list[dict] | None:
     """Parse and basic-validate the Ollama JSON response.
 
-    Returns a list of dicts if parsing succeeds and count matches, else None.
+    Returns a list of dicts on success. Accepts partial results when the model
+    returns fewer items than expected rather than discarding everything.
     """
     if not raw or not raw.strip():
         return None
 
-    # Ollama JSON mode should give us clean JSON, but strip any accidental wrapping
     text = raw.strip()
-    # If the model wrapped the array in an object, try to extract it
+
+    # If the model wrapped the array in an object, extract the first list value.
+    # Models use wildly different wrapper keys ("results", "output", "answer", etc.)
+    # so we accept any list value rather than checking a hardcoded set.
     if text.startswith("{"):
         try:
             obj = json.loads(text)
-            # Common pattern: {"results": [...]} or {"items": [...]}
-            for key in ("results", "items", "classifications", "data"):
-                if isinstance(obj.get(key), list):
-                    text = json.dumps(obj[key])
+            for val in obj.values():
+                if isinstance(val, list) and val:
+                    text = json.dumps(val)
                     break
         except (json.JSONDecodeError, AttributeError):
             pass
@@ -272,18 +274,24 @@ def _parse_response(raw: str, expected_count: int) -> list[dict] | None:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        logger.debug("JSON parse error: %s | raw: %.200s", exc, raw)
+        logger.warning("Ollama JSON parse error: %s | raw: %.200s", exc, raw)
         return None
 
     if not isinstance(parsed, list):
-        logger.debug("Expected JSON array, got %s", type(parsed).__name__)
+        logger.warning(
+            "Ollama returned %s instead of a JSON array | raw: %.200s",
+            type(parsed).__name__, raw[:200],
+        )
+        return None
+
+    if not parsed:
         return None
 
     if len(parsed) != expected_count:
-        logger.debug(
-            "Response count mismatch: expected %d, got %d", expected_count, len(parsed)
+        logger.warning(
+            "Ollama response count mismatch: expected %d, got %d — using partial results",
+            expected_count, len(parsed),
         )
-        return None
 
     return parsed
 
@@ -341,5 +349,5 @@ def _make_client() -> httpx.Client:
     return httpx.Client(
         follow_redirects=False,
         timeout=HTTP_TIMEOUT,
-        headers={"User-Agent": "security-automation/0.1"},
+        headers={"User-Agent": "dive/0.1"},
     )

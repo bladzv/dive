@@ -4,7 +4,7 @@ Tailscale lets you access the dashboard from anywhere — your phone, a coffee s
 
 **Time:** approximately 10 minutes.
 
-← [Raspberry Pi Setup](raspberry-pi-setup.md) | Back to [Setup Guide](../SETUP.md)
+← [Raspberry Pi Setup](raspberry-pi-setup.md) | Back to [Setup Guide](setup.md)
 
 ---
 

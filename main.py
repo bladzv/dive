@@ -1,5 +1,5 @@
 """
-Security Automation — main entrypoint.
+DIVE — main entrypoint.
 
 FastAPI application with:
   • APScheduler BackgroundScheduler — runs the full pipeline on a
@@ -15,6 +15,9 @@ FastAPI application with:
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import logging
 import secrets
 import threading
@@ -28,17 +31,24 @@ import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from filelock import FileLock, Timeout
 
+import asyncio
+
+from apscheduler.triggers.cron import CronTrigger
+
 import config as cfg_module
 import db
+import github_issue_creator as gic
 import github_scanner as gs
 import lifecycle
 import notifier
+import secrets_scanner as ss
+import settings as st
 
 try:
     import collector as collector_module
@@ -76,6 +86,10 @@ _pipeline_status: dict = {
 # File lock path (prevents concurrent runs across processes / restarts)
 _LOCK_FILE = Path("data/.pipeline.lock")
 
+# Pagination constants
+_PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
+_DEFAULT_PAGE_SIZE = 25
+
 # Interval select options shown in the settings page
 _INTERVAL_OPTIONS = [
     ("3",   "Every 3 hours"),
@@ -88,17 +102,31 @@ _INTERVAL_OPTIONS = [
 
 # Suggested Ollama models shown in the settings page
 _SUGGESTED_MODELS = [
-    {"name": "qwen2.5:3b",  "description": "Default — fast on Pi 4, ~2 GB"},
-    {"name": "qwen2.5:7b",  "description": "Higher quality, needs 8 GB RAM"},
-    {"name": "llama3.2:3b", "description": "Meta's compact model"},
-    {"name": "phi3:mini",   "description": "Very small and fast"},
-    {"name": "mistral:7b",  "description": "Balanced quality / size"},
+    {"name": "qwen2.5:3b",   "description": "~1.9 GB · 5–8 tok/s · Recommended for Pi 4"},
+    {"name": "gemma2:2b",    "description": "~1.6 GB · 8–12 tok/s · Fastest on Pi 4"},
+    {"name": "phi3.5:mini",  "description": "~2.2 GB · 4–6 tok/s · Strong reasoning"},
+    {"name": "llama3.2:3b",  "description": "~2.0 GB · 4–7 tok/s · Good general-purpose"},
+    {"name": "qwen2.5:7b",   "description": "~4.7 GB · Better quality, 8 GB+ RAM"},
+    {"name": "llama3.1:8b",  "description": "~4.7 GB · Strong general-purpose, Apple Silicon"},
+    {"name": "qwen2.5:14b",  "description": "~9 GB · High quality, 16 GB+ RAM"},
 ]
 
 
 # ---------------------------------------------------------------------------
-# Pipeline
+# Pipeline / scheduled tasks
 # ---------------------------------------------------------------------------
+
+
+def _run_weekly_digest() -> None:
+    """Build the weekly digest and send it. Fires every Monday at 08:00."""
+    global _config
+    if _config is None:
+        return
+    try:
+        with db.get_conn() as conn:
+            notifier.send_weekly_digest(_config, conn)
+    except Exception as exc:
+        logger.error("Weekly digest failed: %s", exc, exc_info=True)
 
 
 def _run_pipeline() -> None:
@@ -117,14 +145,21 @@ def _run_pipeline() -> None:
         return
 
     run_id: int | None = None
+    _pipeline_start_time = datetime.now(timezone.utc)
     try:
         with _pipeline_lock:
             _pipeline_status["running"] = True
-            _pipeline_status["last_started"] = datetime.now(timezone.utc).isoformat()
+            _pipeline_status["last_started"] = _pipeline_start_time.isoformat()
             _pipeline_status["last_error"] = None
 
         _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Pipeline run starting")
+
+        if _config:
+            try:
+                notifier.send_pipeline_start_alert(_config)
+            except Exception as exc:
+                logger.warning("Pipeline start alert failed: %s", exc)
 
         with db.get_conn() as conn:
             run_id = db.start_run(conn)
@@ -140,7 +175,7 @@ def _run_pipeline() -> None:
             try:
                 with db.get_conn() as conn:
                     stats = collector_module.run(conn, _config)
-                    items_collected = stats.items_collected
+                    items_collected = stats.items_fetched
                     logger.info(
                         "Collector: %d new items (%d failed sources)",
                         items_collected,
@@ -157,13 +192,13 @@ def _run_pipeline() -> None:
             try:
                 with db.get_conn() as conn:
                     cat_stats = categorizer_module.run(conn, _config)
-                    items_categorized = cat_stats.items_categorized
-                    if cat_stats.uncategorized_warning:
+                    items_categorized = cat_stats.categorized
+                    if cat_stats.uncategorized_rate > 0.2:
                         logger.warning("Categorizer: >20%% of items fell back to Uncategorized")
                     logger.info(
-                        "Categorizer: %d categorized, %d failed",
+                        "Categorizer: %d categorized, %d uncategorized",
                         items_categorized,
-                        cat_stats.items_failed,
+                        cat_stats.uncategorized,
                     )
             except Exception as exc:
                 logger.error("Categorizer failed: %s", exc, exc_info=True)
@@ -173,35 +208,93 @@ def _run_pipeline() -> None:
         # Step 3 — GitHub scanner
         # ------------------------------------------------------------------
         current_finding_keys: set[tuple] = set()
-        try:
-            with db.get_conn() as conn:
-                scan_stats = gs.run(conn, _config)
-                findings_new_total = scan_stats.findings_new
+        with db.get_conn() as conn:
+            _github_scanning_on = st.is_feature_enabled(conn, "github_scanning")
+            _excluded_repos = st.get_excluded_repos(conn)
+        if _github_scanning_on:
+            try:
+                with db.get_conn() as conn:
+                    scan_stats = gs.run(conn, _config, excluded_repos=_excluded_repos)
+                    findings_new_total = scan_stats.findings_new
 
-                rows = db.get_findings(conn, limit=10_000)
-                for row in rows:
-                    current_finding_keys.add((
-                        row["repo_full_name"],
-                        row["package_name"],
-                        row["package_ecosystem"],
-                        row["cve_id"] or "",
-                        row["ghsa_id"] or "",
-                    ))
+                    rows = db.get_findings(conn, limit=10_000)
+                    for row in rows:
+                        current_finding_keys.add((
+                            row["repo_full_name"],
+                            row["package_name"],
+                            row["package_ecosystem"],
+                            row["cve_id"] or "",
+                            row["ghsa_id"] or "",
+                        ))
 
-                logger.info(
-                    "Scanner: %d repos, %d packages, %d new findings",
-                    scan_stats.repos_scanned,
-                    scan_stats.packages_checked,
-                    scan_stats.findings_new,
-                )
-                if scan_stats.failed_repos:
-                    logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
-        except Exception as exc:
-            logger.error("Scanner failed: %s", exc, exc_info=True)
-            notifier.send_failure_alert(_config, f"Scanner error: {exc}")
+                    logger.info(
+                        "Scanner: %d repos, %d packages, %d new findings",
+                        scan_stats.repos_scanned,
+                        scan_stats.packages_checked,
+                        scan_stats.findings_new,
+                    )
+                    if scan_stats.failed_repos:
+                        logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
+            except Exception as exc:
+                logger.error("Scanner failed: %s", exc, exc_info=True)
+                notifier.send_failure_alert(_config, f"Scanner error: {exc}")
+        else:
+            logger.info("GitHub scanning disabled by feature toggle — skipping Step 3")
 
         # ------------------------------------------------------------------
-        # Step 4 — Lifecycle reconciliation
+        # Step 3.5 — GitHub issue auto-creation
+        # ------------------------------------------------------------------
+        with db.get_conn() as conn:
+            _issue_creation_on = st.is_feature_enabled(conn, "github_issue_creation")
+        if _issue_creation_on:
+            try:
+                with db.get_conn() as conn:
+                    issue_stats = gic.run(conn, _config)
+                    if issue_stats.issues_created:
+                        logger.info(
+                            "GitHub issues: %d created, %d skipped (duplicates), %d failed",
+                            issue_stats.issues_created,
+                            issue_stats.issues_skipped,
+                            issue_stats.issues_failed,
+                        )
+                    if issue_stats.failed_repos:
+                        logger.warning("Issue creation failed repos: %s", issue_stats.failed_repos)
+            except Exception as exc:
+                logger.error("GitHub issue creation failed: %s", exc, exc_info=True)
+        else:
+            logger.debug("GitHub issue auto-creation disabled by feature toggle — skipping Step 3.5")
+
+        # ------------------------------------------------------------------
+        # Step 4 — Secrets scanner (gitleaks)
+        # ------------------------------------------------------------------
+        with db.get_conn() as conn:
+            _secrets_scanning_on = st.is_feature_enabled(conn, "secrets_scanning")
+        secrets_new_total = 0
+        if _secrets_scanning_on:
+            try:
+                with db.get_conn() as conn:
+                    sec_stats = ss.run(conn, _config, excluded_repos=_excluded_repos)
+                    secrets_new_total = sec_stats.secrets_new
+                    if sec_stats.failed_repos:
+                        logger.warning("Secrets scanner failed repos: %s", sec_stats.failed_repos)
+            except Exception as exc:
+                logger.error("Secrets scanner failed: %s", exc, exc_info=True)
+                notifier.send_failure_alert(_config, f"Secrets scanner error: {exc}")
+
+            try:
+                with db.get_conn() as conn:
+                    unnotified_secrets = db.get_unnotified_secret_findings(conn)
+                    if unnotified_secrets:
+                        notifier.send_secrets_alert(_config, list(unnotified_secrets))
+                        db.mark_secret_findings_notified(conn, [r["id"] for r in unnotified_secrets])
+                        logger.info("Notifier: %d secrets alerted", len(unnotified_secrets))
+            except Exception as exc:
+                logger.error("Secrets notifier failed: %s", exc, exc_info=True)
+        else:
+            logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")
+
+        # ------------------------------------------------------------------
+        # Step 5 — Lifecycle reconciliation
         # ------------------------------------------------------------------
         try:
             with db.get_conn() as conn:
@@ -215,15 +308,25 @@ def _run_pipeline() -> None:
             logger.error("Lifecycle reconciliation failed: %s", exc, exc_info=True)
 
         # ------------------------------------------------------------------
-        # Step 5 — Notify (delta only)
+        # Step 6 — Notify findings (delta only, filtered by severity threshold)
         # ------------------------------------------------------------------
         try:
             with db.get_conn() as conn:
+                threshold  = st.get_severity_threshold(conn)
                 unnotified = db.get_unnotified_findings(conn)
                 if unnotified:
-                    notifier.send_findings_alert(_config, list(unnotified))
+                    # Mark ALL new findings as notified regardless of threshold so
+                    # they never accumulate in the unnotified queue.
                     db.mark_findings_notified(conn, [r["id"] for r in unnotified])
-                    logger.info("Notifier: %d findings alerted", len(unnotified))
+                    to_alert = _apply_severity_threshold(list(unnotified), threshold)
+                    if to_alert:
+                        notifier.send_findings_alert(_config, to_alert)
+                    logger.info(
+                        "Notifier: %d findings alerted (threshold: %s, %d suppressed below threshold)",
+                        len(to_alert),
+                        threshold,
+                        len(unnotified) - len(to_alert),
+                    )
         except Exception as exc:
             logger.error("Notifier failed: %s", exc, exc_info=True)
 
@@ -246,6 +349,20 @@ def _run_pipeline() -> None:
             _pipeline_status["running"] = False
             _pipeline_status["last_completed"] = datetime.now(timezone.utc).isoformat()
             _pipeline_status["last_status"] = "success"
+
+        duration = (datetime.now(timezone.utc) - _pipeline_start_time).total_seconds()
+        if _config:
+            try:
+                notifier.send_pipeline_summary_alert(
+                    _config,
+                    items_collected=items_collected,
+                    items_categorized=items_categorized,
+                    findings_new=findings_new_total,
+                    secrets_new=secrets_new_total,
+                    duration_secs=duration,
+                )
+            except Exception as exc:
+                logger.warning("Pipeline summary alert failed: %s", exc)
 
         logger.info("Pipeline run completed successfully")
 
@@ -303,7 +420,7 @@ def _reschedule(new_hours: float) -> None:
 async def lifespan(app: FastAPI):  # noqa: ARG001
     global _config, _scheduler
 
-    logger.info("Security Automation starting up")
+    logger.info("DIVE starting up")
 
     _config = cfg_module.load()
     logger.info(
@@ -331,12 +448,20 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         max_instances=1,
         replace_existing=True,
     )
+    _scheduler.add_job(
+        _run_weekly_digest,
+        trigger=CronTrigger(day_of_week="mon", hour=8, minute=0),
+        id="weekly_digest",
+        name="Weekly security digest",
+        max_instances=1,
+        replace_existing=True,
+    )
     _scheduler.start()
     logger.info("Scheduler started — pipeline runs every %.1f hours", interval)
 
     yield
 
-    logger.info("Security Automation shutting down")
+    logger.info("DIVE shutting down")
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
 
@@ -356,6 +481,20 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+def _replace_query_param(url: Any, key: str, value: Any) -> str:
+    """Jinja2 filter: replace or add a single query param while preserving others."""
+    from urllib.parse import urlencode, urlparse, parse_qs
+    parsed = urlparse(str(url))
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params[key] = [str(value)]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    from urllib.parse import urlunparse
+    return urlunparse(parsed._replace(query=new_query))
+
+
+templates.env.filters["replace_query_param"] = _replace_query_param
 
 _security = HTTPBasic()
 
@@ -386,6 +525,30 @@ def _require_auth(
 # ---------------------------------------------------------------------------
 # Template helpers
 # ---------------------------------------------------------------------------
+
+
+_SEVERITY_THRESHOLD_SCORES: dict[str, float | None] = {
+    "critical": 9.0,
+    "high":     7.0,
+    "medium":   4.0,
+    "low":      0.0,
+    "all":      None,  # no minimum score — include all findings
+}
+
+
+def _apply_severity_threshold(findings: list, threshold: str) -> list:
+    """Return only the findings at or above the configured severity threshold.
+
+    Findings with no CVSS score are excluded for every threshold except "all",
+    since their severity cannot be determined.
+    """
+    min_score = _SEVERITY_THRESHOLD_SCORES.get(threshold, 7.0)
+    if min_score is None:
+        return findings
+    return [
+        r for r in findings
+        if r["cvss_score"] is not None and r["cvss_score"] >= min_score
+    ]
 
 
 def _cvss_severity(score: float | None) -> tuple[str, str]:
@@ -433,6 +596,25 @@ def _enrich_news(row) -> dict:
     return d
 
 
+def _check_ollama_status() -> bool:
+    """Return True if Ollama is reachable and the configured model is loaded."""
+    if _config is None:
+        return False
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{_config.ollama.host}/api/tags")
+            if not resp.is_success:
+                return False
+            tags = resp.json()
+            model_base = _config.ollama.model.split(":")[0]
+            return any(
+                m.get("name", "").startswith(model_base)
+                for m in tags.get("models", [])
+            )
+    except Exception:
+        return False
+
+
 def _get_run_token() -> str:
     try:
         with db.get_conn() as conn:
@@ -450,6 +632,33 @@ def _get_current_model() -> str:
     except Exception:
         pass
     return _config.ollama.model if _config else "—"
+
+
+def _paginate(page: int, per_page: int, total: int) -> dict:
+    """Compute pagination metadata for a template."""
+    per_page = per_page if per_page in _PAGE_SIZE_OPTIONS else _DEFAULT_PAGE_SIZE
+    page = max(1, page)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    return {
+        "page":             page,
+        "per_page":         per_page,
+        "total":            total,
+        "total_pages":      total_pages,
+        "offset":           (page - 1) * per_page,
+        "has_prev":         page > 1,
+        "has_next":         page < total_pages,
+        "page_size_options": _PAGE_SIZE_OPTIONS,
+    }
+
+
+def _secrets_summary() -> dict:
+    """Return per-state counts from secret_findings."""
+    try:
+        with db.get_conn() as conn:
+            return db.get_secret_findings_summary(conn)
+    except Exception:
+        return {"new": 0, "false_positive": 0, "resolved": 0}
 
 
 def _findings_summary() -> dict:
@@ -492,8 +701,9 @@ async def dashboard(
 ) -> HTMLResponse:
     """Main dashboard — recent news + open findings summary."""
     with db.get_conn() as conn:
-        findings_rows = db.get_findings(conn, state="new", limit=10)
-        news_rows = db.get_recent_items(conn, hours=24, limit=15)
+        findings_rows  = db.get_findings(conn, state="new", limit=10)
+        news_rows      = db.get_recent_items(conn, hours=24, limit=15)
+        bookmarked_ids = db.get_bookmarked_ids(conn)
 
     return templates.TemplateResponse(request, "index.html", {
         "nav_active":      "dashboard",
@@ -502,6 +712,8 @@ async def dashboard(
         "recent_findings": [_enrich_finding(r) for r in findings_rows],
         "news_items":      [_enrich_news(r) for r in news_rows],
         "summary":         _findings_summary(),
+        "secrets_summary": _secrets_summary(),
+        "bookmarked_ids":  list(bookmarked_ids),
     })
 
 
@@ -511,11 +723,14 @@ async def findings_page(
     _user: Annotated[str, Depends(_require_auth)],
     state: str | None = None,
     repo: str | None = None,
+    page: int = 1,
+    per_page: int = 25,
 ) -> HTMLResponse:
-    """Findings table with filter controls."""
+    """Findings table with filter controls and pagination."""
     with db.get_conn() as conn:
-        rows = db.get_findings(conn, state=state, repo=repo, limit=500)
-        # Distinct repos for the filter dropdown
+        total = db.get_findings_count(conn, state=state, repo=repo)
+        pg = _paginate(page, per_page, total)
+        rows = db.get_findings(conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"])
         repo_rows = conn.execute(
             "SELECT DISTINCT repo_full_name FROM findings ORDER BY repo_full_name"
         ).fetchall()
@@ -528,6 +743,7 @@ async def findings_page(
         "state_filter": state,
         "repo_filter":  repo,
         "repos":        [r["repo_full_name"] for r in repo_rows],
+        "pagination":   pg,
     })
 
 
@@ -541,11 +757,134 @@ async def settings_page(
         current_interval = db.get_setting(conn, "run_interval_hours", "6")
 
     return templates.TemplateResponse(request, "settings.html", {
-        "nav_active":       "settings",
+        "nav_active":        "settings",
+        "run_token":         _get_run_token(),
+        "current_model":     _get_current_model(),
+        "current_interval":  current_interval,
+        "interval_options":  _INTERVAL_OPTIONS,
+        "interval_values":   [v for v, _ in _INTERVAL_OPTIONS],
+    })
+
+
+@app.get("/secrets", response_class=HTMLResponse)
+async def secrets_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    state: str | None = None,
+    repo: str | None = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> HTMLResponse:
+    """Secrets view — leaked credentials detected by gitleaks."""
+    with db.get_conn() as conn:
+        total = db.get_secret_findings_count(conn, state=state, repo=repo)
+        pg = _paginate(page, per_page, total)
+        rows = db.get_secret_findings(conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"])
+        repo_rows = conn.execute(
+            "SELECT DISTINCT repo_full_name FROM secret_findings ORDER BY repo_full_name"
+        ).fetchall()
+
+    return templates.TemplateResponse(request, "secrets.html", {
+        "nav_active":   "secrets",
+        "run_token":    _get_run_token(),
+        "current_model": _get_current_model(),
+        "secrets":      [dict(r) for r in rows],
+        "state_filter": state,
+        "repo_filter":  repo,
+        "repos":        [r["repo_full_name"] for r in repo_rows],
+        "pagination":   pg,
+    })
+
+
+@app.get("/personal", response_class=HTMLResponse)
+async def personal_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> HTMLResponse:
+    """Personal workspace — bookmarks and annotated findings."""
+    with db.get_conn() as conn:
+        bookmarks        = db.get_bookmarks(conn)
+        annotated        = db.get_annotated_findings(conn)
+
+    enriched_annotated = [_enrich_finding(r) for r in annotated]
+
+    return templates.TemplateResponse(request, "personal.html", {
+        "nav_active":    "personal",
+        "run_token":     _get_run_token(),
+        "current_model": _get_current_model(),
+        "bookmarks":     [dict(r) for r in bookmarks],
+        "annotated":     enriched_annotated,
+    })
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def history_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> HTMLResponse:
+    """History view — trend charts and source reliability."""
+    return templates.TemplateResponse(request, "history.html", {
+        "nav_active":    "history",
+        "run_token":     _get_run_token(),
+        "current_model": _get_current_model(),
+    })
+
+
+@app.get("/weekly", response_class=HTMLResponse)
+async def weekly_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> HTMLResponse:
+    """Weekly summary view — most recent Monday digest."""
+    with db.get_conn() as conn:
+        digest = db.get_weekly_digest(conn)
+
+    return templates.TemplateResponse(request, "weekly.html", {
+        "nav_active":    "weekly",
+        "run_token":     _get_run_token(),
+        "current_model": _get_current_model(),
+        "digest":        digest,
+    })
+
+
+@app.get("/news", response_class=HTMLResponse)
+async def news_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    category: str | None = None,
+    severity: str | None = None,
+    search: str | None = None,
+    page: int = 1,
+    per_page: int = 25,
+) -> HTMLResponse:
+    """All news items with category/severity/search filters and pagination."""
+    with db.get_conn() as conn:
+        total = db.get_news_items_count(conn, category=category, severity=severity, search=search)
+        pg = _paginate(page, per_page, total)
+        rows = db.get_news_items_paginated(
+            conn,
+            category=category,
+            severity=severity,
+            search=search,
+            limit=pg["per_page"],
+            offset=pg["offset"],
+        )
+        bookmarked_ids = db.get_bookmarked_ids(conn)
+        cat_rows = conn.execute(
+            "SELECT DISTINCT category FROM news_items WHERE category IS NOT NULL ORDER BY category"
+        ).fetchall()
+
+    return templates.TemplateResponse(request, "news.html", {
+        "nav_active":       "news",
         "run_token":        _get_run_token(),
         "current_model":    _get_current_model(),
-        "current_interval": current_interval,
-        "interval_options": _INTERVAL_OPTIONS,
+        "news_items":       [_enrich_news(r) for r in rows],
+        "bookmarked_ids":   list(bookmarked_ids),
+        "categories":       [r["category"] for r in cat_rows],
+        "category_filter":  category,
+        "severity_filter":  severity,
+        "search_filter":    search,
+        "pagination":       pg,
     })
 
 
@@ -559,7 +898,19 @@ async def health() -> JSONResponse:
     """Health check — intentionally unauthenticated. Used by Docker HEALTHCHECK."""
     with _pipeline_lock:
         pipeline = dict(_pipeline_status)
-    return JSONResponse({"status": "ok", "version": "0.1.0", "pipeline": pipeline})
+    next_run: str | None = None
+    if _scheduler:
+        job = _scheduler.get_job("pipeline")
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+    ollama_ok = await asyncio.to_thread(_check_ollama_status)
+    return JSONResponse({
+        "status":       "ok",
+        "version":      "0.1.0",
+        "pipeline":     pipeline,
+        "next_run":     next_run,
+        "ollama_ok":    ollama_ok,
+    })
 
 
 @app.post("/api/run")
@@ -688,6 +1039,244 @@ async def reopen_finding(
     return JSONResponse({"status": "new", "finding_id": finding_id})
 
 
+@app.get("/api/secrets")
+async def get_secrets_api(
+    _user: Annotated[str, Depends(_require_auth)],
+    state: str | None = None,
+    repo: str | None = None,
+    limit: int = 100,
+) -> JSONResponse:
+    """Return secret findings as JSON, optionally filtered by state and/or repo."""
+    with db.get_conn() as conn:
+        rows = db.get_secret_findings(conn, state=state, repo=repo, limit=min(limit, 500))
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/secrets/{finding_id}/false-positive")
+async def mark_secret_false_positive(
+    finding_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Mark a secret finding as a false positive — suppresses future re-reporting."""
+    with db.get_conn() as conn:
+        updated = db.mark_secret_finding_false_positive(conn, finding_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Finding not found or not in 'new' state")
+    return JSONResponse({"status": "false_positive", "finding_id": finding_id})
+
+
+@app.post("/api/secrets/{finding_id}/resolve")
+async def resolve_secret_finding(
+    finding_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Mark a secret finding as resolved (credential revoked and history cleaned)."""
+    with db.get_conn() as conn:
+        updated = db.mark_secret_finding_resolved(conn, finding_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Finding not found or already resolved")
+    return JSONResponse({"status": "resolved", "finding_id": finding_id})
+
+
+# ---------------------------------------------------------------------------
+# Config API — feeds, keywords, toggles, scanner settings
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/config/feeds")
+async def list_feeds(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Return all RSS feeds with their enabled state and fetch stats."""
+    with db.get_conn() as conn:
+        rows = st.get_feeds(conn)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/config/feeds")
+async def add_feed(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Add a new RSS feed after validating it is a reachable RSS/Atom URL."""
+    body = await request.json()
+    url  = str(body.get("url",  "")).strip()
+    name = str(body.get("name", "")).strip()
+
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    is_valid = await asyncio.to_thread(_validate_feed_url, url)
+    if not is_valid:
+        raise HTTPException(
+            status_code=422,
+            detail="URL does not appear to be a valid RSS/Atom feed or is unreachable.",
+        )
+
+    try:
+        with db.get_conn() as conn:
+            row = st.add_feed(conn, name, url)
+        return JSONResponse(dict(row), status_code=201)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.patch("/api/config/feeds/{feed_id}")
+async def toggle_feed(
+    feed_id: int,
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Enable or disable a feed. Body: {\"enabled\": true|false}"""
+    body = await request.json()
+    if "enabled" not in body:
+        raise HTTPException(status_code=400, detail="enabled field required")
+    with db.get_conn() as conn:
+        updated = st.set_feed_enabled(conn, feed_id, bool(body["enabled"]))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Feed not found")
+    return JSONResponse({"status": "updated", "feed_id": feed_id, "enabled": bool(body["enabled"])})
+
+
+@app.delete("/api/config/feeds/{feed_id}")
+async def delete_feed(
+    feed_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Delete a user-added feed. Default feeds cannot be deleted."""
+    try:
+        with db.get_conn() as conn:
+            deleted = st.remove_feed(conn, feed_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Feed not found")
+        return JSONResponse({"status": "deleted", "feed_id": feed_id})
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.get("/api/config/keywords")
+async def list_keywords(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Return all keywords in the watchlist."""
+    with db.get_conn() as conn:
+        rows = st.get_keywords(conn)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/config/keywords")
+async def add_keyword(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Add a keyword to the watchlist."""
+    body = await request.json()
+    keyword = str(body.get("keyword", "")).strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="keyword is required")
+    try:
+        with db.get_conn() as conn:
+            row = st.add_keyword(conn, keyword)
+        return JSONResponse(dict(row), status_code=201)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.delete("/api/config/keywords/{keyword_id}")
+async def delete_keyword(
+    keyword_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Remove a keyword from the watchlist."""
+    with db.get_conn() as conn:
+        deleted = st.remove_keyword(conn, keyword_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Keyword not found")
+    return JSONResponse({"status": "deleted", "keyword_id": keyword_id})
+
+
+@app.get("/api/config/toggles")
+async def get_toggles(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Return current state of all feature toggles."""
+    with db.get_conn() as conn:
+        toggles = st.get_feature_toggles(conn)
+    meta = {k: {"label": v["label"], "enabled": toggles[k]} for k, v in st.FEATURE_TOGGLES.items()}
+    return JSONResponse(meta)
+
+
+@app.post("/api/config/toggles")
+async def update_toggles(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Update one or more feature toggles. Body: {\"<key>\": true|false, ...}"""
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+    errors: list[str] = []
+    with db.get_conn() as conn:
+        for key, value in body.items():
+            try:
+                st.set_feature_toggle(conn, key, bool(value))
+            except ValueError as exc:
+                errors.append(str(exc))
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+    return JSONResponse({"status": "updated"})
+
+
+@app.get("/api/config/scanner")
+async def get_scanner_settings(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Return scanner settings: severity threshold and excluded repos."""
+    with db.get_conn() as conn:
+        return JSONResponse({
+            "severity_threshold": st.get_severity_threshold(conn),
+            "excluded_repos":     st.get_excluded_repos(conn),
+            "severity_levels":    st.SEVERITY_LEVELS,
+        })
+
+
+@app.post("/api/config/scanner")
+async def update_scanner_settings(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Update scanner settings."""
+    body = await request.json()
+    with db.get_conn() as conn:
+        if "severity_threshold" in body:
+            try:
+                st.set_severity_threshold(conn, str(body["severity_threshold"]))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        if "excluded_repos" in body:
+            repos = body["excluded_repos"]
+            if not isinstance(repos, list):
+                raise HTTPException(status_code=400, detail="excluded_repos must be a list")
+            st.set_excluded_repos(conn, [str(r) for r in repos])
+    return JSONResponse({"status": "updated"})
+
+
+def _validate_feed_url(url: str) -> bool:
+    """Return True if url is a reachable RSS/Atom feed. Runs in a thread pool."""
+    import feedparser
+    import httpx as _httpx
+    try:
+        with _httpx.Client(timeout=10, follow_redirects=True) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+        return bool(feed.feed.get("title") or feed.entries)
+    except Exception:
+        return False
+
+
 @app.get("/api/settings")
 async def get_settings(
     _user: Annotated[str, Depends(_require_auth)],
@@ -729,6 +1318,253 @@ async def update_settings(
             logger.info("Active model changed to: %s", model)
 
     return JSONResponse({"status": "updated"})
+
+
+# ---------------------------------------------------------------------------
+# Personal workspace API
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/news/{item_id}/bookmark")
+async def toggle_bookmark(
+    item_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Toggle bookmark on a news item. Returns current bookmarked state."""
+    with db.get_conn() as conn:
+        if db.is_bookmarked(conn, item_id):
+            db.remove_bookmark(conn, item_id)
+            return JSONResponse({"bookmarked": False})
+        else:
+            db.add_bookmark(conn, item_id)
+            return JSONResponse({"bookmarked": True})
+
+
+@app.get("/api/bookmarks")
+async def list_bookmarks(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    with db.get_conn() as conn:
+        rows = db.get_bookmarks(conn)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.post("/api/findings/{finding_id}/annotate")
+async def annotate_finding(
+    finding_id: int,
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Set or clear a personal annotation on a finding."""
+    body = await request.json()
+    text = str(body.get("annotation", "")).strip()
+    with db.get_conn() as conn:
+        updated = db.set_finding_annotation(conn, finding_id, text or None)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return JSONResponse({"annotation": text or None})
+
+
+# ---------------------------------------------------------------------------
+# Data export API
+# ---------------------------------------------------------------------------
+
+
+def _findings_to_csv(rows) -> str:
+    output = io.StringIO()
+    fieldnames = [
+        "id", "repo_full_name", "cve_id", "ghsa_id", "package_name",
+        "package_ecosystem", "installed_version", "fixed_version",
+        "cvss_score", "is_kev", "patch_available", "priority_score",
+        "state", "first_seen_at", "last_seen_at", "resolved_at",
+        "manifest_path", "annotation", "github_issue_url",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(dict(r))
+    return output.getvalue()
+
+
+def _news_to_csv(rows) -> str:
+    output = io.StringIO()
+    fieldnames = [
+        "id", "title", "url", "source", "published_at", "fetched_at",
+        "summary", "category", "severity", "affected_products", "tags",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(dict(r))
+    return output.getvalue()
+
+
+@app.get("/api/export/findings")
+async def export_findings(
+    _user: Annotated[str, Depends(_require_auth)],
+    format: str = "json",
+) -> StreamingResponse:
+    """Export all findings as JSON or CSV."""
+    with db.get_conn() as conn:
+        rows = db.get_findings_for_export(conn)
+
+    if format == "csv":
+        content = _findings_to_csv(rows)
+        return StreamingResponse(
+            io.StringIO(content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=findings.csv"},
+        )
+
+    data = [dict(r) for r in rows]
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    return StreamingResponse(
+        io.StringIO(content),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=findings.json"},
+    )
+
+
+@app.get("/api/export/news")
+async def export_news(
+    _user: Annotated[str, Depends(_require_auth)],
+    format: str = "json",
+) -> StreamingResponse:
+    """Export the full news archive as JSON or CSV."""
+    with db.get_conn() as conn:
+        rows = db.get_news_items_for_export(conn)
+
+    if format == "csv":
+        content = _news_to_csv(rows)
+        return StreamingResponse(
+            io.StringIO(content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=news.csv"},
+        )
+
+    data = [dict(r) for r in rows]
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    return StreamingResponse(
+        io.StringIO(content),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=news.json"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Data management API
+# ---------------------------------------------------------------------------
+
+
+@app.delete("/api/data/clear")
+async def clear_data(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Delete selected data types, optionally scoped to items older than N days.
+
+    Body: {"types": ["news", "findings", "secrets", "run_history"], "days_back": 30}
+    Omit days_back (or set null) to delete all records of the selected types.
+    """
+    body = await request.json()
+    types = body.get("types") or []
+    days_back = body.get("days_back")
+
+    if days_back is not None:
+        try:
+            days_back = int(days_back)
+            if days_back <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="days_back must be a positive integer")
+
+    valid_types = {"news", "findings", "secrets", "run_history"}
+    unknown = set(types) - valid_types
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown types: {sorted(unknown)}")
+
+    deleted: dict[str, int] = {}
+    with db.get_conn() as conn:
+        if "news" in types:
+            deleted["news"] = db.clear_news_items(conn, days_back=days_back)
+        if "findings" in types:
+            deleted["findings"] = db.clear_findings(conn, days_back=days_back)
+        if "secrets" in types:
+            deleted["secrets"] = db.clear_secret_findings(conn, days_back=days_back)
+        if "run_history" in types:
+            deleted["run_history"] = db.clear_run_history(conn, days_back=days_back)
+
+    total = sum(deleted.values())
+    logger.info("Data cleared by user: %s (days_back=%s, total=%d)", deleted, days_back, total)
+    return JSONResponse({"status": "cleared", "deleted": deleted, "total": total})
+
+
+# ---------------------------------------------------------------------------
+# History API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/history/news-trend")
+async def api_news_trend(
+    _user: Annotated[str, Depends(_require_auth)],
+    days: int = 30,
+) -> JSONResponse:
+    days = min(max(days, 1), 365)
+    with db.get_conn() as conn:
+        rows = db.get_news_trend(conn, days=days)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/history/findings-trend")
+async def api_findings_trend(
+    _user: Annotated[str, Depends(_require_auth)],
+    days: int = 30,
+) -> JSONResponse:
+    days = min(max(days, 1), 365)
+    with db.get_conn() as conn:
+        rows = db.get_findings_by_day(conn, days=days)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/history/sources")
+async def api_source_stats(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    with db.get_conn() as conn:
+        rows = db.get_source_stats(conn)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/history/runs")
+async def api_run_history(
+    _user: Annotated[str, Depends(_require_auth)],
+    limit: int = 30,
+) -> JSONResponse:
+    with db.get_conn() as conn:
+        rows = db.get_run_history(conn, limit=min(limit, 100))
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/history/feed-analytics")
+async def api_feed_analytics(
+    _user: Annotated[str, Depends(_require_auth)],
+    days: int = 30,
+) -> JSONResponse:
+    days = min(max(days, 1), 365)
+    with db.get_conn() as conn:
+        rows = db.get_feed_analytics(conn, days=days)
+    return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/weekly")
+async def api_weekly_digest(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    with db.get_conn() as conn:
+        digest = db.get_weekly_digest(conn)
+    if digest is None:
+        return JSONResponse({"detail": "No digest available yet"}, status_code=404)
+    return JSONResponse(digest)
 
 
 if __name__ == "__main__":

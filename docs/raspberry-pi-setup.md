@@ -4,7 +4,7 @@ This guide installs and configures everything the project needs on your Raspberr
 
 **Time:** approximately 30 minutes.
 
-← [Credential Preparation](mac-preparation.md) | Back to [Setup Guide](../SETUP.md) | Next: [Tailscale — Remote Access](tailscale-setup.md) →
+← [Credential Preparation](mac-preparation.md) | Back to [Setup Guide](setup.md) | Next: [Tailscale — Remote Access](tailscale-setup.md) →
 
 ---
 
@@ -87,7 +87,7 @@ $ sudo apt install python3.11 -y
 
 ## Step 4 — Install Ollama
 
-Ollama is the software that runs AI models locally on the Pi. Think of it as the engine — the AI model (`qwen2.5:3b`) is what runs inside it. See [MODELS.md](../MODELS.md) for a full explanation of how Ollama and models work together.
+Ollama is the software that runs AI models locally on the Pi. Think of it as the engine — the AI model (`qwen2.5:3b`) is what runs inside it. See [MODELS.md](models.md) for a full explanation of how Ollama and models work together.
 
 ```bash
 $ curl -fsSL https://ollama.com/install.sh | sh
@@ -175,20 +175,20 @@ $ ollama list
 ```
 You should see `qwen2.5:3b` in the list with its file size shown.
 
-> Want to use a different model or understand what "3b" means? See [MODELS.md](../MODELS.md).
+> Want to use a different model or understand what "3b" means? See [MODELS.md](models.md).
 
 ---
 
 ## Step 7 — Download the Project
 
 ```bash
-$ git clone https://github.com/<your-username>/security-automation.git
+$ git clone https://github.com/<your-username>/dive.git
 ```
 - `git clone` — downloads a complete copy of the project repository from GitHub to your Pi.
 - Replace `<your-username>` with your actual GitHub username.
 
 ```bash
-$ cd security-automation
+$ cd dive
 ```
 - `cd` — "change directory". Moves you into the project folder. All remaining commands in this guide must be run from inside this folder.
 
@@ -331,20 +331,20 @@ You should see entries for SSH (`22`) and port `8000` showing as `ALLOW`.
 A systemd service is a background program that starts automatically when the Pi boots and restarts automatically if it ever crashes.
 
 ```bash
-$ sudo cp security-automation.service /etc/systemd/system/security-automation.service
+$ sudo cp dive.service /etc/systemd/system/dive.service
 ```
 - Copies the service configuration template (included in the project) to the folder where systemd looks for service definitions.
 
 Open the file to update the username and paths for your specific Pi:
 ```bash
-$ sudo nano /etc/systemd/system/security-automation.service
+$ sudo nano /etc/systemd/system/dive.service
 ```
 
 Find these three lines and update them. Replace `pi` with your Pi's actual username, and make sure the path matches where you cloned the project:
 ```
 User=pi
-WorkingDirectory=/home/pi/security-automation
-ExecStart=/home/pi/security-automation/venv/bin/python main.py
+WorkingDirectory=/home/pi/dive
+ExecStart=/home/pi/dive/venv/bin/python main.py
 ```
 
 Save and close (`Ctrl+X`, `Y`, `Enter`).
@@ -356,25 +356,25 @@ $ sudo systemctl daemon-reload
 - Tells systemd to re-read all service files. Required after adding or editing any service.
 
 ```bash
-$ sudo systemctl enable security-automation
+$ sudo systemctl enable dive
 ```
 - `enable` — marks this service to start automatically every time the Pi boots.
 
 ```bash
-$ sudo systemctl start security-automation
+$ sudo systemctl start dive
 ```
 - `start` — starts the service right now, without needing to reboot.
 
 Confirm it's running:
 ```bash
-$ sudo systemctl status security-automation
+$ sudo systemctl status dive
 ```
 Look for `Active: active (running)`. If you see an error, check the logs to find out what went wrong:
 ```bash
-$ journalctl -u security-automation -n 50
+$ journalctl -u dive -n 50
 ```
 - `journalctl` — views logs produced by systemd services.
-- `-u security-automation` — filters to show only logs from this service.
+- `-u dive` — filters to show only logs from this service.
 - `-n 50` — shows the last 50 lines.
 
 ---
@@ -384,7 +384,7 @@ $ journalctl -u security-automation -n 50
 Without log rotation, the app's log file grows indefinitely and can fill up your storage over weeks or months.
 
 ```bash
-$ sudo cp security-automation.logrotate /etc/logrotate.d/security-automation
+$ sudo cp dive.logrotate /etc/logrotate.d/dive
 ```
 - Copies the logrotate configuration template (included in the project) to the folder where logrotate checks for configurations.
 
@@ -396,7 +396,7 @@ This sets logrotate to:
 
 Verify the configuration has no errors:
 ```bash
-$ sudo logrotate --debug /etc/logrotate.d/security-automation
+$ sudo logrotate --debug /etc/logrotate.d/dive
 ```
 - `--debug` — performs a dry run without actually rotating anything. If no errors appear in the output, the configuration is correct.
 
@@ -407,7 +407,7 @@ $ sudo logrotate --debug /etc/logrotate.d/security-automation
 Check that both services are running:
 ```bash
 $ sudo systemctl status ollama
-$ sudo systemctl status security-automation
+$ sudo systemctl status dive
 ```
 Both should show `Active: active (running)`.
 
@@ -452,4 +452,4 @@ Your Pi is fully set up. The pipeline will run automatically every 6 hours and s
 
 **Next steps:**
 - Set up remote access from anywhere → [Tailscale — Remote Access](tailscale-setup.md)
-- Change the AI model → [MODELS.md](../MODELS.md)
+- Change the AI model → [MODELS.md](models.md)

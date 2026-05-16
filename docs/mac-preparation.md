@@ -4,7 +4,7 @@ Before touching the Raspberry Pi, you need to create the credentials the project
 
 **Time:** approximately 10 minutes.
 
-← Back to [Setup Guide](../SETUP.md) | Next: [Raspberry Pi Setup](raspberry-pi-setup.md) →
+← Back to [Setup Guide](setup.md) | Next: [Raspberry Pi Setup](raspberry-pi-setup.md) →
 
 ---
 
@@ -32,7 +32,7 @@ This guide uses a **fine-grained PAT**, which lets you grant the minimum permiss
 3. Scroll all the way to the bottom of the left sidebar → click **Developer settings**
 4. Click **Personal access tokens** → **Fine-grained tokens**
 5. Click **Generate new token**
-6. In the **Token name** field, type: `security-automation`
+6. In the **Token name** field, type: `dive`
 7. Set **Expiration** to **90 days** (or choose a shorter period — you will need to regenerate it when it expires, and update `config.yaml` with the new token)
 8. Under **Resource owner**, select your personal account
 9. Under **Repository access**, select **All repositories** *(or choose specific repos if you prefer to limit scope)*
@@ -54,7 +54,7 @@ A webhook URL is a special address you send messages to, and Slack automatically
 
 1. Go to **api.slack.com/apps** and sign in to your Slack account
 2. Click **Create New App** → choose **From scratch**
-3. Name it `Security Automation`, select your workspace from the dropdown → click **Create App**
+3. Name it `DIVE`, select your workspace from the dropdown → click **Create App**
 4. In the left sidebar under **Features**, click **Incoming Webhooks**
 5. Toggle **Activate Incoming Webhooks** to **On** (the toggle turns blue)
 6. Click **Add New Webhook to Workspace** (at the bottom of the page)
@@ -72,7 +72,7 @@ Keep this URL somewhere safe — anyone with it can post messages to your Slack 
 2. Click the gear icon (⚙️) next to the channel name to open **Channel Settings**
 3. In the left sidebar, click **Integrations**
 4. Click **Webhooks** → **New Webhook**
-5. Give it a name like `Security Automation`
+5. Give it a name like `DIVE`
 6. Click **Copy Webhook URL**
 
 ---
@@ -85,7 +85,7 @@ Regular Gmail passwords won't work for sending email from an app. When 2-Step Ve
 2. Confirm that **2-Step Verification** is turned on. If it's not, click it and follow the steps to enable it — this is required before App Passwords become available
 3. In the search bar at the top of the page, type **App passwords** and click the result
 4. Under "Select app", choose **Mail**
-5. Under "Select device", choose **Other (custom name)**, type `Security Automation` → click **Generate**
+5. Under "Select device", choose **Other (custom name)**, type `DIVE` → click **Generate**
 6. A 16-character password will appear (formatted as four groups of four letters). Copy it — this is your SMTP password. Google will not show it again
 
 > This app password only works for sending email — it cannot be used to log into your Gmail account.

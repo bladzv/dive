@@ -11,7 +11,7 @@ Sources:
     GitHub SA  — GitHub Security Advisories (recent, via REST API)
 
 All items are deduplicated by SHA-256 of the URL before insertion.
-HTTP requests use: 30s timeout, no auto-redirects, 10 MB response cap.
+HTTP requests use: 30s timeout, up to 5 redirects, 10 MB response cap.
 HTTP (non-TLS) source URLs are logged as warnings.
 """
 
@@ -30,6 +30,7 @@ import feedparser
 import httpx
 
 import db
+import settings as settings_module
 from config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,9 @@ DEFAULT_RSS_FEEDS: list[tuple[str, str]] = [
     ("Krebs on Security", "https://krebsonsecurity.com/feed/"),
     ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
     ("SANS ISC", "https://isc.sans.edu/rssfeed_full.xml"),
-    ("Cisco Talos", "https://blog.talosintelligence.com/feeds/posts/default"),
+    ("Cisco Talos", "https://blog.talosintelligence.com/rss/"),
     ("Palo Alto Unit 42", "https://unit42.paloaltonetworks.com/feed/"),
-    ("Google Mandiant", "https://www.mandiant.com/resources/blog/rss.xml"),
+    ("Google Mandiant", "https://cloud.google.com/blog/topics/threat-intelligence/rss/"),
     ("CrowdStrike Blog", "https://www.crowdstrike.com/blog/feed/"),
     ("Dark Reading", "https://www.darkreading.com/rss_simple.asp"),
 ]
@@ -107,9 +108,10 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> CollectorStats:
 
 def _make_client() -> httpx.Client:
     return httpx.Client(
-        follow_redirects=False,
+        follow_redirects=True,
+        max_redirects=5,
         timeout=_HTTP_TIMEOUT,
-        headers={"User-Agent": "security-automation/0.1 (self-hosted)"},
+        headers={"User-Agent": "dive/0.1 (self-hosted)"},
     )
 
 
@@ -141,7 +143,9 @@ def _run_rss(
     conn: sqlite3.Connection,
     stats: CollectorStats,
 ) -> None:
-    for name, url in DEFAULT_RSS_FEEDS:
+    feeds = settings_module.get_enabled_feeds(conn)
+    for feed_row in feeds:
+        name, url = feed_row["name"], feed_row["url"]
         try:
             _fetch_rss_feed(client, conn, name, url, stats)
         except Exception as exc:
@@ -193,6 +197,7 @@ def _fetch_rss_feed(
         if db.insert_news_item(conn, item):
             stats.items_new += 1
 
+    settings_module.update_feed_stats(conn, url, _utcnow(), len(feed.entries))
     logger.debug("RSS %s: %d entries processed", name, len(feed.entries))
 
 

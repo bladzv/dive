@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — Security Automation{% endblock %}
+{% block title %}Dashboard — DIVE{% endblock %}
 
 {% block content %}
 <div class="page-heading">
@@ -33,6 +33,12 @@
     <div class="stat-number" style="color:var(--success)">{{ summary.resolved }}</div>
     <div class="stat-label">Resolved</div>
   </div>
+  <div class="stat-card {{ 'stat-critical' if secrets_summary.new > 0 else '' }}">
+    <a href="/secrets?state=new" style="text-decoration:none;color:inherit">
+      <div class="stat-number">{{ secrets_summary.new }}</div>
+      <div class="stat-label">Secrets</div>
+    </a>
+  </div>
 </div>
 
 <div class="grid-2">
@@ -40,8 +46,11 @@
   <!-- ── Open findings (new only) ──────────────────── -->
   <div class="card">
     <div class="card-title">
-      🚨 Open Findings
-      <a href="/findings?state=new" style="float:right;text-transform:none;font-size:0.78rem;font-weight:400">View all →</a>
+      Open Findings
+      <span style="float:right;display:flex;gap:0.35rem;text-transform:none;font-weight:400">
+        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm" style="font-size:0.68rem">CSV</a>
+        <a href="/findings?state=new" style="font-size:0.78rem;line-height:2">View all →</a>
+      </span>
     </div>
 
     {% if recent_findings %}
@@ -80,7 +89,7 @@
     </div>
     {% else %}
     <div class="empty-state">
-      <div class="empty-icon">🎉</div>
+      <div class="empty-icon">&#9989;</div>
       <p>No open findings. Looking clean!</p>
     </div>
     {% endif %}
@@ -88,38 +97,73 @@
 
   <!-- ── Security news feed ────────────────────────── -->
   <div class="card">
-    <div class="card-title">📰 Security News</div>
+    <div class="card-title">
+      Security News
+      <span style="float:right;display:flex;gap:0.35rem;text-transform:none;font-weight:400">
+        <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm" style="font-size:0.68rem">CSV</a>
+        <a href="/news" style="font-size:0.78rem;line-height:2">View all →</a>
+      </span>
+    </div>
 
     {% if news_items %}
       {% for item in news_items %}
-      <div class="news-item">
-        <div class="news-title">
-          <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+      <div class="news-item" id="ni-{{ item.id }}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.4rem">
+          <div style="flex:1;min-width:0">
+            <div class="news-title">
+              <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+            </div>
+            <div class="news-meta">
+              <span>{{ item.source }}</span>
+              {% if item.category %}
+              <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
+              {% endif %}
+              {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+              <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
+              {% endif %}
+              <span>{{ item.time_ago }}</span>
+            </div>
+            {% if item.summary %}
+            <div class="news-summary">
+              {{ item.summary[:220] }}{% if item.summary | length > 220 %}…{% endif %}
+            </div>
+            {% endif %}
+          </div>
+          <button class="bm-btn" id="bm-btn-{{ item.id }}"
+                  onclick="toggleBookmark({{ item.id }})"
+                  title="Bookmark"
+                  style="background:none;border:none;cursor:pointer;font-size:1rem;
+                         padding:0.15rem;line-height:1;flex-shrink:0;color:var(--text-dim)">
+            {{ '🔖' if item.id in bookmarked_ids else '🔗' }}
+          </button>
         </div>
-        <div class="news-meta">
-          <span>{{ item.source }}</span>
-          {% if item.category %}
-          <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
-          {% endif %}
-          {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
-          <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
-          {% endif %}
-          <span>{{ item.time_ago }}</span>
-        </div>
-        {% if item.summary %}
-        <div class="news-summary">
-          {{ item.summary[:220] }}{% if item.summary | length > 220 %}…{% endif %}
-        </div>
-        {% endif %}
       </div>
       {% endfor %}
     {% else %}
     <div class="empty-state">
-      <div class="empty-icon">📭</div>
+      <div class="empty-icon">&#128237;</div>
       <p>No recent news. Run the pipeline to collect.</p>
     </div>
     {% endif %}
   </div>
 
 </div><!-- /.grid-2 -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleBookmark(itemId) {
+  fetch('/api/news/' + itemId + '/bookmark', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  .then(r => r.json())
+  .then(data => {
+    const btn = document.getElementById('bm-btn-' + itemId);
+    if (btn) btn.textContent = data.bookmarked ? '🔖' : '🔗';
+    showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+  })
+  .catch(() => showToast('Failed to toggle bookmark', 'error'));
+}
+</script>
 {% endblock %}

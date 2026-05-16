@@ -126,9 +126,11 @@ def test_parse_response_valid_array():
     assert result[0]["category"] == "Vulnerability"
 
 
-def test_parse_response_wrong_count_returns_none():
+def test_parse_response_wrong_count_returns_partial():
+    # Count mismatch: return what the model gave us rather than discarding everything.
     data = [_valid_result(), _valid_result()]
-    assert _parse_response(json.dumps(data), expected_count=1) is None
+    result = _parse_response(json.dumps(data), expected_count=1)
+    assert result == data
 
 
 def test_parse_response_invalid_json_returns_none():

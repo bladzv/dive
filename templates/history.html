@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block title %}History — DIVE{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>History</h1>
+  <div style="display:flex;gap:0.5rem;align-items:center">
+    <label style="font-size:0.8rem;color:var(--text-dim)">Days:</label>
+    <select id="days-select" style="max-width:100px;padding:0.3rem 0.5rem;font-size:0.8rem"
+            onchange="loadAll()">
+      <option value="7">7</option>
+      <option value="14">14</option>
+      <option value="30" selected>30</option>
+      <option value="90">90</option>
+    </select>
+  </div>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:1.25rem">
+
+  <!-- ── News trend ─────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title">📈 News Items Collected</div>
+    <div style="position:relative;height:220px">
+      <canvas id="news-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Findings trend ────────────────────────────── -->
+  <div class="card">
+    <div class="card-title">🔍 New Findings per Day</div>
+    <div style="position:relative;height:180px">
+      <canvas id="findings-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- ── Source reliability ─────────────────────────── -->
+  <div class="card">
+    <div class="card-title">📡 Source Reliability</div>
+    <div id="sources-wrap">
+      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+    </div>
+  </div>
+
+  <!-- ── Recent runs ────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title">Pipeline Runs</div>
+    <div id="runs-wrap">
+      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+    </div>
+  </div>
+
+  <!-- ── Feed analytics ────────────────────────────── -->
+  <div class="card">
+    <div class="card-title">Feed Analytics — Items per Source</div>
+    <div style="position:relative;height:260px">
+      <canvas id="feed-chart"></canvas>
+    </div>
+    <div id="feed-table-wrap" style="margin-top:1.25rem">
+      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const SEVERITY_COLORS = {
+  'Critical': '#ef4444',
+  'High':     '#f97316',
+  'Medium':   '#eab308',
+  'Low':      '#3b82f6',
+  'Unknown':  '#6b7280',
+};
+
+let _newsChart = null;
+let _findingsChart = null;
+
+/* ── Utilities ──────────────────────────────────────── */
+function getDays() {
+  return parseInt(document.getElementById('days-select').value, 10);
+}
+
+function buildDateRange(days) {
+  const dates = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+/* ── News trend chart ───────────────────────────────── */
+function renderNewsChart(rows) {
+  const days = getDays();
+  const labels = buildDateRange(days);
+
+  // Build a lookup: day → { severity: count }
+  const lookup = {};
+  rows.forEach(r => {
+    if (!lookup[r.day]) lookup[r.day] = {};
+    lookup[r.day][r.severity] = (lookup[r.day][r.severity] || 0) + r.count;
+  });
+
+  const severities = ['Critical', 'High', 'Medium', 'Low', 'Unknown'];
+  const datasets = severities.map(sev => ({
+    label: sev,
+    data:  labels.map(d => (lookup[d] && lookup[d][sev]) || 0),
+    backgroundColor: SEVERITY_COLORS[sev] + 'cc',
+    borderColor:     SEVERITY_COLORS[sev],
+    borderWidth: 1,
+    stack: 'news',
+  }));
+
+  const ctx = document.getElementById('news-chart').getContext('2d');
+  if (_newsChart) _newsChart.destroy();
+  _newsChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#c9d1e0', font: { size: 11 } } },
+        tooltip: { mode: 'index' },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
+        y: { stacked: true, ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+/* ── Findings trend chart ───────────────────────────── */
+function renderFindingsChart(rows) {
+  const days = getDays();
+  const labels = buildDateRange(days);
+  const lookup = {};
+  rows.forEach(r => { lookup[r.day] = r.count; });
+
+  const ctx = document.getElementById('findings-chart').getContext('2d');
+  if (_findingsChart) _findingsChart.destroy();
+  _findingsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'New Findings',
+        data:  labels.map(d => lookup[d] || 0),
+        borderColor: '#6366f1',
+        backgroundColor: 'rgba(99,102,241,0.15)',
+        borderWidth: 2,
+        pointRadius: 3,
+        fill: true,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { mode: 'index' },
+      },
+      scales: {
+        x: { ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
+        y: { ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+/* ── Source reliability table ───────────────────────── */
+function renderSources(rows) {
+  if (!rows.length) {
+    document.getElementById('sources-wrap').innerHTML =
+      '<p style="color:var(--text-dim);font-size:0.85rem">No source data yet.</p>';
+    return;
+  }
+  document.getElementById('sources-wrap').innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Source</th><th>Last 7 days</th><th>Total items</th>
+          <th>Last fetched</th><th>Status</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td style="font-size:0.85rem">${r.name}</td>
+            <td style="font-size:0.85rem">${r.week_items || 0}</td>
+            <td style="font-size:0.82rem;color:var(--text-dim)">${r.total_items || 0}</td>
+            <td style="font-size:0.75rem;color:var(--text-dim)">${r.last_fetched_at ? r.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
+            <td>${r.enabled
+              ? '<span class="badge badge-resolved">enabled</span>'
+              : '<span class="badge badge-unknown">disabled</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ── Pipeline runs table ────────────────────────────── */
+function renderRuns(rows) {
+  if (!rows.length) {
+    document.getElementById('runs-wrap').innerHTML =
+      '<p style="color:var(--text-dim);font-size:0.85rem">No runs recorded yet.</p>';
+    return;
+  }
+  document.getElementById('runs-wrap').innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Started</th><th>Duration</th><th>Status</th>
+          <th>Items</th><th>Categorized</th><th>New Findings</th>
+        </tr></thead>
+        <tbody>${rows.map(r => {
+          const started = r.started_at ? r.started_at.slice(0,16).replace('T',' ') : '—';
+          let dur = '—';
+          if (r.started_at && r.completed_at) {
+            const secs = Math.round((new Date(r.completed_at) - new Date(r.started_at)) / 1000);
+            dur = secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+          }
+          const statusBadge = r.status === 'success'
+            ? '<span class="badge badge-resolved">success</span>'
+            : r.status === 'running'
+              ? '<span class="badge badge-new">running</span>'
+              : '<span class="badge badge-critical">error</span>';
+          return `<tr>
+            <td style="font-size:0.8rem;color:var(--text-dim)">${started}</td>
+            <td style="font-size:0.8rem;color:var(--text-dim)">${dur}</td>
+            <td>${statusBadge}</td>
+            <td style="font-size:0.82rem">${r.items_collected || 0}</td>
+            <td style="font-size:0.82rem">${r.items_categorized || 0}</td>
+            <td style="font-size:0.82rem">${r.findings_new || 0}</td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+/* ── Loader ─────────────────────────────────────────── */
+function loadAll() {
+  const days = getDays();
+  Promise.all([
+    fetch(`/api/history/news-trend?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
+    fetch(`/api/history/findings-trend?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
+    fetch('/api/history/sources', { credentials: 'same-origin' }).then(r => r.json()),
+    fetch('/api/history/runs', { credentials: 'same-origin' }).then(r => r.json()),
+    fetch(`/api/history/feed-analytics?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
+  ]).then(([news, findings, sources, runs, feedAnalytics]) => {
+    renderNewsChart(news);
+    renderFindingsChart(findings);
+    renderSources(sources);
+    renderRuns(runs);
+    renderFeedChart(feedAnalytics);
+  }).catch(err => {
+    console.error('History load failed', err);
+  });
+}
+
+/* ── Feed analytics chart ───────────────────────────── */
+let _feedChart = null;
+
+// Stable colour palette for up to ~12 sources
+const FEED_PALETTE = [
+  '#6366f1','#22c55e','#f97316','#3b82f6','#eab308',
+  '#ef4444','#8b5cf6','#14b8a6','#f43f5e','#0ea5e9',
+  '#a3e635','#fb923c',
+];
+
+function renderFeedChart(rows) {
+  // Collect unique sources and days
+  const sourceSet = new Set();
+  const daySet    = new Set();
+  rows.forEach(r => { if (r.source) { sourceSet.add(r.source); daySet.add(r.day); } });
+
+  const days    = [...daySet].sort();
+  const sources = [...sourceSet].sort();
+
+  // Fill in full date range (gaps → 0)
+  const allDays = buildDateRange(getDays());
+
+  // Build lookup: source → { day: count }
+  const lookup = {};
+  rows.forEach(r => {
+    if (!r.source) return;
+    if (!lookup[r.source]) lookup[r.source] = {};
+    lookup[r.source][r.day] = (lookup[r.source][r.day] || 0) + (r.count || 0);
+  });
+
+  const datasets = sources.map((src, i) => ({
+    label: src,
+    data: allDays.map(d => (lookup[src] && lookup[src][d]) || 0),
+    backgroundColor: FEED_PALETTE[i % FEED_PALETTE.length] + 'cc',
+    borderColor:     FEED_PALETTE[i % FEED_PALETTE.length],
+    borderWidth: 1,
+    stack: 'feeds',
+  }));
+
+  const ctx = document.getElementById('feed-chart').getContext('2d');
+  if (_feedChart) _feedChart.destroy();
+  _feedChart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels: allDays, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#c9d1e0', font: { size: 10 }, boxWidth: 12 } },
+        tooltip: { mode: 'index' },
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
+        y: { stacked: true, ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+      },
+    },
+  });
+
+  // Summary table — items per source in the selected window
+  const totals = sources.map(src => ({
+    name:  src,
+    total: Object.values(lookup[src] || {}).reduce((a, b) => a + b, 0),
+  })).sort((a, b) => b.total - a.total);
+
+  document.getElementById('feed-table-wrap').innerHTML = `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Source</th><th>Items in window</th></tr></thead>
+        <tbody>${totals.map(s => `
+          <tr>
+            <td style="font-size:0.85rem">${s.name}</td>
+            <td style="font-size:0.85rem">${s.total}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+loadAll();
+</script>
+{% endblock %}

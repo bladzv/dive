@@ -56,7 +56,7 @@ ollama:
 
 **3. Restart the app:**
 ```bash
-sudo systemctl restart security-automation
+sudo systemctl restart dive
 ```
 
 The change takes effect on the next pipeline run. The old model stays downloaded on your Pi — you can switch back at any time by updating `config.yaml` again. To free up space, remove a model you no longer use:

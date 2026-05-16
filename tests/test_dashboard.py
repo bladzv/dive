@@ -121,7 +121,7 @@ def test_dashboard_returns_html(client):
 
 def test_dashboard_contains_brand(client):
     resp = client.get("/")
-    assert "Security Automation" in resp.text
+    assert "DIVE" in resp.text
 
 
 def test_dashboard_nav_dashboard_active(client):

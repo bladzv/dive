@@ -13,11 +13,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pyw
 *.egg-info/
 dist/
 build/
 .eggs/
 *.egg
+*.whl
+.python-version
 
 # Virtual environments
 .venv/
@@ -29,12 +32,19 @@ ENV/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+.tox/
 .coverage
+coverage.xml
 htmlcov/
+pip-audit-report*
+junit*.xml
 
 # Runtime output
 logs/
 data/
+*.log
+tmp/
+temp/
 
 # macOS
 .DS_Store
@@ -52,3 +62,7 @@ data/
 
 # Jinja2 compiled template cache
 __jinja2_cache__/
+
+# Workflow files
+.github/actions.md
+.github/pr_description.md

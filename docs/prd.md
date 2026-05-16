@@ -1,5 +1,5 @@
 # Product Requirements Document
-## Security Automation — News Aggregator & Repository Scanner
+## DIVE — News Aggregator & Repository Scanner
 
 **Version:** 0.8  
 **Date:** 2026-05-12  
@@ -301,7 +301,7 @@ Two services defined in `docker-compose.yml`:
 # docker-compose.yml (illustrative)
 services:
   app:
-    image: ghcr.io/<owner>/security-automation:latest
+    image: ghcr.io/<owner>/dive:latest
     ports:
       - "8000:8000"
     volumes:
@@ -362,7 +362,7 @@ Preferences are managed via the dashboard. Secrets require editing `config.yaml`
 
 ### Project Structure
 ```
-security-automation/
+dive/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .dockerignore
@@ -379,8 +379,8 @@ security-automation/
 ├── config.yaml.example
 ├── config.yaml                    # gitignored
 ├── setup.sh                       # Bare-metal Pi setup script
-├── security-automation.service    # systemd unit template
-├── security-automation.logrotate  # logrotate config template
+├── dive.service    # systemd unit template
+├── dive.logrotate  # logrotate config template
 ├── frontend/
 │   ├── index.html
 │   ├── app.js
@@ -550,7 +550,7 @@ This section defines the non-code deliverables required for a well-maintained pu
 
 **`release.yml` — runs on version tags (`v*`):**
 - Build multi-arch Docker image (linux/amd64 + linux/arm64)
-- Push to GitHub Container Registry (`ghcr.io/<owner>/security-automation`)
+- Push to GitHub Container Registry (`ghcr.io/<owner>/dive`)
 - Tag with version number and `latest`
 - Create GitHub Release with changelog excerpt
 

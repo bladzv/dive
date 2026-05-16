@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Findings — Security Automation{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Findings</h1>
+  <span style="font-size:0.8rem;color:var(--text-dim)">{{ findings | length }} shown</span>
+</div>
+
+<!-- ── Filter bar ───────────────────────────────────── -->
+<div class="filter-bar">
+  <a href="/findings"                    class="btn btn-sm {{ 'btn-primary' if not state_filter else 'btn-outline' }}">All</a>
+  <a href="/findings?state=new"          class="btn btn-sm {{ 'btn-primary' if state_filter == 'new'          else 'btn-outline' }}">New</a>
+  <a href="/findings?state=acknowledged" class="btn btn-sm {{ 'btn-primary' if state_filter == 'acknowledged' else 'btn-outline' }}">Acknowledged</a>
+  <a href="/findings?state=resolved"     class="btn btn-sm {{ 'btn-primary' if state_filter == 'resolved'     else 'btn-outline' }}">Resolved</a>
+
+  {% if repos %}
+  <select onchange="applyRepoFilter(this.value)" style="max-width:220px">
+    <option value="">All repos</option>
+    {% for r in repos %}
+    <option value="{{ r }}" {{ 'selected' if repo_filter == r else '' }}>{{ r }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+</div>
+
+<div id="action-msg" style="display:none;margin-bottom:0.75rem"></div>
+
+<!-- ── Table ────────────────────────────────────────── -->
+{% if findings %}
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Priority</th>
+          <th>Repo</th>
+          <th>Package</th>
+          <th>Version</th>
+          <th>CVE / GHSA</th>
+          <th>Severity</th>
+          <th>Fix</th>
+          <th>State</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in findings %}
+        <tr id="row-{{ f.id }}">
+
+          <!-- Priority score -->
+          <td style="font-weight:600;
+            {% if f.priority_score and f.priority_score >= 60 %}color:var(--critical)
+            {% elif f.priority_score and f.priority_score >= 40 %}color:var(--high)
+            {% else %}color:var(--text-dim){% endif %}">
+            {{ '%d' % f.priority_score if f.priority_score else '—' }}
+          </td>
+
+          <!-- Repo -->
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
+
+          <!-- Package + manifest -->
+          <td>
+            <span style="font-weight:500">{{ f.package_name }}</span>
+            {% if f.manifest_path %}
+            <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
+            {% endif %}
+          </td>
+
+          <!-- Installed version -->
+          <td style="font-size:0.82rem">{{ f.installed_version or '—' }}</td>
+
+          <!-- CVE / GHSA -->
+          <td style="font-size:0.78rem;color:var(--text-dim)">
+            {{ f.cve_id or f.ghsa_id or '—' }}
+          </td>
+
+          <!-- Severity -->
+          <td>
+            <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
+            {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem">KEV</span>{% endif %}
+          </td>
+
+          <!-- Fixed version -->
+          <td style="font-size:0.82rem">
+            {% if f.fixed_version %}<code>{{ f.fixed_version }}</code>
+            {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
+          </td>
+
+          <!-- State -->
+          <td>
+            <span class="badge
+              {% if f.state == 'new' %}badge-new
+              {% elif f.state == 'acknowledged' %}badge-ack
+              {% else %}badge-resolved{% endif %}">{{ f.state }}</span>
+          </td>
+
+          <!-- Actions -->
+          <td>
+            <div class="td-actions">
+              {% if f.state == 'new' %}
+                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'acknowledge')">Ack</button>
+                <button class="btn btn-success btn-sm" onclick="doAction({{ f.id }}, 'resolve')">Resolve</button>
+              {% elif f.state == 'acknowledged' %}
+                <button class="btn btn-success btn-sm" onclick="doAction({{ f.id }}, 'resolve')">Resolve</button>
+                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'reopen')">Reopen</button>
+              {% elif f.state == 'resolved' %}
+                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'reopen')">Reopen</button>
+              {% endif %}
+            </div>
+          </td>
+
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% else %}
+<div class="card empty-state">
+  <div class="empty-icon">✅</div>
+  <p>No findings match the current filter.</p>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyRepoFilter(repo) {
+  const params = new URLSearchParams(window.location.search);
+  if (repo) params.set('repo', repo);
+  else params.delete('repo');
+  window.location = '/findings' + (params.toString() ? '?' + params.toString() : '');
+}
+
+function doAction(id, action) {
+  const btn = event.target;
+  btn.disabled = true;
+  fetch('/api/findings/' + id + '/' + action, {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+    return r.json();
+  })
+  .then(() => {
+    showToast('Finding ' + action + 'd', 'success');
+    setTimeout(() => location.reload(), 700);
+  })
+  .catch(err => {
+    showToast(err.message, 'error');
+    btn.disabled = false;
+  });
+}
+</script>
+{% endblock %}

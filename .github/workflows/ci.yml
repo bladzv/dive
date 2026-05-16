@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint, audit, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Lint — ruff
+        run: ruff check .
+
+      - name: Format check — black
+        run: black --check .
+
+      - name: Dependency vulnerability audit — pip-audit
+        run: pip-audit -r requirements.txt
+
+      - name: Unit tests — pytest
+        run: pytest tests/ -v --ignore=tests/integration
+
+  docker-build:
+    name: Docker build check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Create a minimal config.yaml so the build doesn't fail on its absence
+      # (the Dockerfile deletes it, but the COPY . . step needs the file absent
+      # from the build context — .dockerignore handles that)
+      - name: Build Docker image
+        run: docker build -t security-automation:ci .

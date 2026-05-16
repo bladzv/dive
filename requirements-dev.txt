@@ -1,0 +1,13 @@
+# Install alongside requirements.txt for local development:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Linting and formatting (both enforced in CI)
+ruff>=0.4.0
+black>=24.0.0
+
+# Dependency vulnerability scanning (also run in CI)
+pip-audit>=2.7.0

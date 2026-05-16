@@ -1,0 +1,30 @@
+# Core web framework and server
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# Scheduler (in-process, no external broker needed)
+apscheduler>=3.10.0
+
+# RSS/Atom feed parsing
+feedparser>=6.0.11
+
+# Async HTTP client
+# Minimum 0.27.0 — earlier versions had SSRF via URL parsing (CVE-2021-41945)
+httpx>=0.27.0
+
+# GitHub API
+PyGithub>=2.3.0
+
+# YAML config loading
+# Minimum 6.0 — earlier versions had RCE via unsafe load (CVE-2020-1747, CVE-2020-14343)
+# Always use yaml.safe_load() — never yaml.load()
+PyYAML>=6.0
+
+# Multipart form support (required by FastAPI for file uploads and forms)
+python-multipart>=0.0.9
+
+# File-based lock for concurrent run protection
+filelock>=3.13.0
+
+# Jinja2 templating for the web dashboard
+jinja2>=3.1.0

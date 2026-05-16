@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W: pycodestyle errors and warnings
+# F: pyflakes (undefined names, unused imports, etc.)
+# I: isort (import ordering)
+# UP: pyupgrade (modern Python syntax)
+select = ["E", "F", "I", "W", "UP"]
+# E501 (line too long) is enforced by black, not ruff
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["collector", "categorizer", "github_scanner", "secrets_scanner",
+                      "notifier", "lifecycle", "db", "config", "settings"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,44 @@
+# Secrets — must never be baked into the image
+config.yaml
+.env
+*.env
+
+# Database files — stored in named volumes at runtime
+*.db
+*.sqlite
+*.sqlite3
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Development tooling
+.git/
+.gitignore
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Documentation — not needed in the image
+*.md
+docs/
+ai-game-workflow-guide/
+
+# Tests — not needed in the image
+tests/
+
+# CI/CD config
+.github/
+
+# Runtime directories — populated via named volumes
+data/
+logs/

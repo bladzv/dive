@@ -1,0 +1,40 @@
+services:
+  app:
+    # 'build' is used when developing locally (docker compose build).
+    # 'image' is the published tag pulled by end users (docker compose pull).
+    build: .
+    image: ghcr.io/YOUR_USERNAME/security-automation:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # config.yaml mounted read-only — secrets never baked into the image
+      - ./config.yaml:/app/config.yaml:ro
+      # Named volumes persist across container restarts
+      - app-data:/app/data
+      - app-logs:/app/logs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    volumes:
+      # Models stored in a named volume — survive container upgrades
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      # 'ollama list' succeeds when the service is ready and fails otherwise
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # Port 11434 is intentionally NOT published to the host.
+    # The app container reaches Ollama at http://ollama:11434 via the internal
+    # Docker bridge network. No browser or external process can reach Ollama directly.
+
+volumes:
+  app-data:
+  app-logs:
+  ollama-models:

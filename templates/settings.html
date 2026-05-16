@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Settings — Security Automation{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Settings</h1>
+</div>
+
+<div style="max-width:660px;display:flex;flex-direction:column;gap:1.25rem">
+
+  <!-- ── Pipeline schedule ──────────────────────────── -->
+  <div class="card">
+    <div class="card-title">⏱ Pipeline Schedule</div>
+    <div class="form-group">
+      <label class="form-label" for="interval-select">Run every</label>
+      <select id="interval-select">
+        {% for val, label in interval_options %}
+        <option value="{{ val }}" {{ 'selected' if val == current_interval else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="form-hint">How often the pipeline collects security news and scans repositories.</p>
+    </div>
+    <button class="btn btn-primary" onclick="saveInterval()">Save Schedule</button>
+  </div>
+
+  <!-- ── Ollama model ───────────────────────────────── -->
+  <div class="card">
+    <div class="card-title">🤖 Ollama Model</div>
+    <p style="font-size:0.875rem;color:var(--text-dim);margin-bottom:1rem">
+      Active model: <code id="active-model-label">{{ current_model }}</code>
+    </p>
+    <div id="model-grid" class="model-grid">
+      <p style="color:var(--text-dim);font-size:0.85rem">Loading available models…</p>
+    </div>
+    <div class="install-hint" id="install-hint">
+      <p>To install this model on the server running Ollama, run:</p>
+      <code id="install-cmd"></code>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Interval ──────────────────────────────────────── */
+function saveInterval() {
+  const val = document.getElementById('interval-select').value;
+  fetch('/api/settings', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ run_interval_hours: parseFloat(val) })
+  })
+  .then(r => r.json())
+  .then(() => showToast('Schedule saved', 'success'))
+  .catch(() => showToast('Failed to save schedule', 'error'));
+}
+
+/* ── Model selector ────────────────────────────────── */
+function loadModels() {
+  fetch('/api/ollama/models', { credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(data => renderModels(data.installed || [], data.suggested || [], data.current))
+    .catch(() => {
+      document.getElementById('model-grid').innerHTML =
+        '<p style="color:var(--error);font-size:0.85rem">Could not reach Ollama — is it running?</p>';
+    });
+}
+
+function renderModels(installed, suggested, current) {
+  // Build a unified map: suggested models first, then any extra installed ones
+  const map = new Map();
+  suggested.forEach(m => map.set(m.name, { ...m, isInstalled: false }));
+  installed.forEach(name => {
+    if (map.has(name)) map.get(name).isInstalled = true;
+    else map.set(name, { name, description: 'Installed', isInstalled: true });
+  });
+
+  // Sort: installed first, then by name
+  const sorted = [...map.values()].sort((a, b) => b.isInstalled - a.isInstalled || a.name.localeCompare(b.name));
+
+  document.getElementById('model-grid').innerHTML = sorted.map(m => {
+    const isActive = m.name === current;
+    const cls = ['model-card', m.isInstalled ? 'installed' : '', isActive ? 'active' : ''].join(' ').trim();
+    const statusHtml = isActive
+      ? '<span style="color:var(--accent)">✓ Active</span>'
+      : m.isInstalled
+        ? '<span style="color:var(--success)">Installed</span>'
+        : '<span style="color:var(--text-dim)">Not installed</span>';
+    return `<div class="${cls}" onclick="selectModel('${m.name}', ${m.isInstalled})">
+      <div class="model-name">${m.name}</div>
+      <div class="model-desc">${m.description || ''}</div>
+      <div class="model-status">${statusHtml}</div>
+    </div>`;
+  }).join('');
+}
+
+function selectModel(name, isInstalled) {
+  const hint = document.getElementById('install-hint');
+  const cmd  = document.getElementById('install-cmd');
+
+  if (!isInstalled) {
+    cmd.textContent = 'ollama pull ' + name;
+    hint.style.display = 'block';
+    showToast(name + ' is not installed — see instructions below', 'info');
+    return;
+  }
+
+  hint.style.display = 'none';
+  fetch('/api/settings', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_model: name })
+  })
+  .then(r => r.json())
+  .then(() => {
+    document.getElementById('active-model-label').textContent = name;
+    document.getElementById('model-chip').textContent = name;
+    showToast('Model changed to ' + name, 'success');
+    loadModels();  // Re-render grid to update active highlight
+  })
+  .catch(() => showToast('Failed to save model', 'error'));
+}
+
+loadModels();
+</script>
+{% endblock %}

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="run-token" content="{{ run_token }}">
+  <title>{% block title %}Security Automation{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="page-header">
+  <span class="brand">🔒 DIVE</span>
+  <span class="status-dot idle" id="status-dot" style="display:none"></span>
+  <span class="status-text" id="status-text"></span>
+  <span class="header-spacer"></span>
+  <span class="model-chip" id="model-chip">{{ current_model }}</span>
+  <button class="btn btn-primary btn-sm" id="run-now-btn" onclick="triggerRun()">▶ Run Now</button>
+</header>
+
+<nav class="site-nav">
+  <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">Dashboard</a>
+  <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">Findings</a>
+  <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">Settings</a>
+</nav>
+
+<main class="page-main">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="page-footer">
+  Security Automation &nbsp;·&nbsp;
+  <a href="https://github.com/your-org/security-automation" target="_blank" rel="noopener">GitHub</a>
+</footer>
+
+<div id="toast"></div>
+
+<script>
+/* ── Shared helpers ──────────────────────────────────── */
+const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
+
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show toast-' + type;
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.className = ''; }, 3500);
+}
+
+function timeAgo(iso) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60)    return 'just now';
+  if (diff < 3600)  return Math.floor(diff / 60)   + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600)  + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+/* ── Pipeline status polling ─────────────────────────── */
+function updateStatusBadge(pipeline) {
+  const dot  = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const btn  = document.getElementById('run-now-btn');
+  dot.style.display = '';
+
+  if (pipeline.running) {
+    dot.className = 'status-dot running';
+    text.textContent = 'Running…';
+    btn.disabled = true;
+  } else if (pipeline.last_status === 'success') {
+    dot.className = 'status-dot success';
+    const ago = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
+    text.textContent = 'Last run ' + ago;
+    btn.disabled = false;
+  } else if (pipeline.last_status === 'error') {
+    dot.className = 'status-dot error';
+    text.textContent = 'Last run failed';
+    btn.disabled = false;
+  } else {
+    dot.className = 'status-dot idle';
+    text.textContent = 'Never run';
+    btn.disabled = false;
+  }
+}
+
+function pollStatus() {
+  fetch('/api/health')
+    .then(r => r.json())
+    .then(data => updateStatusBadge(data.pipeline))
+    .catch(() => {});
+}
+
+let _pollTimer = setInterval(pollStatus, 5000);
+pollStatus();
+
+/* ── Run Now ─────────────────────────────────────────── */
+function triggerRun() {
+  const btn = document.getElementById('run-now-btn');
+  btn.disabled = true;
+  fetch('/api/run', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'X-Run-Token': RUN_TOKEN }
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.status === 'started') {
+      showToast('Pipeline started', 'success');
+      // Poll faster while running
+      clearInterval(_pollTimer);
+      _pollTimer = setInterval(pollStatus, 2000);
+      setTimeout(() => {
+        clearInterval(_pollTimer);
+        _pollTimer = setInterval(pollStatus, 5000);
+      }, 60000);
+    } else if (data.status === 'already_running') {
+      showToast('Pipeline is already running', 'info');
+      btn.disabled = false;
+    } else {
+      showToast(data.message || 'Unknown response', 'info');
+      btn.disabled = false;
+    }
+  })
+  .catch(() => {
+    showToast('Failed to trigger run', 'error');
+    btn.disabled = false;
+  });
+}
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

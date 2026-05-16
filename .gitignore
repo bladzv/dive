@@ -1,0 +1,54 @@
+# Secrets — never committed
+config.yaml
+.env
+*.env
+
+# Database — stored in Docker volumes or local data/ directory
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Development tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime output
+logs/
+data/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# TLS certificates (if added later)
+*.pem
+*.key
+*.crt
+
+# Jinja2 compiled template cache
+__jinja2_cache__/

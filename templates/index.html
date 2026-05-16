@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Security Automation{% endblock %}
+
+{% block content %}
+<div class="page-heading">
+  <h1>Dashboard</h1>
+  <span style="font-size:0.8rem;color:var(--text-dim)">Last 24 hours</span>
+</div>
+
+<!-- ── Severity summary ─────────────────────────────── -->
+<div class="grid-stats" style="margin-bottom:1.5rem">
+  <div class="stat-card stat-critical">
+    <div class="stat-number">{{ summary.critical }}</div>
+    <div class="stat-label">Critical</div>
+  </div>
+  <div class="stat-card stat-high">
+    <div class="stat-number">{{ summary.high }}</div>
+    <div class="stat-label">High</div>
+  </div>
+  <div class="stat-card stat-medium">
+    <div class="stat-number">{{ summary.medium }}</div>
+    <div class="stat-label">Medium</div>
+  </div>
+  <div class="stat-card stat-low">
+    <div class="stat-number">{{ summary.low }}</div>
+    <div class="stat-label">Low</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-number" style="color:var(--accent)">{{ summary.new }}</div>
+    <div class="stat-label">New</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-number" style="color:var(--success)">{{ summary.resolved }}</div>
+    <div class="stat-label">Resolved</div>
+  </div>
+</div>
+
+<div class="grid-2">
+
+  <!-- ── Open findings (new only) ──────────────────── -->
+  <div class="card">
+    <div class="card-title">
+      🚨 Open Findings
+      <a href="/findings?state=new" style="float:right;text-transform:none;font-size:0.78rem;font-weight:400">View all →</a>
+    </div>
+
+    {% if recent_findings %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Repo</th>
+            <th>Package</th>
+            <th>Severity</th>
+            <th>CVE / GHSA</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in recent_findings %}
+          <tr>
+            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
+            <td>
+              {{ f.package_name }}
+              {% if f.installed_version %}
+              <span style="color:var(--text-dim);font-size:0.76rem">&nbsp;{{ f.installed_version }}</span>
+              {% endif %}
+            </td>
+            <td>
+              <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
+              {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+            </td>
+            <td style="font-size:0.77rem;color:var(--text-dim)">
+              {{ f.cve_id or f.ghsa_id or '—' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">🎉</div>
+      <p>No open findings. Looking clean!</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── Security news feed ────────────────────────── -->
+  <div class="card">
+    <div class="card-title">📰 Security News</div>
+
+    {% if news_items %}
+      {% for item in news_items %}
+      <div class="news-item">
+        <div class="news-title">
+          <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
+        </div>
+        <div class="news-meta">
+          <span>{{ item.source }}</span>
+          {% if item.category %}
+          <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
+          {% endif %}
+          {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+          <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
+          {% endif %}
+          <span>{{ item.time_ago }}</span>
+        </div>
+        {% if item.summary %}
+        <div class="news-summary">
+          {{ item.summary[:220] }}{% if item.summary | length > 220 %}…{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">📭</div>
+      <p>No recent news. Run the pipeline to collect.</p>
+    </div>
+    {% endif %}
+  </div>
+
+</div><!-- /.grid-2 -->
+{% endblock %}

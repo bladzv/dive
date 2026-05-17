@@ -50,7 +50,10 @@
       </thead>
       <tbody>
         {% for f in findings %}
-        <tr id="row-{{ f.id }}">
+        <tr id="row-{{ f.id }}"
+            class="clickable-row" style="cursor:pointer"
+            onclick="openSourcesModal({{ f.cve_id | tojson }}, {{ f.ghsa_id | tojson }})"
+            title="View external vulnerability sources">
 
           <!-- Priority score -->
           <td style="font-weight:600;
@@ -89,10 +92,20 @@
             {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem">KEV</span>{% endif %}
           </td>
 
-          <!-- Fixed version -->
+          <!-- Fixed version + affected range + latest-version hint -->
           <td style="font-size:0.82rem">
             {% if f.fixed_version %}<code>{{ f.fixed_version }}</code>
             {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
+            {% if f.affected_versions %}
+            <br><span style="font-size:0.7rem;color:var(--text-dim)" title="Affected version range">{{ f.affected_versions }}</span>
+            {% endif %}
+            {% if not f.fixed_version and f.latest_version is not none %}
+              {% if f.latest_version_vuln_count == 0 %}
+              <br><span style="font-size:0.7rem;color:var(--success)" title="Latest release has no known CVEs — consider upgrading">&#8593; {{ f.latest_version }} — no known CVEs</span>
+              {% else %}
+              <br><span style="font-size:0.7rem;color:var(--high)" title="Latest release still has known vulnerabilities">&#8593; {{ f.latest_version }} ({{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }})</span>
+              {% endif %}
+            {% endif %}
           </td>
 
           <!-- State -->
@@ -104,7 +117,7 @@
           </td>
 
           <!-- Actions -->
-          <td>
+          <td onclick="event.stopPropagation()">
             <div class="td-actions">
               {% if f.state == 'new' %}
                 <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'acknowledge')">Ack</button>
@@ -170,6 +183,20 @@
 </div>
 {% endif %}
 
+<!-- ── Sources modal ─────────────────────────────────── -->
+<div id="sources-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
+     onclick="closeSourcesModal()"></div>
+<div id="sources-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+     padding:1.5rem;width:min(420px,92vw);z-index:201;box-shadow:var(--shadow)">
+  <p style="font-weight:700;font-size:1rem;margin-bottom:0.25rem">External References</p>
+  <p style="font-size:0.78rem;color:var(--text-dim);margin-bottom:1rem">Select a source to open in a new tab.</p>
+  <div id="sources-list" style="display:flex;flex-direction:column;gap:0.5rem"></div>
+  <div style="display:flex;justify-content:flex-end;margin-top:1.1rem">
+    <button class="btn btn-outline btn-sm" onclick="closeSourcesModal()">Close</button>
+  </div>
+</div>
+
 <!-- ── Annotation modal ──────────────────────────────── -->
 <div id="annotation-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
      onclick="closeAnnotation()"></div>
@@ -192,6 +219,47 @@
 
 {% block scripts %}
 <script>
+/* ── Sources modal ──────────────────────────────────── */
+function openSourcesModal(cveId, ghsaId) {
+  const list = document.getElementById('sources-list');
+  list.innerHTML = '';
+
+  const sources = [];
+  if (cveId) {
+    sources.push({ label: 'NVD — National Vulnerability Database', url: 'https://nvd.nist.gov/vuln/detail/' + cveId });
+    sources.push({ label: 'MITRE CVE Program', url: 'https://cve.mitre.org/cgi-bin/cvename.cgi?name=' + cveId });
+    sources.push({ label: 'OSV.dev', url: 'https://osv.dev/vulnerability/' + cveId });
+  }
+  if (ghsaId) {
+    sources.push({ label: 'GitHub Security Advisory', url: 'https://github.com/advisories/' + ghsaId });
+    if (!cveId) sources.push({ label: 'OSV.dev', url: 'https://osv.dev/vulnerability/' + ghsaId });
+  }
+
+  if (!sources.length) {
+    list.innerHTML = '<p style="font-size:0.85rem;color:var(--text-dim)">No external references available for this finding.</p>';
+  } else {
+    sources.forEach(s => {
+      const a = document.createElement('a');
+      a.href = s.url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:0.65rem 0.85rem;background:var(--surface-2);border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;color:var(--text);transition:border-color 0.15s';
+      a.innerHTML = '<span style="font-size:0.875rem;font-weight:500">' + s.label + '</span><span style="color:var(--accent);font-size:1rem">&#8599;</span>';
+      a.onmouseover = () => a.style.borderColor = 'var(--accent)';
+      a.onmouseout  = () => a.style.borderColor = 'var(--border)';
+      list.appendChild(a);
+    });
+  }
+
+  document.getElementById('sources-backdrop').style.display = '';
+  document.getElementById('sources-modal').style.display   = '';
+}
+
+function closeSourcesModal() {
+  document.getElementById('sources-backdrop').style.display = 'none';
+  document.getElementById('sources-modal').style.display   = 'none';
+}
+
 function applyRepoFilter(repo) {
   const params = new URLSearchParams(window.location.search);
   if (repo) params.set('repo', repo);

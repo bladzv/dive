@@ -21,9 +21,9 @@ from pathlib import Path
 # Ensure project root is on the path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import db
 import collector
 import config as cfg_module
+import db
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
@@ -60,31 +60,37 @@ def main() -> int:
             # --- Checks ---
             print("\n[3] Checking results")
 
-            if not check("Items fetched > 0", stats.items_fetched > 0,
-                         f"got {stats.items_fetched}"):
+            if not check(
+                "Items fetched > 0", stats.items_fetched > 0, f"got {stats.items_fetched}"
+            ):
                 failures += 1
 
-            if not check("New items inserted > 0", stats.items_new > 0,
-                         f"got {stats.items_new}"):
+            if not check("New items inserted > 0", stats.items_new > 0, f"got {stats.items_new}"):
                 failures += 1
 
             total_in_db = conn.execute("SELECT COUNT(*) FROM news_items").fetchone()[0]
-            if not check("Database has items", total_in_db > 0,
-                         f"got {total_in_db}"):
+            if not check("Database has items", total_in_db > 0, f"got {total_in_db}"):
                 failures += 1
 
             # Check each source contributed something (or warn)
             sources = {
-                row[0]
-                for row in conn.execute("SELECT DISTINCT source FROM news_items").fetchall()
+                row[0] for row in conn.execute("SELECT DISTINCT source FROM news_items").fetchall()
             }
             print(f"\n  Sources with data: {sorted(sources)}")
 
             expected_sources = {
-                "Bleeping Computer", "Krebs on Security", "The Hacker News",
-                "SANS ISC", "Cisco Talos", "Palo Alto Unit 42",
-                "Google Mandiant", "CrowdStrike Blog", "Dark Reading",
-                "NIST NVD", "CISA KEV", "GitHub Security Advisories",
+                "Bleeping Computer",
+                "Krebs on Security",
+                "The Hacker News",
+                "SANS ISC",
+                "Cisco Talos",
+                "Palo Alto Unit 42",
+                "Google Mandiant",
+                "CrowdStrike Blog",
+                "Dark Reading",
+                "NIST NVD",
+                "CISA KEV",
+                "GitHub Security Advisories",
             }
             missing = expected_sources - sources
             if missing:
@@ -94,9 +100,7 @@ def main() -> int:
                     print(f"  [WARN] Failed sources: {stats.failed_sources}")
 
             # Check field shapes for a sample item
-            sample = conn.execute(
-                "SELECT * FROM news_items ORDER BY RANDOM() LIMIT 1"
-            ).fetchone()
+            sample = conn.execute("SELECT * FROM news_items ORDER BY RANDOM() LIMIT 1").fetchone()
             if sample:
                 if not check("Sample item has url", bool(sample["url"])):
                     failures += 1
@@ -110,8 +114,9 @@ def main() -> int:
             # Check dedup — running again should add 0 new items
             print("\n[4] Checking deduplication (second run)")
             stats2 = collector.run(conn, config)
-            if not check("Second run adds 0 new items", stats2.items_new == 0,
-                         f"got {stats2.items_new}"):
+            if not check(
+                "Second run adds 0 new items", stats2.items_new == 0, f"got {stats2.items_new}"
+            ):
                 failures += 1
 
     # --- Summary ---

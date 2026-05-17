@@ -17,7 +17,6 @@ import pytest
 import categorizer
 import db
 from categorizer import (
-    BATCH_SIZE,
     VALID_CATEGORIES,
     VALID_SEVERITIES,
     _assign_cluster,
@@ -26,7 +25,6 @@ from categorizer import (
     _parse_response,
     _sanitize_field,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -43,9 +41,7 @@ def _make_row(
     """Build a sqlite3.Row-compatible dict for testing."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE t (id INTEGER, title TEXT, content TEXT, source TEXT, url TEXT)"
-    )
+    conn.execute("CREATE TABLE t (id INTEGER, title TEXT, content TEXT, source TEXT, url TEXT)")
     conn.execute("INSERT INTO t VALUES (?,?,?,?,?)", (item_id, title, content, source, url))
     conn.commit()
     return conn.execute("SELECT * FROM t").fetchone()
@@ -287,7 +283,7 @@ def test_run_splits_into_correct_batches(db_conn):
 
     call_count = 0
 
-    def fake_call_ollama(client, config, batch):
+    def fake_call_ollama(client, config, batch, model):
         nonlocal call_count
         call_count += 1
         return json.dumps([_valid_result() for _ in batch])

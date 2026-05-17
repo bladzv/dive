@@ -36,3 +36,6 @@ jinja2>=3.1.5
 
 # CVSS vector scoring — accurate base-score calculation for OSV severity data
 cvss>=3.0
+
+# Signed session cookies (used by the HTML login page to maintain auth state)
+itsdangerous>=2.1.2

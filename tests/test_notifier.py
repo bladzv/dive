@@ -6,15 +6,11 @@ No real network calls are made — httpx and smtplib are mocked throughout.
 
 from __future__ import annotations
 
-import smtplib
 import sqlite3
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import db
 import notifier
 from notifier import (
     MAX_FINDINGS_PER_ALERT,
@@ -25,7 +21,6 @@ from notifier import (
     send_failure_alert,
     send_findings_alert,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,9 +52,7 @@ def _row(**kwargs) -> sqlite3.Row:
     cols = list(defaults.keys())
     vals = list(defaults.values())
     placeholders = ", ".join("?" * len(cols))
-    conn.execute(
-        f"CREATE TABLE t ({', '.join(cols)})"
-    )
+    conn.execute(f"CREATE TABLE t ({', '.join(cols)})")
     conn.execute(f"INSERT INTO t VALUES ({placeholders})", vals)
     return conn.execute("SELECT * FROM t").fetchone()
 
@@ -99,17 +92,20 @@ def _make_config(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("score,expected", [
-    (9.1, "Critical"),
-    (9.0, "Critical"),
-    (8.9, "High"),
-    (7.0, "High"),
-    (6.9, "Medium"),
-    (4.0, "Medium"),
-    (3.9, "Low"),
-    (0.0, "Low"),
-    (None, "Unknown"),
-])
+@pytest.mark.parametrize(
+    "score,expected",
+    [
+        (9.1, "Critical"),
+        (9.0, "Critical"),
+        (8.9, "High"),
+        (7.0, "High"),
+        (6.9, "Medium"),
+        (4.0, "Medium"),
+        (3.9, "Low"),
+        (0.0, "Low"),
+        (None, "Unknown"),
+    ],
+)
 def test_severity_label(score, expected):
     row = _row(cvss_score=score)
     assert _severity_label(row) == expected
@@ -256,8 +252,10 @@ def test_send_findings_alert_calls_both_channels():
         slack_url="https://hooks.slack.com/test",
         discord_url="https://discord.com/api/webhooks/test",
     )
-    with patch("notifier._send_slack") as mock_slack, \
-         patch("notifier._send_discord") as mock_discord:
+    with (
+        patch("notifier._send_slack") as mock_slack,
+        patch("notifier._send_discord") as mock_discord,
+    ):
         send_findings_alert(cfg, [_row()])
         mock_slack.assert_called_once()
         mock_discord.assert_called_once()
@@ -268,8 +266,10 @@ def test_send_findings_alert_slack_failure_does_not_block_discord():
         slack_url="https://hooks.slack.com/test",
         discord_url="https://discord.com/api/webhooks/test",
     )
-    with patch("notifier._send_slack", side_effect=Exception("Slack down")), \
-         patch("notifier._send_discord") as mock_discord:
+    with (
+        patch("notifier._send_slack", side_effect=Exception("Slack down")),
+        patch("notifier._send_discord") as mock_discord,
+    ):
         send_findings_alert(cfg, [_row()])
         mock_discord.assert_called_once()  # Discord still called despite Slack failure
 
@@ -319,7 +319,6 @@ def test_send_email_uses_starttls():
 
 
 def test_discord_truncates_long_message():
-    cfg = _make_config(discord_url="https://discord.com/api/webhooks/test")
     # Create a very long finding line
     long_text = "x" * 3000
     with patch("httpx.Client") as mock_client_cls:

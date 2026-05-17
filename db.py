@@ -18,10 +18,11 @@ import json
 import logging
 import os
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -188,10 +189,7 @@ def init(path: Path | None = None) -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced in later milestones. Each ALTER is idempotent."""
-    existing = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(findings)").fetchall()
-    }
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(findings)").fetchall()}
     # M3 columns
     if "manifest_path" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN manifest_path TEXT")
@@ -206,6 +204,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # M10 columns
     if "github_issue_url" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN github_issue_url TEXT")
+    # Affected version range sourced directly from OSV/advisory data
+    if "affected_versions" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN affected_versions TEXT")
+    # Latest published version from package registry + OSV vulnerability count
+    if "latest_version" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN latest_version TEXT")
+    if "latest_version_vuln_count" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN latest_version_vuln_count INTEGER")
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +225,7 @@ def url_hash(url: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _json_dumps(value: Any) -> str | None:
@@ -245,9 +251,7 @@ def _json_loads(value: str | None) -> Any:
 def insert_news_item(conn: sqlite3.Connection, item: dict) -> bool:
     """Insert a news item. Returns True if inserted, False if already exists (dedup)."""
     h = url_hash(item["url"])
-    existing = conn.execute(
-        "SELECT id FROM news_items WHERE url_hash = ?", (h,)
-    ).fetchone()
+    existing = conn.execute("SELECT id FROM news_items WHERE url_hash = ?", (h,)).fetchone()
     if existing:
         return False
 
@@ -279,15 +283,14 @@ def insert_news_item(conn: sqlite3.Connection, item: dict) -> bool:
     return True
 
 
-def get_uncategorized_items(
-    conn: sqlite3.Connection, limit: int = 50
-) -> list[sqlite3.Row]:
-    """Return news items that have not yet been categorized (category IS NULL)."""
+def get_uncategorized_items(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    """Return news items that have not yet been categorized, or that previously
+    fell back to 'Uncategorized' so they can be retried when the model improves."""
     return conn.execute(
         """
         SELECT id, title, content, source, url
         FROM news_items
-        WHERE category IS NULL
+        WHERE category IS NULL OR category = 'Uncategorized'
         ORDER BY fetched_at DESC
         LIMIT ?
         """,
@@ -405,9 +408,7 @@ def get_last_successful_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     """Read a preference value from the settings table."""
-    row = conn.execute(
-        "SELECT value FROM settings WHERE key = ?", (key,)
-    ).fetchone()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else default
 
 
@@ -458,11 +459,11 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             INSERT INTO findings (
                 repo_full_name, cve_id, ghsa_id,
                 package_name, package_ecosystem,
-                installed_version, fixed_version,
+                installed_version, fixed_version, affected_versions,
                 cvss_score, is_kev, patch_available, priority_score,
                 state, first_seen_at, last_seen_at,
                 manifest_path, ai_next_steps
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 finding["repo_full_name"],
@@ -472,6 +473,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
                 finding["package_ecosystem"],
                 finding.get("installed_version"),
                 finding.get("fixed_version"),
+                finding.get("affected_versions"),
                 finding.get("cvss_score"),
                 1 if finding.get("is_kev") else 0,
                 1 if finding.get("patch_available") else 0,
@@ -492,6 +494,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             last_seen_at      = ?,
             installed_version = ?,
             fixed_version     = ?,
+            affected_versions = ?,
             cvss_score        = ?,
             is_kev            = ?,
             patch_available   = ?,
@@ -503,6 +506,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             _now(),
             finding.get("installed_version"),
             finding.get("fixed_version"),
+            finding.get("affected_versions"),
             finding.get("cvss_score"),
             1 if finding.get("is_kev") else 0,
             1 if finding.get("patch_available") else 0,
@@ -514,13 +518,32 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     return False
 
 
-def update_finding_next_steps(
-    conn: sqlite3.Connection, finding_id: int, next_steps: dict
-) -> None:
+def update_finding_next_steps(conn: sqlite3.Connection, finding_id: int, next_steps: dict) -> None:
     """Store AI-generated next steps JSON for a finding."""
     conn.execute(
         "UPDATE findings SET ai_next_steps = ? WHERE id = ?",
         (_json_dumps(next_steps), finding_id),
+    )
+
+
+def update_latest_version_for_package(
+    conn: sqlite3.Connection,
+    package_name: str,
+    ecosystem: str,
+    latest_version: str,
+    vuln_count: int,
+) -> None:
+    """Set latest_version and latest_version_vuln_count on findings that have no fixed_version."""
+    conn.execute(
+        """
+        UPDATE findings SET
+            latest_version = ?,
+            latest_version_vuln_count = ?
+        WHERE package_name = ?
+          AND package_ecosystem = ?
+          AND (fixed_version IS NULL OR fixed_version = '')
+        """,
+        (latest_version, vuln_count, package_name, ecosystem),
     )
 
 
@@ -578,9 +601,7 @@ def get_new_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def get_kev_cve_ids(conn: sqlite3.Connection) -> set[str]:
     """Return the set of CVE IDs present in the CISA KEV (from news_items)."""
-    rows = conn.execute(
-        "SELECT url FROM news_items WHERE source = 'CISA KEV'"
-    ).fetchall()
+    rows = conn.execute("SELECT url FROM news_items WHERE source = 'CISA KEV'").fetchall()
     result = set()
     for row in rows:
         url = row["url"] or ""
@@ -595,18 +616,14 @@ def get_unnotified_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     These are the delta — exactly the findings that should trigger an alert.
     After sending the alert, call mark_findings_notified() with these IDs.
     """
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT * FROM findings
         WHERE state = 'new' AND notified_at IS NULL
         ORDER BY priority_score DESC NULLS LAST
-        """
-    ).fetchall()
+        """).fetchall()
 
 
-def mark_findings_notified(
-    conn: sqlite3.Connection, finding_ids: list[int]
-) -> None:
+def mark_findings_notified(conn: sqlite3.Connection, finding_ids: list[int]) -> None:
     """Stamp notified_at on findings that were successfully delivered."""
     if not finding_ids:
         return
@@ -710,18 +727,14 @@ def get_secret_findings_count(
 
 def get_unnotified_secret_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return new secret findings that have not yet been notified."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT * FROM secret_findings
         WHERE state = 'new' AND notified_at IS NULL
         ORDER BY first_seen_at DESC
-        """
-    ).fetchall()
+        """).fetchall()
 
 
-def mark_secret_findings_notified(
-    conn: sqlite3.Connection, finding_ids: list[int]
-) -> None:
+def mark_secret_findings_notified(conn: sqlite3.Connection, finding_ids: list[int]) -> None:
     """Stamp notified_at on secret findings that were delivered."""
     if not finding_ids:
         return
@@ -732,9 +745,7 @@ def mark_secret_findings_notified(
     )
 
 
-def mark_secret_finding_false_positive(
-    conn: sqlite3.Connection, finding_id: int
-) -> bool:
+def mark_secret_finding_false_positive(conn: sqlite3.Connection, finding_id: int) -> bool:
     """Mark a secret finding as a false positive. Returns True if updated."""
     cur = conn.execute(
         "UPDATE secret_findings SET state = 'false_positive' WHERE id = ? AND state = 'new'",
@@ -743,9 +754,7 @@ def mark_secret_finding_false_positive(
     return cur.rowcount > 0
 
 
-def mark_secret_finding_resolved(
-    conn: sqlite3.Connection, finding_id: int
-) -> bool:
+def mark_secret_finding_resolved(conn: sqlite3.Connection, finding_id: int) -> bool:
     """Mark a secret finding as resolved. Returns True if updated."""
     cur = conn.execute(
         "UPDATE secret_findings SET state = 'resolved' WHERE id = ? AND state != 'resolved'",
@@ -783,30 +792,27 @@ def add_bookmark(conn: sqlite3.Connection, news_item_id: int) -> bool:
 
 def remove_bookmark(conn: sqlite3.Connection, news_item_id: int) -> bool:
     """Remove a bookmark. Returns True if it existed and was deleted."""
-    cur = conn.execute(
-        "DELETE FROM bookmarks WHERE news_item_id = ?", (news_item_id,)
-    )
+    cur = conn.execute("DELETE FROM bookmarks WHERE news_item_id = ?", (news_item_id,))
     return cur.rowcount > 0
 
 
 def is_bookmarked(conn: sqlite3.Connection, news_item_id: int) -> bool:
     """Return True if the item is bookmarked."""
-    return conn.execute(
-        "SELECT 1 FROM bookmarks WHERE news_item_id = ?", (news_item_id,)
-    ).fetchone() is not None
+    return (
+        conn.execute("SELECT 1 FROM bookmarks WHERE news_item_id = ?", (news_item_id,)).fetchone()
+        is not None
+    )
 
 
 def get_bookmarks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all bookmarked news items, newest bookmark first."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT n.id, n.title, n.url, n.source, n.published_at, n.fetched_at,
                n.summary, n.category, n.severity, b.created_at AS bookmarked_at
         FROM bookmarks b
         JOIN news_items n ON n.id = b.news_item_id
         ORDER BY b.created_at DESC
-        """
-    ).fetchall()
+        """).fetchall()
 
 
 def get_bookmarked_ids(conn: sqlite3.Connection) -> set[int]:
@@ -820,9 +826,7 @@ def get_bookmarked_ids(conn: sqlite3.Connection) -> set[int]:
 # ---------------------------------------------------------------------------
 
 
-def set_finding_annotation(
-    conn: sqlite3.Connection, finding_id: int, text: str | None
-) -> bool:
+def set_finding_annotation(conn: sqlite3.Connection, finding_id: int, text: str | None) -> bool:
     """Set or clear a personal annotation on a finding. Returns True if row updated."""
     cur = conn.execute(
         "UPDATE findings SET annotation = ? WHERE id = ?",
@@ -833,13 +837,11 @@ def set_finding_annotation(
 
 def get_annotated_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all findings that have a non-empty personal annotation."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT * FROM findings
         WHERE annotation IS NOT NULL AND annotation != ''
         ORDER BY priority_score DESC NULLS LAST
-        """
-    ).fetchall()
+        """).fetchall()
 
 
 # ---------------------------------------------------------------------------
@@ -847,9 +849,7 @@ def get_annotated_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 # ---------------------------------------------------------------------------
 
 
-def get_news_trend(
-    conn: sqlite3.Connection, days: int = 30
-) -> list[sqlite3.Row]:
+def get_news_trend(conn: sqlite3.Connection, days: int = 30) -> list[sqlite3.Row]:
     """Items per day × severity for the last N days (for trend charts)."""
     return conn.execute(
         """
@@ -865,9 +865,7 @@ def get_news_trend(
     ).fetchall()
 
 
-def get_findings_by_day(
-    conn: sqlite3.Connection, days: int = 30
-) -> list[sqlite3.Row]:
+def get_findings_by_day(conn: sqlite3.Connection, days: int = 30) -> list[sqlite3.Row]:
     """New findings per calendar day over the last N days."""
     return conn.execute(
         """
@@ -883,8 +881,7 @@ def get_findings_by_day(
 
 def get_source_stats(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Per-source item totals, last-7-day count, and last fetch timestamp."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT
             f.name,
             f.last_fetched_at,
@@ -896,13 +893,10 @@ def get_source_stats(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         LEFT JOIN news_items n ON n.source = f.name
         GROUP BY f.id
         ORDER BY week_items DESC, total_items DESC
-        """
-    ).fetchall()
+        """).fetchall()
 
 
-def get_run_history(
-    conn: sqlite3.Connection, limit: int = 30
-) -> list[sqlite3.Row]:
+def get_run_history(conn: sqlite3.Connection, limit: int = 30) -> list[sqlite3.Row]:
     """Return recent pipeline runs from newest to oldest."""
     return conn.execute(
         "SELECT * FROM run_log ORDER BY started_at DESC LIMIT ?",
@@ -917,6 +911,7 @@ def get_weekly_digest(conn: sqlite3.Connection) -> dict | None:
         return None
     try:
         import json
+
         return json.loads(raw)
     except Exception:
         return None
@@ -925,6 +920,7 @@ def get_weekly_digest(conn: sqlite3.Connection) -> dict | None:
 def save_weekly_digest(conn: sqlite3.Connection, data: dict) -> None:
     """Store weekly digest JSON snapshot in the settings table."""
     import json
+
     set_setting(conn, "weekly_digest.latest", json.dumps(data, ensure_ascii=False))
 
 
@@ -932,8 +928,7 @@ def get_weekly_digest_top_findings(
     conn: sqlite3.Connection,
 ) -> list[sqlite3.Row]:
     """Top 10 active findings by priority score for the weekly digest."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT repo_full_name, cve_id, ghsa_id, package_name, package_ecosystem,
                cvss_score, priority_score, is_kev, patch_available, state,
                first_seen_at
@@ -941,30 +936,25 @@ def get_weekly_digest_top_findings(
         WHERE state IN ('new', 'acknowledged')
         ORDER BY priority_score DESC NULLS LAST
         LIMIT 10
-        """
-    ).fetchall()
+        """).fetchall()
 
 
 def get_weekly_resolved_count(conn: sqlite3.Connection) -> int:
     """Count findings resolved in the last 7 days."""
-    row = conn.execute(
-        """
+    row = conn.execute("""
         SELECT COUNT(*) AS n FROM findings
         WHERE state = 'resolved'
           AND resolved_at >= date('now', '-7 days')
-        """
-    ).fetchone()
+        """).fetchone()
     return int(row["n"] or 0) if row else 0
 
 
 def get_weekly_new_findings_count(conn: sqlite3.Connection) -> int:
     """Count findings first seen in the last 7 days."""
-    row = conn.execute(
-        """
+    row = conn.execute("""
         SELECT COUNT(*) AS n FROM findings
         WHERE first_seen_at >= date('now', '-7 days')
-        """
-    ).fetchone()
+        """).fetchone()
     return int(row["n"] or 0) if row else 0
 
 
@@ -976,9 +966,7 @@ def get_weekly_items_collected(conn: sqlite3.Connection) -> int:
     return int(row["n"] or 0) if row else 0
 
 
-def get_top_affected_repos(
-    conn: sqlite3.Connection, limit: int = 5
-) -> list[sqlite3.Row]:
+def get_top_affected_repos(conn: sqlite3.Connection, limit: int = 5) -> list[sqlite3.Row]:
     """Repos with most active (new/acknowledged) findings, sorted descending."""
     return conn.execute(
         """
@@ -1055,9 +1043,7 @@ def get_news_items_count(
     return int(row["n"] or 0)
 
 
-def get_feed_analytics(
-    conn: sqlite3.Connection, days: int = 30
-) -> list[sqlite3.Row]:
+def get_feed_analytics(conn: sqlite3.Connection, days: int = 30) -> list[sqlite3.Row]:
     """Items per source per day over the last N days (for feed analytics chart)."""
     return conn.execute(
         """
@@ -1078,30 +1064,24 @@ def get_feed_analytics(
 
 def get_news_items_for_export(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all news items for data export (JSON/CSV)."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT id, title, url, source, published_at, fetched_at,
                summary, category, severity, affected_products, tags
         FROM news_items
         ORDER BY fetched_at DESC
-        """
-    ).fetchall()
+        """).fetchall()
 
 
 def get_findings_for_issue_creation(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return new findings that don't have a GitHub issue URL yet."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT * FROM findings
         WHERE state = 'new' AND github_issue_url IS NULL
         ORDER BY priority_score DESC NULLS LAST
-        """
-    ).fetchall()
+        """).fetchall()
 
 
-def set_finding_github_issue_url(
-    conn: sqlite3.Connection, finding_id: int, url: str
-) -> None:
+def set_finding_github_issue_url(conn: sqlite3.Connection, finding_id: int, url: str) -> None:
     """Store the GitHub issue URL on a finding."""
     conn.execute(
         "UPDATE findings SET github_issue_url = ? WHERE id = ?",
@@ -1111,8 +1091,7 @@ def set_finding_github_issue_url(
 
 def get_findings_for_export(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all findings for data export (JSON/CSV)."""
-    return conn.execute(
-        """
+    return conn.execute("""
         SELECT id, repo_full_name, cve_id, ghsa_id, package_name,
                package_ecosystem, installed_version, fixed_version,
                cvss_score, is_kev, patch_available, priority_score,
@@ -1120,26 +1099,23 @@ def get_findings_for_export(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                manifest_path, annotation, github_issue_url
         FROM findings
         ORDER BY priority_score DESC NULLS LAST
-        """
-    ).fetchall()
+        """).fetchall()
 
 
 def get_secret_findings_summary(conn: sqlite3.Connection) -> dict:
     """Return per-state counts for the dashboard."""
     try:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT
                 SUM(CASE WHEN state = 'new'            THEN 1 ELSE 0 END) AS new,
                 SUM(CASE WHEN state = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
                 SUM(CASE WHEN state = 'resolved'       THEN 1 ELSE 0 END) AS resolved
             FROM secret_findings
-            """
-        ).fetchone()
+            """).fetchone()
         return {
-            "new":            int(row["new"] or 0),
+            "new": int(row["new"] or 0),
             "false_positive": int(row["false_positive"] or 0),
-            "resolved":       int(row["resolved"] or 0),
+            "resolved": int(row["resolved"] or 0),
         }
     except Exception:
         return {"new": 0, "false_positive": 0, "resolved": 0}

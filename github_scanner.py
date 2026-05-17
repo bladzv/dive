@@ -36,14 +36,17 @@ from typing import Any
 import httpx
 from github import Github, GithubException, RateLimitExceededException
 
-import db
-from config import AppConfig
-
 try:
-    from cvss import CVSS2 as _CVSS2, CVSS3 as _CVSS3, CVSS4 as _CVSS4
+    from cvss import CVSS2 as _CVSS2
+    from cvss import CVSS3 as _CVSS3
+    from cvss import CVSS4 as _CVSS4
+
     _CVSS_AVAILABLE = True
 except ImportError:
     _CVSS_AVAILABLE = False
+
+import db
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +55,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
-_OSV_BATCH_SIZE = 500          # max queries per OSV.dev batch request
+_OSV_BATCH_SIZE = 500  # max queries per OSV.dev batch request
 _HTTP_TIMEOUT = 30.0
-_MAX_MANIFESTS_PER_REPO = 25   # guard against monorepos with hundreds of lockfiles
-_RATE_LIMIT_WARN_PCT = 0.10    # warn when < 10% of requests remain
+_MAX_MANIFESTS_PER_REPO = 25  # guard against monorepos with hundreds of lockfiles
+_RATE_LIMIT_WARN_PCT = 0.10  # warn when < 10% of requests remain
 
 # Filename → ecosystem mapping (exact filenames only; paths checked separately)
 _MANIFEST_FILENAMES: dict[str, str] = {
@@ -101,6 +104,10 @@ class ScannerStats:
     api_requests_end: int = 0
     failed_repos: list[str] = field(default_factory=list)
     rate_limit_warning: bool = False
+    finding_keys: set = field(default_factory=set)
+    _enrich_queue: set = field(
+        default_factory=set
+    )  # (package_name, ecosystem) needing latest-version check
 
     @property
     def api_requests_used(self) -> int:
@@ -156,7 +163,10 @@ def run(
                     "GitHub API rate limit low: %d/%d remaining. "
                     "Repos scanned so far: %d/%d. "
                     "Remaining repos will be scanned on the next run.",
-                    remaining, limit, stats.repos_scanned, len(repos),
+                    remaining,
+                    limit,
+                    stats.repos_scanned,
+                    len(repos),
                 )
                 stats.rate_limit_warning = True
                 break
@@ -181,9 +191,7 @@ def run(
     # Record rate limit at end
     try:
         stats.api_requests_end, _ = g.rate_limiting
-        logger.info(
-            "API requests used this scan: %d", stats.api_requests_used
-        )
+        logger.info("API requests used this scan: %d", stats.api_requests_used)
     except GithubException:
         pass
 
@@ -192,17 +200,25 @@ def run(
         return stats
 
     stats.packages_checked = len(all_packages)
-    logger.info("Querying OSV.dev for %d packages across %d repos",
-                len(all_packages), stats.repos_scanned)
+    logger.info(
+        "Querying OSV.dev for %d packages across %d repos", len(all_packages), stats.repos_scanned
+    )
 
     # Query OSV.dev and process findings
     with _make_http_client() as client:
         _process_all_packages(conn, client, config, all_packages, kev_cves, stats)
 
+    # For findings with no known fix, look up the latest package version and
+    # check whether it is clean so the UI can suggest an upgrade path.
+    if stats._enrich_queue:
+        _enrich_latest_versions(conn, stats._enrich_queue)
+
     logger.info(
         "Scan complete: %d repos, %d packages, %d new findings, %d updated",
-        stats.repos_scanned, stats.packages_checked,
-        stats.findings_new, stats.findings_updated,
+        stats.repos_scanned,
+        stats.packages_checked,
+        stats.findings_new,
+        stats.findings_updated,
     )
     return stats
 
@@ -319,9 +335,15 @@ def _parse_package_lock(content: str, path: str) -> list[Package]:
         name = key.removeprefix("node_modules/")
         version = info.get("version")
         if name and version:
-            packages.append(Package(name=name, version=version,
-                                    ecosystem="npm", manifest_path=path,
-                                    repo_full_name=""))
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="npm",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
@@ -332,15 +354,21 @@ def _parse_package_json(content: str, path: str) -> list[Package]:
     for section in ("dependencies", "devDependencies", "peerDependencies"):
         for name, version_spec in (data.get(section) or {}).items():
             version = _extract_version(str(version_spec))
-            packages.append(Package(name=name, version=version,
-                                    ecosystem="npm", manifest_path=path,
-                                    repo_full_name=""))
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="npm",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
 _REQ_LINE_RE = re.compile(
     r"^\s*([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)"  # package name
-    r"\s*([><=!~^][^;#\s]*)?"                            # optional version spec
+    r"\s*([><=!~^][^;#\s]*)?"  # optional version spec
 )
 
 
@@ -359,9 +387,11 @@ def _parse_requirements_txt(content: str, path: str) -> list[Package]:
             continue
         name = m.group(1)
         version = _extract_version(m.group(3) or "")
-        packages.append(Package(name=name, version=version,
-                                ecosystem="PyPI", manifest_path=path,
-                                repo_full_name=""))
+        packages.append(
+            Package(
+                name=name, version=version, ecosystem="PyPI", manifest_path=path, repo_full_name=""
+            )
+        )
     return packages
 
 
@@ -377,9 +407,15 @@ def _parse_pipfile(content: str, path: str) -> list[Package]:
                 version = _extract_version(version_spec.get("version") or "")
             else:
                 version = _extract_version(str(version_spec))
-            packages.append(Package(name=name, version=version,
-                                    ecosystem="PyPI", manifest_path=path,
-                                    repo_full_name=""))
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="PyPI",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
@@ -395,9 +431,11 @@ def _parse_pyproject_toml(content: str, path: str) -> list[Package]:
             continue
         name = m.group(1)
         version = _extract_version(m.group(3).strip())
-        packages.append(Package(name=name, version=version,
-                                ecosystem="PyPI", manifest_path=path,
-                                repo_full_name=""))
+        packages.append(
+            Package(
+                name=name, version=version, ecosystem="PyPI", manifest_path=path, repo_full_name=""
+            )
+        )
     return packages
 
 
@@ -413,9 +451,15 @@ def _parse_github_actions(content: str, path: str) -> list[Package]:
         # Skip local actions (./path/to/action)
         if action_name.startswith("."):
             continue
-        packages.append(Package(name=action_name, version=version,
-                                ecosystem="GitHub Actions", manifest_path=path,
-                                repo_full_name=""))
+        packages.append(
+            Package(
+                name=action_name,
+                version=version,
+                ecosystem="GitHub Actions",
+                manifest_path=path,
+                repo_full_name="",
+            )
+        )
     return packages
 
 
@@ -435,16 +479,28 @@ def _parse_go_mod(content: str, path: str) -> list[Package]:
             parts = line.split()
             if len(parts) >= 2 and not parts[0].startswith("//"):
                 version = parts[1].lstrip("v") or None
-                packages.append(Package(name=parts[0], version=version,
-                                        ecosystem="Go", manifest_path=path,
-                                        repo_full_name=""))
+                packages.append(
+                    Package(
+                        name=parts[0],
+                        version=version,
+                        ecosystem="Go",
+                        manifest_path=path,
+                        repo_full_name="",
+                    )
+                )
         elif line.startswith("require ") and "(" not in line:
             parts = line.split()
             if len(parts) >= 3:
                 version = parts[2].lstrip("v") or None
-                packages.append(Package(name=parts[1], version=version,
-                                        ecosystem="Go", manifest_path=path,
-                                        repo_full_name=""))
+                packages.append(
+                    Package(
+                        name=parts[1],
+                        version=version,
+                        ecosystem="Go",
+                        manifest_path=path,
+                        repo_full_name="",
+                    )
+                )
     return packages
 
 
@@ -463,9 +519,15 @@ def _parse_cargo_toml(content: str, path: str) -> list[Package]:
                 version = _extract_version(spec.get("version") or "")
             else:
                 continue
-            packages.append(Package(name=name, version=version,
-                                    ecosystem="crates.io", manifest_path=path,
-                                    repo_full_name=""))
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="crates.io",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
@@ -478,9 +540,15 @@ def _parse_cargo_lock(content: str, path: str) -> list[Package]:
         version = pkg.get("version")
         source = pkg.get("source", "")
         if name and version and source.startswith("registry+"):
-            packages.append(Package(name=name, version=version,
-                                    ecosystem="crates.io", manifest_path=path,
-                                    repo_full_name=""))
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="crates.io",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
@@ -499,42 +567,50 @@ def _parse_pom_xml(content: str, path: str) -> list[Package]:
         # Skip Maven property references like ${spring.version}
         if version_text.startswith("${"):
             version_text = ""
-        packages.append(Package(
-            name=f"{group_id}:{artifact_id}",
-            version=_extract_version(version_text),
-            ecosystem="Maven",
-            manifest_path=path,
-            repo_full_name="",
-        ))
+        packages.append(
+            Package(
+                name=f"{group_id}:{artifact_id}",
+                version=_extract_version(version_text),
+                ecosystem="Maven",
+                manifest_path=path,
+                repo_full_name="",
+            )
+        )
     return packages
 
 
 _GRADLE_DEP_RE = re.compile(
     r"""(?:implementation|api|compile|runtimeOnly|testImplementation|testCompile)\s+"""
-    r"""['"]([^'"]+):([^'"]+):([^'"]+)['"]""")
+    r"""['"]([^'"]+):([^'"]+):([^'"]+)['"]"""
+)
 _GRADLE_MAP_RE = re.compile(
-    r"""group:\s*['"]([^'"]+)['"]\s*,\s*name:\s*['"]([^'"]+)['"]\s*,\s*version:\s*['"]([^'"]+)['"]""")
+    r"""group:\s*['"]([^'"]+)['"]\s*,\s*name:\s*['"]([^'"]+)['"]\s*,\s*version:\s*['"]([^'"]+)['"]"""
+)
 
 
 def _parse_build_gradle(content: str, path: str) -> list[Package]:
     """Parse build.gradle string and map-style dependency declarations."""
     packages: list[Package] = []
     for m in _GRADLE_DEP_RE.finditer(content):
-        packages.append(Package(
-            name=f"{m.group(1)}:{m.group(2)}",
-            version=_extract_version(m.group(3)),
-            ecosystem="Maven",
-            manifest_path=path,
-            repo_full_name="",
-        ))
+        packages.append(
+            Package(
+                name=f"{m.group(1)}:{m.group(2)}",
+                version=_extract_version(m.group(3)),
+                ecosystem="Maven",
+                manifest_path=path,
+                repo_full_name="",
+            )
+        )
     for m in _GRADLE_MAP_RE.finditer(content):
-        packages.append(Package(
-            name=f"{m.group(1)}:{m.group(2)}",
-            version=_extract_version(m.group(3)),
-            ecosystem="Maven",
-            manifest_path=path,
-            repo_full_name="",
-        ))
+        packages.append(
+            Package(
+                name=f"{m.group(1)}:{m.group(2)}",
+                version=_extract_version(m.group(3)),
+                ecosystem="Maven",
+                manifest_path=path,
+                repo_full_name="",
+            )
+        )
     return packages
 
 
@@ -547,13 +623,15 @@ def _parse_gemfile(content: str, path: str) -> list[Package]:
     for line in content.splitlines():
         m = _GEMFILE_GEM_RE.match(line)
         if m:
-            packages.append(Package(
-                name=m.group(1),
-                version=_extract_version(m.group(2) or ""),
-                ecosystem="RubyGems",
-                manifest_path=path,
-                repo_full_name="",
-            ))
+            packages.append(
+                Package(
+                    name=m.group(1),
+                    version=_extract_version(m.group(2) or ""),
+                    ecosystem="RubyGems",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
     return packages
 
 
@@ -581,13 +659,15 @@ def _parse_gemfile_lock(content: str, path: str) -> list[Package]:
             if m:
                 # Strip platform suffix, e.g. "1.15.4-x86_64-linux" → "1.15.4"
                 version = re.sub(r"-[a-zA-Z].*$", "", m.group(2))
-                packages.append(Package(
-                    name=m.group(1),
-                    version=version or None,
-                    ecosystem="RubyGems",
-                    manifest_path=path,
-                    repo_full_name="",
-                ))
+                packages.append(
+                    Package(
+                        name=m.group(1),
+                        version=version or None,
+                        ecosystem="RubyGems",
+                        manifest_path=path,
+                        repo_full_name="",
+                    )
+                )
     return packages
 
 
@@ -647,7 +727,7 @@ def _process_all_packages(
 
     # Process in batches
     for batch_start in range(0, len(queryable), _OSV_BATCH_SIZE):
-        batch = queryable[batch_start: batch_start + _OSV_BATCH_SIZE]
+        batch = queryable[batch_start : batch_start + _OSV_BATCH_SIZE]
         _query_and_store_batch(conn, client, config, batch, kev_cves, stats)
 
 
@@ -686,6 +766,120 @@ def _query_and_store_batch(
             _store_osv_finding(conn, config, pkg, vuln, kev_cves, stats)
 
 
+# ---------------------------------------------------------------------------
+# Latest-version enrichment
+# ---------------------------------------------------------------------------
+
+
+def _lookup_latest_pypi(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://pypi.org/pypi/{name}/json", timeout=10)
+        r.raise_for_status()
+        return r.json()["info"]["version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_npm(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://registry.npmjs.org/{name}/latest", timeout=10)
+        r.raise_for_status()
+        return r.json()["version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_crates(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(
+            f"https://crates.io/api/v1/crates/{name}",
+            headers={"User-Agent": "DIVE-security-scanner/1.0 (github.com/bladzv/dive)"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()["crate"]["max_stable_version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_go(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://proxy.golang.org/{name.lower()}/@latest", timeout=10)
+        r.raise_for_status()
+        return r.json()["Version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_rubygems(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://rubygems.org/api/v1/gems/{name}.json", timeout=10)
+        r.raise_for_status()
+        return r.json()["version"]
+    except Exception:
+        return None
+
+
+_LATEST_VERSION_REGISTRIES: dict[str, Any] = {
+    "PyPI": _lookup_latest_pypi,
+    "npm": _lookup_latest_npm,
+    "crates.io": _lookup_latest_crates,
+    "Go": _lookup_latest_go,
+    "RubyGems": _lookup_latest_rubygems,
+}
+
+
+def _check_latest_osv_vuln_count(
+    package: str, ecosystem: str, version: str, client: httpx.Client
+) -> int:
+    """Return the number of known OSV vulnerabilities for package@version, or -1 on error."""
+    try:
+        r = client.post(
+            "https://api.osv.dev/v1/query",
+            json={"version": version, "package": {"name": package, "ecosystem": ecosystem}},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return len(r.json().get("vulns", []))
+    except Exception:
+        return -1
+
+
+def _enrich_latest_versions(
+    conn: sqlite3.Connection,
+    queue: set[tuple[str, str]],
+) -> None:
+    """Look up the latest published version for each (package, ecosystem) in queue.
+
+    For each, query OSV to see whether that version is clean. Updates findings
+    that have no fixed_version with the result so the UI can suggest an upgrade.
+    """
+    logger.info("Checking latest versions for %d package(s) with no known fix", len(queue))
+    with httpx.Client(follow_redirects=True) as client:
+        for package, ecosystem in queue:
+            lookup_fn = _LATEST_VERSION_REGISTRIES.get(ecosystem)
+            if not lookup_fn:
+                continue
+            try:
+                latest = lookup_fn(package, client)
+                if not latest:
+                    continue
+                vuln_count = _check_latest_osv_vuln_count(package, ecosystem, latest, client)
+                if vuln_count < 0:
+                    continue
+                db.update_latest_version_for_package(conn, package, ecosystem, latest, vuln_count)
+                logger.debug(
+                    "Latest %s/%s: %s (%d known vuln(s))", ecosystem, package, latest, vuln_count
+                )
+            except Exception:
+                logger.debug("Failed to enrich %s/%s", ecosystem, package, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# OSV finding storage
+# ---------------------------------------------------------------------------
+
+
 def _store_osv_finding(
     conn: sqlite3.Connection,
     config: AppConfig,
@@ -698,12 +892,15 @@ def _store_osv_finding(
     osv_id = vuln.get("id", "")
     aliases: list[str] = vuln.get("aliases") or []
     cve_id = next((a for a in aliases if a.startswith("CVE-")), None)
-    ghsa_id = osv_id if osv_id.startswith("GHSA-") else next(
-        (a for a in aliases if a.startswith("GHSA-")), None
+    ghsa_id = (
+        osv_id
+        if osv_id.startswith("GHSA-")
+        else next((a for a in aliases if a.startswith("GHSA-")), None)
     )
 
     severity_text, cvss_score = _extract_severity(vuln)
     fixed_version = _extract_fixed_version(vuln, pkg.ecosystem, pkg.name)
+    affected_versions = _extract_affected_versions(vuln, pkg.ecosystem, pkg.name)
     patch_available = fixed_version is not None
     is_kev = bool(cve_id and cve_id.upper() in kev_cves)
     priority = _priority_score(cvss_score, is_kev, patch_available)
@@ -720,6 +917,7 @@ def _store_osv_finding(
         "package_ecosystem": pkg.ecosystem,
         "installed_version": pkg.version,
         "fixed_version": fixed_version,
+        "affected_versions": affected_versions,
         "cvss_score": cvss_score,
         "is_kev": is_kev,
         "patch_available": patch_available,
@@ -728,6 +926,22 @@ def _store_osv_finding(
     }
 
     is_new = db.upsert_finding(conn, finding)
+
+    # Track keys found this run so lifecycle.auto_resolve_gone() can detect
+    # findings that disappeared because the package was patched.
+    stats.finding_keys.add(
+        (
+            pkg.repo_full_name,
+            pkg.name,
+            pkg.ecosystem,
+            cve_id or "",
+            ghsa_id or "",
+        )
+    )
+
+    # Queue for latest-version enrichment when OSV provides no fixed version
+    if not fixed_version:
+        stats._enrich_queue.add((pkg.name, pkg.ecosystem))
 
     if is_new:
         stats.findings_new += 1
@@ -757,14 +971,23 @@ def _extract_severity(vuln: dict) -> tuple[str, float | None]:
     Falls back to the database_specific.severity text label with an approximate
     midpoint score when no vector is present.
     """
-    # Try to calculate an accurate score from the CVSS vector first.
+    # 1. Top-level severity array (most databases).
     for sev_entry in vuln.get("severity") or []:
         if "CVSS" in sev_entry.get("type", ""):
             score = _score_from_vector(sev_entry.get("score", ""))
             if score is not None:
                 return _cvss_to_severity_text(score), score
 
-    # Fall back to the text severity label (reliable for GitHub advisories).
+    # 2. Per-affected-version severity (Go, npm, crates.io advisories often
+    #    omit the top-level array and place CVSS vectors here instead).
+    for affected in vuln.get("affected") or []:
+        for sev_entry in affected.get("severity") or []:
+            if "CVSS" in sev_entry.get("type", ""):
+                score = _score_from_vector(sev_entry.get("score", ""))
+                if score is not None:
+                    return _cvss_to_severity_text(score), score
+
+    # 3. Text severity label from database_specific (reliable for GitHub advisories).
     db_sev = (vuln.get("database_specific") or {}).get("severity", "").upper()
     if db_sev in _SEVERITY_CVSS_MAP:
         text = "Critical" if db_sev == "CRITICAL" else db_sev.capitalize()
@@ -818,6 +1041,46 @@ def _cvss_to_severity_text(score: float) -> str:
     if score >= 4.0:
         return "Medium"
     return "Low"
+
+
+def _extract_affected_versions(vuln: dict, ecosystem: str, package_name: str) -> str | None:
+    """Return a human-readable affected-version range string from OSV data.
+
+    E.g. "< 2.32.0" or ">= 1.0.0, < 2.32.0". Returns None when no range is found.
+    Multiple disjoint ranges are joined with " | ".
+    """
+    for affected in vuln.get("affected") or []:
+        pkg = affected.get("package") or {}
+        if pkg.get("ecosystem", "").lower() != ecosystem.lower():
+            continue
+        if pkg.get("name", "").lower() != package_name.lower():
+            continue
+        ranges: list[str] = []
+        for range_ in affected.get("ranges") or []:
+            if range_.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                continue
+            introduced: str | None = None
+            fixed: str | None = None
+            last_affected: str | None = None
+            for event in range_.get("events") or []:
+                if event.get("introduced"):
+                    introduced = event["introduced"]
+                if event.get("fixed"):
+                    fixed = event["fixed"]
+                if event.get("last_affected"):
+                    last_affected = event["last_affected"]
+            parts: list[str] = []
+            if introduced and introduced != "0":
+                parts.append(f">= {introduced}")
+            if fixed:
+                parts.append(f"< {fixed}")
+            elif last_affected:
+                parts.append(f"<= {last_affected}")
+            if parts:
+                ranges.append(", ".join(parts))
+        if ranges:
+            return " | ".join(ranges)
+    return None
 
 
 def _extract_fixed_version(vuln: dict, ecosystem: str, package_name: str) -> str | None:
@@ -908,8 +1171,9 @@ def _generate_next_steps_for_finding(
 
     prompt = _build_next_steps_prompt(finding, vuln)
     url = f"{config.ollama.host.rstrip('/')}/api/generate"
+    active_model = db.get_setting(conn, "active_model") or config.ollama.model
     payload = {
-        "model": config.ollama.model,
+        "model": active_model,
         "prompt": prompt,
         "stream": False,
         "format": "json",

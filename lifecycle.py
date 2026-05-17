@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
-
-import db
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +64,7 @@ def recheck_resolved(
         )
         if key in current_finding_keys:
             conn.execute(
-                "UPDATE findings SET state = 'new', notified_at = NULL "
-                "WHERE id = ?",
+                "UPDATE findings SET state = 'new', notified_at = NULL " "WHERE id = ?",
                 (row["id"],),
             )
             reverted += 1
@@ -80,7 +77,9 @@ def recheck_resolved(
             )
 
     if reverted:
-        logger.warning("%d resolved finding(s) reverted to new — fix may have been rolled back", reverted)
+        logger.warning(
+            "%d resolved finding(s) reverted to new — fix may have been rolled back", reverted
+        )
     return reverted
 
 
@@ -111,7 +110,7 @@ def auto_resolve_gone(
     ).fetchall()
 
     resolved = 0
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for row in active_rows:
         if row["repo_full_name"] not in scanned_repos:
             continue  # Repo wasn't scanned this run — don't auto-resolve
@@ -124,8 +123,7 @@ def auto_resolve_gone(
         )
         if key not in current_finding_keys:
             conn.execute(
-                "UPDATE findings SET state = 'resolved', resolved_at = ? "
-                "WHERE id = ?",
+                "UPDATE findings SET state = 'resolved', resolved_at = ? " "WHERE id = ?",
                 (now, row["id"]),
             )
             resolved += 1
@@ -161,7 +159,7 @@ def resolve(conn: sqlite3.Connection, finding_id: int) -> bool:
     Manually mark a finding as resolved.
     Returns True if the finding existed and was updated.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     cur = conn.execute(
         "UPDATE findings SET state = 'resolved', resolved_at = ? "
         "WHERE id = ? AND state IN ('new', 'acknowledged')",

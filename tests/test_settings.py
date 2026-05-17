@@ -6,14 +6,12 @@ All tests use a temporary initialised SQLite database; no file I/O beyond that.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 import db
 import settings
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -125,9 +123,9 @@ class TestRemoveFeed:
 
     def test_remove_default_feed_raises(self, conn):
         settings.get_feeds(conn)
-        default_id = conn.execute(
-            "SELECT id FROM rss_feeds WHERE is_default=1 LIMIT 1"
-        ).fetchone()["id"]
+        default_id = conn.execute("SELECT id FROM rss_feeds WHERE is_default=1 LIMIT 1").fetchone()[
+            "id"
+        ]
         with pytest.raises(ValueError, match="Default feeds cannot be deleted"):
             settings.remove_feed(conn, default_id)
 
@@ -138,7 +136,9 @@ class TestRemoveFeed:
 class TestUpdateFeedStats:
     def test_updates_last_fetched_and_item_count(self, conn):
         settings.add_feed(conn, "Stats Feed", "https://stats.example.com/rss")
-        settings.update_feed_stats(conn, "https://stats.example.com/rss", "2025-01-01T00:00:00+00:00", 10)
+        settings.update_feed_stats(
+            conn, "https://stats.example.com/rss", "2025-01-01T00:00:00+00:00", 10
+        )
         row = conn.execute(
             "SELECT last_fetched_at, item_count FROM rss_feeds WHERE url=?",
             ("https://stats.example.com/rss",),
@@ -148,8 +148,12 @@ class TestUpdateFeedStats:
 
     def test_item_count_accumulates(self, conn):
         settings.add_feed(conn, "Acc Feed", "https://acc.example.com/rss")
-        settings.update_feed_stats(conn, "https://acc.example.com/rss", "2025-01-01T00:00:00+00:00", 5)
-        settings.update_feed_stats(conn, "https://acc.example.com/rss", "2025-01-02T00:00:00+00:00", 3)
+        settings.update_feed_stats(
+            conn, "https://acc.example.com/rss", "2025-01-01T00:00:00+00:00", 5
+        )
+        settings.update_feed_stats(
+            conn, "https://acc.example.com/rss", "2025-01-02T00:00:00+00:00", 3
+        )
         row = conn.execute(
             "SELECT item_count FROM rss_feeds WHERE url=?",
             ("https://acc.example.com/rss",),

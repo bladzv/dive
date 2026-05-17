@@ -23,7 +23,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import feedparser
@@ -43,6 +43,29 @@ _MAX_CONTENT_CHARS = 2000  # truncate article body before storing / sending to O
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap on any HTTP response
 _HTTP_TIMEOUT = 30.0
 _COLLECTION_WINDOW_DAYS = 7  # how far back to fetch from structured APIs
+
+_CVSS_SEVERITY_MAP = [
+    (9.0, "Critical"),
+    (7.0, "High"),
+    (4.0, "Medium"),
+    (0.0, "Low"),
+]
+_GHSA_SEVERITY_MAP = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+}
+
+
+def _cvss_to_severity(score: float | None) -> str | None:
+    if score is None:
+        return None
+    for threshold, label in _CVSS_SEVERITY_MAP:
+        if score >= threshold:
+            return label
+    return None
+
 
 _NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -92,12 +115,20 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> CollectorStats:
         _run_kev(client, conn, stats)
         _run_github_advisories(client, conn, config, stats)
 
-    logger.info(
-        "Collection complete: %d fetched, %d new, %d failed sources",
-        stats.items_fetched,
-        stats.items_new,
-        len(stats.failed_sources),
-    )
+    if stats.failed_sources:
+        logger.warning(
+            "Collection complete: %d fetched, %d new, %d failed sources: %s",
+            stats.items_fetched,
+            stats.items_new,
+            len(stats.failed_sources),
+            ", ".join(stats.failed_sources),
+        )
+    else:
+        logger.info(
+            "Collection complete: %d fetched, %d new, 0 failed sources",
+            stats.items_fetched,
+            stats.items_new,
+        )
     return stats
 
 
@@ -123,7 +154,9 @@ def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None
         response = client.get(url, **kwargs)
         response.raise_for_status()
         if len(response.content) > _MAX_RESPONSE_BYTES:
-            logger.warning("Response too large (%d bytes), truncating: %s", len(response.content), url)
+            logger.warning(
+                "Response too large (%d bytes), truncating: %s", len(response.content), url
+            )
         return response
     except httpx.HTTPStatusError as exc:
         logger.warning("HTTP %s from %s", exc.response.status_code, url)
@@ -216,14 +249,14 @@ def _parse_rss_date(entry) -> str | None:
     # feedparser provides parsed_published as a time.struct_time tuple
     if entry.get("published_parsed"):
         try:
-            dt = datetime(*entry["published_parsed"][:6], tzinfo=timezone.utc)
+            dt = datetime(*entry["published_parsed"][:6], tzinfo=UTC)
             return dt.isoformat()
         except (TypeError, ValueError):
             pass
     if entry.get("published"):
         try:
             dt = parsedate_to_datetime(entry["published"])
-            return dt.astimezone(timezone.utc).isoformat()
+            return dt.astimezone(UTC).isoformat()
         except Exception:
             pass
     return None
@@ -254,7 +287,7 @@ def _fetch_nvd(
     config: AppConfig,
     stats: CollectorStats,
 ) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = now - timedelta(days=_COLLECTION_WINDOW_DAYS)
 
     params: dict = {
@@ -288,6 +321,7 @@ def _fetch_nvd(
 
             description = _nvd_description(cve)
             cvss = _nvd_cvss(cve)
+            severity = _cvss_to_severity(cvss)
             item = {
                 "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
                 "title": cve_id,
@@ -296,6 +330,13 @@ def _fetch_nvd(
                 "fetched_at": _utcnow(),
                 "content": _truncate(description, _MAX_CONTENT_CHARS),
                 "raw_entry": {"cvss": cvss},
+                # Pre-classified from NVD structured data — skips Ollama batch
+                "category": "Vulnerability",
+                "severity": severity,
+                "summary": _truncate(description, 160),
+                "affected_products": [],
+                "tags": [cve_id],
+                "cluster_id": cve_id,
             }
             stats.items_fetched += 1
             if db.insert_news_item(conn, item):
@@ -353,13 +394,13 @@ def _fetch_kev(
         return
 
     data = response.json()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_COLLECTION_WINDOW_DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=_COLLECTION_WINDOW_DAYS)
     new_kev = 0
 
     for vuln in data.get("vulnerabilities", []):
         date_added_str = vuln.get("dateAdded", "")
         try:
-            date_added = datetime.fromisoformat(date_added_str).replace(tzinfo=timezone.utc)
+            date_added = datetime.fromisoformat(date_added_str).replace(tzinfo=UTC)
         except (ValueError, AttributeError):
             date_added = None
 
@@ -379,6 +420,7 @@ def _fetch_kev(
             f"Required action: {vuln.get('requiredAction', '')} | "
             f"Due date: {vuln.get('dueDate', '')}"
         )
+        affected = [p for p in [vuln.get("vendorProject"), vuln.get("product")] if p]
         item = {
             "url": f"https://www.cisa.gov/known-exploited-vulnerabilities-catalog#{cve_id}",
             "title": title,
@@ -390,6 +432,13 @@ def _fetch_kev(
                 "ransomware": vuln.get("knownRansomwareCampaignUse"),
                 "due_date": vuln.get("dueDate"),
             },
+            # CISA KEV = actively exploited in the wild → always Critical
+            "category": "Vulnerability",
+            "severity": "Critical",
+            "summary": _truncate(vuln.get("shortDescription") or title, 160),
+            "affected_products": affected,
+            "tags": [cve_id, "kev"],
+            "cluster_id": cve_id,
         }
         stats.items_fetched += 1
         if db.insert_news_item(conn, item):
@@ -444,7 +493,7 @@ def _fetch_github_advisories(
         stats.failed_sources.append("GitHub Security Advisories")
         return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_COLLECTION_WINDOW_DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=_COLLECTION_WINDOW_DAYS)
 
     for adv in advisories:
         updated_str = adv.get("updated_at") or adv.get("published_at", "")
@@ -457,7 +506,8 @@ def _fetch_github_advisories(
             break  # results are sorted newest-first, so we can stop early
 
         adv_url = adv.get("html_url", "")
-        title = adv.get("summary") or adv.get("ghsa_id", "GitHub Security Advisory")
+        ghsa_id = adv.get("ghsa_id", "")
+        title = adv.get("summary") or ghsa_id or "GitHub Security Advisory"
         cve_ids = [c.get("cve_id") for c in adv.get("cve_ids", []) if c.get("cve_id")]
         content = (
             f"{adv.get('description', '')}\n"
@@ -468,6 +518,9 @@ def _fetch_github_advisories(
         if not adv_url or not title:
             continue
 
+        sev = _GHSA_SEVERITY_MAP.get((adv.get("severity") or "").lower())
+        cluster = cve_ids[0] if cve_ids else ghsa_id or None
+        tags = ([ghsa_id] if ghsa_id else []) + cve_ids[:3]
         item = {
             "url": adv_url,
             "title": _truncate(title, 200),
@@ -476,10 +529,17 @@ def _fetch_github_advisories(
             "fetched_at": _utcnow(),
             "content": _truncate(content, _MAX_CONTENT_CHARS),
             "raw_entry": {
-                "ghsa_id": adv.get("ghsa_id"),
+                "ghsa_id": ghsa_id,
                 "cve_ids": cve_ids,
                 "severity": adv.get("severity"),
             },
+            # Pre-classified from GitHub advisory structured data — skips Ollama
+            "category": "Vulnerability",
+            "severity": sev,  # None when severity field is absent → shows as Unknown
+            "summary": _truncate(title, 160),
+            "affected_products": [],
+            "tags": tags,
+            "cluster_id": cluster,
         }
         stats.items_fetched += 1
         if db.insert_news_item(conn, item):
@@ -510,4 +570,4 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

@@ -125,6 +125,7 @@
       <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
         <input type="checkbox" id="clear-secrets" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
         Secret findings
+        <span style="font-size:0.75rem;color:var(--error)">⚠ includes unresolved</span>
       </label>
       <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
         <input type="checkbox" id="clear-runhistory" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
@@ -136,7 +137,7 @@
       <label class="form-label" for="clear-days">Older than (days)</label>
       <div style="display:flex;gap:0.5rem;align-items:center">
         <input type="number" id="clear-days" min="1" placeholder="leave blank = all"
-               style="max-width:160px">
+               autocomplete="off" style="max-width:160px">
         <span style="font-size:0.82rem;color:var(--text-dim)">days — leave blank to delete everything</span>
       </div>
       <p class="form-hint">Deletes only records older than N days. Set to blank to delete all records of the selected types.</p>
@@ -402,9 +403,12 @@ function addKeyword() {
 
 function deleteKeyword(id) {
   fetch('/api/config/keywords/' + id, { method: 'DELETE', credentials: 'same-origin' })
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+    return r.json();
+  })
   .then(() => { showToast('Keyword removed', 'success'); loadKeywords(); })
-  .catch(() => showToast('Failed to remove keyword', 'error'));
+  .catch(err => showToast(err.message, 'error'));
 }
 
 /* ── Scanner Settings ──────────────────────────────── */
@@ -532,11 +536,19 @@ function clearData() {
     })
     .then(data => {
       const parts = Object.entries(data.deleted).map(([k, v]) => `${k}: ${v}`).join(', ');
-      showToast(`Deleted ${data.total} record(s) — ${parts}`, 'success');
+      if (data.total === 0) {
+        const msg = days_back
+          ? 'No records matched the filter — try a larger number of days, or leave the field blank to delete everything.'
+          : 'Nothing to delete — the selected tables are already empty.';
+        showToast(msg, 'error');
+      } else {
+        showToast(`Deleted ${data.total} record(s) — ${parts}`, 'success');
+      }
       ['clear-news','clear-findings','clear-secrets','clear-runhistory'].forEach(id => {
         document.getElementById(id).checked = false;
       });
       document.getElementById('clear-days').value = '';
+      if (types.includes('news')) loadFeeds();
     })
     .catch(err => showToast(err.message, 'error'));
   });
@@ -560,8 +572,9 @@ function showConfirm(message, warning, onConfirm) {
 }
 
 function _doConfirm() {
+  const cb = _confirmCallback;
   closeConfirmModal();
-  if (_confirmCallback) _confirmCallback();
+  if (cb) cb();
 }
 
 function closeConfirmModal() {

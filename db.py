@@ -1135,6 +1135,8 @@ def clear_news_items(conn: sqlite3.Connection, days_back: int | None = None) -> 
         )
     else:
         cur = conn.execute("DELETE FROM news_items")
+    if cur.rowcount:
+        conn.execute("UPDATE rss_feeds SET item_count = 0")
     return cur.rowcount
 
 

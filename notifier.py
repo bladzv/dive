@@ -73,7 +73,12 @@ def send_findings_alert(
     text_body = _build_findings_text(findings)
     slack_blocks = _build_slack_blocks(findings)
 
-    _dispatch(config, subject=f"🚨 {len(findings)} new security finding(s)", text=text_body, slack_blocks=slack_blocks)
+    _dispatch(
+        config,
+        subject=f"🚨 {len(findings)} new security finding(s)",
+        text=text_body,
+        slack_blocks=slack_blocks,
+    )
 
 
 def send_weekly_digest(config: AppConfig, conn: sqlite3.Connection) -> None:
@@ -82,38 +87,38 @@ def send_weekly_digest(config: AppConfig, conn: sqlite3.Connection) -> None:
     Fired by a Monday 08:00 cron job. Stored even when no channels are configured
     so the /weekly view always has something to show.
     """
-    items_count   = db.get_weekly_items_collected(conn)
-    new_count     = db.get_weekly_new_findings_count(conn)
+    items_count = db.get_weekly_items_collected(conn)
+    new_count = db.get_weekly_new_findings_count(conn)
     resolved_count = db.get_weekly_resolved_count(conn)
-    top_findings  = db.get_weekly_digest_top_findings(conn)
-    top_repos     = db.get_top_affected_repos(conn, limit=5)
+    top_findings = db.get_weekly_digest_top_findings(conn)
+    top_repos = db.get_top_affected_repos(conn, limit=5)
 
     now = datetime.now(UTC)
     week_label = now.strftime("Week of %B %-d, %Y")
 
     # Build serialisable snapshot for /weekly view
     digest_data = {
-        "generated_at":  now.isoformat(),
-        "week_label":    week_label,
+        "generated_at": now.isoformat(),
+        "week_label": week_label,
         "items_collected": items_count,
-        "new_findings":  new_count,
+        "new_findings": new_count,
         "resolved_count": resolved_count,
         "top_findings": [
             {
-                "repo":       r["repo_full_name"],
-                "id":         r["cve_id"] or r["ghsa_id"] or "—",
-                "package":    r["package_name"],
-                "cvss":       r["cvss_score"],
-                "priority":   r["priority_score"],
-                "is_kev":     bool(r["is_kev"]),
-                "has_patch":  bool(r["patch_available"]),
-                "state":      r["state"],
+                "repo": r["repo_full_name"],
+                "id": r["cve_id"] or r["ghsa_id"] or "—",
+                "package": r["package_name"],
+                "cvss": r["cvss_score"],
+                "priority": r["priority_score"],
+                "is_kev": bool(r["is_kev"]),
+                "has_patch": bool(r["patch_available"]),
+                "state": r["state"],
             }
             for r in top_findings
         ],
         "top_repos": [
             {
-                "repo":         r["repo_full_name"],
+                "repo": r["repo_full_name"],
                 "finding_count": r["finding_count"],
             }
             for r in top_repos
@@ -254,7 +259,9 @@ def _build_secrets_text(secret_findings: list[sqlite3.Row]) -> str:
     for row in shown:
         lines.append(_secret_line(row))
     if len(secret_findings) > MAX_FINDINGS_PER_ALERT:
-        lines.append(f"\n+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view.")
+        lines.append(
+            f"\n+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view."
+        )
     return "\n".join(lines)
 
 
@@ -263,18 +270,30 @@ def _build_secrets_slack_blocks(secret_findings: list[sqlite3.Row]) -> list[dict
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": f"🔑 {len(secret_findings)} new secret(s) detected"},
+            "text": {
+                "type": "plain_text",
+                "text": f"🔑 {len(secret_findings)} new secret(s) detected",
+            },
         }
     ]
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "\n".join(_secret_line(r) for r in shown)},
-    })
+    blocks.append(
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(_secret_line(r) for r in shown)},
+        }
+    )
     if len(secret_findings) > MAX_FINDINGS_PER_ALERT:
-        blocks.append({
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": f"+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view"}],
-        })
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"+ {len(secret_findings) - MAX_FINDINGS_PER_ALERT} more — check the Secrets view",
+                    }
+                ],
+            }
+        )
     return blocks
 
 
@@ -307,7 +326,9 @@ def _build_findings_text(findings: list[sqlite3.Row]) -> str:
     for row in shown:
         lines.append(_finding_line(row))
     if len(findings) > MAX_FINDINGS_PER_ALERT:
-        lines.append(f"\n+ {len(findings) - MAX_FINDINGS_PER_ALERT} more finding(s) — check the dashboard.")
+        lines.append(
+            f"\n+ {len(findings) - MAX_FINDINGS_PER_ALERT} more finding(s) — check the dashboard."
+        )
     return "\n".join(lines)
 
 
@@ -320,20 +341,24 @@ def _build_slack_blocks(findings: list[sqlite3.Row]) -> list[dict[str, Any]]:
         }
     ]
     lines = [_finding_line(row) for row in shown]
-    blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-    })
+    blocks.append(
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+        }
+    )
     if len(findings) > MAX_FINDINGS_PER_ALERT:
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"+ {len(findings) - MAX_FINDINGS_PER_ALERT} more — check the dashboard",
-                }
-            ],
-        })
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"+ {len(findings) - MAX_FINDINGS_PER_ALERT} more — check the dashboard",
+                    }
+                ],
+            }
+        )
     return blocks
 
 

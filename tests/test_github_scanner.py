@@ -65,7 +65,7 @@ def db_conn(tmp_path: Path):
         ("*", None),
         ("latest", None),
         ("", None),
-        ("v3", "3"),           # v-prefixed
+        ("v3", "3"),  # v-prefixed
         ("1.0.0-beta.1", "1.0.0-beta.1"),
     ],
 )
@@ -79,14 +79,16 @@ def test_extract_version(spec, expected):
 
 
 def test_parse_package_lock_v3():
-    content = json.dumps({
-        "lockfileVersion": 3,
-        "packages": {
-            "": {"name": "my-app"},          # root entry — should be skipped
-            "node_modules/express": {"version": "4.18.2"},
-            "node_modules/lodash": {"version": "4.17.20"},
-        },
-    })
+    content = json.dumps(
+        {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "my-app"},  # root entry — should be skipped
+                "node_modules/express": {"version": "4.18.2"},
+                "node_modules/lodash": {"version": "4.17.20"},
+            },
+        }
+    )
     pkgs = _parse_package_lock(content, "package-lock.json")
     names = {p.name: p.version for p in pkgs}
     assert names.get("express") == "4.18.2"
@@ -95,10 +97,12 @@ def test_parse_package_lock_v3():
 
 
 def test_parse_package_lock_returns_npm_ecosystem():
-    content = json.dumps({
-        "lockfileVersion": 3,
-        "packages": {"node_modules/react": {"version": "18.0.0"}},
-    })
+    content = json.dumps(
+        {
+            "lockfileVersion": 3,
+            "packages": {"node_modules/react": {"version": "18.0.0"}},
+        }
+    )
     pkgs = _parse_package_lock(content, "package-lock.json")
     assert all(p.ecosystem == "npm" for p in pkgs)
 
@@ -109,10 +113,12 @@ def test_parse_package_lock_returns_npm_ecosystem():
 
 
 def test_parse_package_json_extracts_dependencies():
-    content = json.dumps({
-        "dependencies": {"express": "^4.18.0", "lodash": "4.17.21"},
-        "devDependencies": {"jest": "^29.0.0"},
-    })
+    content = json.dumps(
+        {
+            "dependencies": {"express": "^4.18.0", "lodash": "4.17.21"},
+            "devDependencies": {"jest": "^29.0.0"},
+        }
+    )
     pkgs = _parse_package_json(content, "package.json")
     names = {p.name for p in pkgs}
     assert "express" in names
@@ -355,9 +361,7 @@ def test_extract_fixed_version_no_fix():
         "affected": [
             {
                 "package": {"name": "requests", "ecosystem": "PyPI"},
-                "ranges": [
-                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}
-                ],
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
             }
         ]
     }
@@ -424,11 +428,13 @@ def test_cvss_to_severity_text(score, expected):
 
 
 def test_parse_next_steps_valid():
-    raw = json.dumps({
-        "impact": "Attacker can execute arbitrary code.",
-        "fix": "Upgrade to requests>=2.32.0",
-        "effort": "Low",
-    })
+    raw = json.dumps(
+        {
+            "impact": "Attacker can execute arbitrary code.",
+            "fix": "Upgrade to requests>=2.32.0",
+            "effort": "Low",
+        }
+    )
     result = _parse_next_steps(raw)
     assert result is not None
     assert result["effort"] == "Low"
@@ -447,11 +453,13 @@ def test_parse_next_steps_missing_field():
 
 
 def test_parse_next_steps_invalid_effort_defaults_medium():
-    raw = json.dumps({
-        "impact": "Something bad.",
-        "fix": "Upgrade it.",
-        "effort": "Very Hard",  # invalid
-    })
+    raw = json.dumps(
+        {
+            "impact": "Something bad.",
+            "fix": "Upgrade it.",
+            "effort": "Very Hard",  # invalid
+        }
+    )
     result = _parse_next_steps(raw)
     assert result is not None
     assert result["effort"] == "Medium"
@@ -506,12 +514,15 @@ def test_upsert_finding_does_not_change_state_on_update(db_conn):
 
 
 def test_get_kev_cve_ids_from_news_items(db_conn):
-    db.insert_news_item(db_conn, {
-        "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog#CVE-2024-9999",
-        "title": "CVE-2024-9999 — KEV entry",
-        "source": "CISA KEV",
-        "fetched_at": "2024-01-15T00:00:00+00:00",
-    })
+    db.insert_news_item(
+        db_conn,
+        {
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog#CVE-2024-9999",
+            "title": "CVE-2024-9999 — KEV entry",
+            "source": "CISA KEV",
+            "fetched_at": "2024-01-15T00:00:00+00:00",
+        },
+    )
     kev_ids = db.get_kev_cve_ids(db_conn)
     assert "CVE-2024-9999" in kev_ids
 

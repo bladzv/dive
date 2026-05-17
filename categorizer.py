@@ -92,8 +92,9 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> CategorizerStats:
 
     # Prefer the model set via the Settings UI over the config.yaml default.
     active_model = db.get_setting(conn, "active_model") or config.ollama.model
-    logger.info("Categorizing %d items in batches of %d (model: %s)",
-                len(items), BATCH_SIZE, active_model)
+    logger.info(
+        "Categorizing %d items in batches of %d (model: %s)", len(items), BATCH_SIZE, active_model
+    )
 
     with _make_client() as client:
         for batch_start in range(0, len(items), BATCH_SIZE):
@@ -142,9 +143,7 @@ def _process_batch(
         results = _parse_response(raw_response, expected_count=len(batch))
         if results is not None:
             break
-        logger.warning(
-            "Response failed validation (attempt %d/%d)", attempt, MAX_RETRIES
-        )
+        logger.warning("Response failed validation (attempt %d/%d)", attempt, MAX_RETRIES)
 
     for i, row in enumerate(batch):
         r = _normalize_result(results[i]) if results and i < len(results) else None
@@ -295,7 +294,8 @@ def _parse_response(raw: str, expected_count: int) -> list[dict] | None:
     if not isinstance(parsed, list):
         logger.warning(
             "Ollama returned %s instead of a JSON array | raw: %.200s",
-            type(parsed).__name__, raw[:200],
+            type(parsed).__name__,
+            raw[:200],
         )
         return None
 
@@ -305,7 +305,8 @@ def _parse_response(raw: str, expected_count: int) -> list[dict] | None:
     if len(parsed) != expected_count:
         logger.warning(
             "Ollama response count mismatch: expected %d, got %d — using partial results",
-            expected_count, len(parsed),
+            expected_count,
+            len(parsed),
         )
 
     return parsed

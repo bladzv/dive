@@ -60,7 +60,6 @@ def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=True)
 
 
-
 # ---------------------------------------------------------------------------
 # Auth enforcement
 # ---------------------------------------------------------------------------
@@ -83,7 +82,9 @@ def test_protected_routes_require_auth():
     for path in ["/", "/findings", "/settings"]:
         resp = c.get(path)
         assert resp.status_code == 302, f"Expected 302 for {path}, got {resp.status_code}"
-        assert "/login" in resp.headers.get("location", ""), f"Expected redirect to /login for {path}"
+        assert "/login" in resp.headers.get(
+            "location", ""
+        ), f"Expected redirect to /login for {path}"
     for path in ["/api/findings", "/api/news"]:
         resp = c.get(path)
         assert resp.status_code == 401, f"Expected 401 for {path}, got {resp.status_code}"
@@ -200,14 +201,18 @@ def test_api_news_returns_inserted_item(client):
     # Insert into the DB that _setup already patched onto db._DEFAULT_DB_PATH.
     # Use the current time so get_recent_items(hours=24) picks it up.
     from datetime import UTC, datetime
+
     now = datetime.now(UTC).isoformat()
     with db.get_conn() as conn:
-        db.insert_news_item(conn, {
-            "url": "https://example.com/cve-2024-test",
-            "title": "Test CVE article",
-            "source": "Test Source",
-            "fetched_at": now,
-        })
+        db.insert_news_item(
+            conn,
+            {
+                "url": "https://example.com/cve-2024-test",
+                "title": "Test CVE article",
+                "source": "Test Source",
+                "fetched_at": now,
+            },
+        )
     resp = client.get("/api/news")
     assert resp.status_code == 200
     items = resp.json()
@@ -364,6 +369,7 @@ def test_cvss_severity_none():
 
 def test_time_ago_minutes():
     from datetime import UTC, datetime, timedelta
+
     recent = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
     result = main._time_ago(recent)
     assert "m ago" in result
@@ -371,6 +377,7 @@ def test_time_ago_minutes():
 
 def test_time_ago_hours():
     from datetime import UTC, datetime, timedelta
+
     recent = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
     result = main._time_ago(recent)
     assert "h ago" in result

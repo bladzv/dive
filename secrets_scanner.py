@@ -35,8 +35,8 @@ from config import AppConfig
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SCAN_DEPTH = 30
-_CLONE_TIMEOUT = 120   # seconds per repo
-_SCAN_TIMEOUT  = 180   # seconds per repo
+_CLONE_TIMEOUT = 120  # seconds per repo
+_SCAN_TIMEOUT = 180  # seconds per repo
 
 
 @dataclass
@@ -131,15 +131,18 @@ def _scan_repo(
         if not fingerprint or fingerprint in fp_fingerprints:
             continue
 
-        is_new = db.upsert_secret_finding(conn, {
-            "repo_full_name": repo.full_name,
-            "file_path":      raw.get("File", ""),
-            "line_number":    raw.get("StartLine"),
-            "commit_sha":     raw.get("Commit", ""),
-            "secret_type":    raw.get("Description") or raw.get("RuleID") or "Unknown",
-            "rule_id":        raw.get("RuleID", ""),
-            "fingerprint":    fingerprint,
-        })
+        is_new = db.upsert_secret_finding(
+            conn,
+            {
+                "repo_full_name": repo.full_name,
+                "file_path": raw.get("File", ""),
+                "line_number": raw.get("StartLine"),
+                "commit_sha": raw.get("Commit", ""),
+                "secret_type": raw.get("Description") or raw.get("RuleID") or "Unknown",
+                "rule_id": raw.get("RuleID", ""),
+                "fingerprint": fingerprint,
+            },
+        )
         if is_new:
             new_count += 1
 
@@ -170,11 +173,14 @@ def _run_gitleaks(source_dir: str) -> list[dict]:
             [
                 "gitleaks",
                 "detect",
-                "--source",        source_dir,
-                "--report-format", "json",
-                "--report-path",   report_path,
+                "--source",
+                source_dir,
+                "--report-format",
+                "json",
+                "--report-path",
+                report_path,
                 "--no-banner",
-                "--redact",        # replace actual secret values with REDACTED
+                "--redact",  # replace actual secret values with REDACTED
             ],
             capture_output=True,
             timeout=_SCAN_TIMEOUT,

@@ -41,7 +41,7 @@ _ISSUE_TITLE_PREFIX = "[Security]"
 @dataclass
 class IssueCreationStats:
     issues_created: int = 0
-    issues_skipped: int = 0   # duplicate open issue found
+    issues_skipped: int = 0  # duplicate open issue found
     issues_failed: int = 0
     failed_repos: list[str] = field(default_factory=list)
 
@@ -142,14 +142,14 @@ def _ghsa_url(ghsa_id: str | None) -> str | None:
 
 
 def _build_issue_body(finding: sqlite3.Row) -> str:
-    vid      = _vuln_id(finding)
-    pkg      = finding["package_name"]
-    eco      = finding["package_ecosystem"]
+    vid = _vuln_id(finding)
+    pkg = finding["package_name"]
+    eco = finding["package_ecosystem"]
     inst_ver = finding["installed_version"] or "unknown"
-    fix_ver  = finding["fixed_version"]
-    cvss     = finding["cvss_score"]
-    sev      = _severity_label(cvss)
-    is_kev   = bool(finding["is_kev"])
+    fix_ver = finding["fixed_version"]
+    cvss = finding["cvss_score"]
+    sev = _severity_label(cvss)
+    is_kev = bool(finding["is_kev"])
 
     # Build vuln ID link
     link = _nvd_url(finding["cve_id"]) or _ghsa_url(finding["ghsa_id"])
@@ -175,10 +175,11 @@ def _build_issue_body(finding: sqlite3.Row) -> str:
     ai_raw = finding["ai_next_steps"]
     if ai_raw:
         import json
+
         try:
             ns: dict[str, Any] = json.loads(ai_raw) if isinstance(ai_raw, str) else ai_raw
             impact = ns.get("impact", "")
-            fix    = ns.get("fix", "")
+            fix = ns.get("fix", "")
             effort = ns.get("effort", "")
             if impact or fix:
                 lines += [
@@ -215,7 +216,6 @@ def _ensure_label(repo: Any) -> None:
             pass  # label creation is best-effort
 
 
-
 def _create_or_skip(gh: Github, finding: sqlite3.Row) -> tuple[str, bool]:
     """Return (issue_url, was_created).
 
@@ -225,7 +225,7 @@ def _create_or_skip(gh: Github, finding: sqlite3.Row) -> tuple[str, bool]:
                         and avoid re-checking on every subsequent pipeline run.
     """
     repo_name = finding["repo_full_name"]
-    title     = _issue_title(finding)
+    title = _issue_title(finding)
 
     repo = gh.get_repo(repo_name)
 

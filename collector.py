@@ -66,6 +66,7 @@ def _cvss_to_severity(score: float | None) -> str | None:
             return label
     return None
 
+
 _NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories"
@@ -153,7 +154,9 @@ def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None
         response = client.get(url, **kwargs)
         response.raise_for_status()
         if len(response.content) > _MAX_RESPONSE_BYTES:
-            logger.warning("Response too large (%d bytes), truncating: %s", len(response.content), url)
+            logger.warning(
+                "Response too large (%d bytes), truncating: %s", len(response.content), url
+            )
         return response
     except httpx.HTTPStatusError as exc:
         logger.warning("HTTP %s from %s", exc.response.status_code, url)

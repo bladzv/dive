@@ -42,9 +42,7 @@ def test_init_creates_tables(tmp_db: Path):
     with db.get_conn(tmp_db) as c:
         tables = {
             row[0]
-            for row in c.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
     assert "news_items" in tables
     assert "findings" in tables

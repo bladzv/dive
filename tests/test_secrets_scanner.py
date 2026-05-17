@@ -38,6 +38,7 @@ def in_memory_db():
 
 def _make_config(token: str = "fake-token", username: str = "testuser"):
     from config import AppConfig, DashboardConfig, GitHubConfig
+
     return AppConfig(
         github=GitHubConfig(token=token, username=username),
         dashboard=DashboardConfig(username="admin", password="secret"),
@@ -157,7 +158,7 @@ def test_scan_repo_deduplicates_same_fingerprint(in_memory_db):
         patch("secrets_scanner._clone", return_value=True),
         patch("secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
-        first  = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
+        first = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
         second = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
 
     assert first == 1
@@ -277,6 +278,7 @@ def test_get_scan_depth_default(in_memory_db):
 
 def test_get_scan_depth_from_settings(in_memory_db):
     import db as db_module
+
     db_module.set_setting(in_memory_db, "secrets_scan_depth", "50")
     in_memory_db.commit()
     assert ss._get_scan_depth(in_memory_db) == 50
@@ -284,6 +286,7 @@ def test_get_scan_depth_from_settings(in_memory_db):
 
 def test_get_scan_depth_invalid_falls_back(in_memory_db):
     import db as db_module
+
     db_module.set_setting(in_memory_db, "secrets_scan_depth", "not-a-number")
     in_memory_db.commit()
     assert ss._get_scan_depth(in_memory_db) == 30

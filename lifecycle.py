@@ -64,8 +64,7 @@ def recheck_resolved(
         )
         if key in current_finding_keys:
             conn.execute(
-                "UPDATE findings SET state = 'new', notified_at = NULL "
-                "WHERE id = ?",
+                "UPDATE findings SET state = 'new', notified_at = NULL " "WHERE id = ?",
                 (row["id"],),
             )
             reverted += 1
@@ -78,7 +77,9 @@ def recheck_resolved(
             )
 
     if reverted:
-        logger.warning("%d resolved finding(s) reverted to new — fix may have been rolled back", reverted)
+        logger.warning(
+            "%d resolved finding(s) reverted to new — fix may have been rolled back", reverted
+        )
     return reverted
 
 
@@ -122,8 +123,7 @@ def auto_resolve_gone(
         )
         if key not in current_finding_keys:
             conn.execute(
-                "UPDATE findings SET state = 'resolved', resolved_at = ? "
-                "WHERE id = ?",
+                "UPDATE findings SET state = 'resolved', resolved_at = ? " "WHERE id = ?",
                 (now, row["id"]),
             )
             resolved += 1

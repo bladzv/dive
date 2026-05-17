@@ -52,9 +52,7 @@ def _row(**kwargs) -> sqlite3.Row:
     cols = list(defaults.keys())
     vals = list(defaults.values())
     placeholders = ", ".join("?" * len(cols))
-    conn.execute(
-        f"CREATE TABLE t ({', '.join(cols)})"
-    )
+    conn.execute(f"CREATE TABLE t ({', '.join(cols)})")
     conn.execute(f"INSERT INTO t VALUES ({placeholders})", vals)
     return conn.execute("SELECT * FROM t").fetchone()
 
@@ -94,17 +92,20 @@ def _make_config(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("score,expected", [
-    (9.1, "Critical"),
-    (9.0, "Critical"),
-    (8.9, "High"),
-    (7.0, "High"),
-    (6.9, "Medium"),
-    (4.0, "Medium"),
-    (3.9, "Low"),
-    (0.0, "Low"),
-    (None, "Unknown"),
-])
+@pytest.mark.parametrize(
+    "score,expected",
+    [
+        (9.1, "Critical"),
+        (9.0, "Critical"),
+        (8.9, "High"),
+        (7.0, "High"),
+        (6.9, "Medium"),
+        (4.0, "Medium"),
+        (3.9, "Low"),
+        (0.0, "Low"),
+        (None, "Unknown"),
+    ],
+)
 def test_severity_label(score, expected):
     row = _row(cvss_score=score)
     assert _severity_label(row) == expected
@@ -251,8 +252,10 @@ def test_send_findings_alert_calls_both_channels():
         slack_url="https://hooks.slack.com/test",
         discord_url="https://discord.com/api/webhooks/test",
     )
-    with patch("notifier._send_slack") as mock_slack, \
-         patch("notifier._send_discord") as mock_discord:
+    with (
+        patch("notifier._send_slack") as mock_slack,
+        patch("notifier._send_discord") as mock_discord,
+    ):
         send_findings_alert(cfg, [_row()])
         mock_slack.assert_called_once()
         mock_discord.assert_called_once()
@@ -263,8 +266,10 @@ def test_send_findings_alert_slack_failure_does_not_block_discord():
         slack_url="https://hooks.slack.com/test",
         discord_url="https://discord.com/api/webhooks/test",
     )
-    with patch("notifier._send_slack", side_effect=Exception("Slack down")), \
-         patch("notifier._send_discord") as mock_discord:
+    with (
+        patch("notifier._send_slack", side_effect=Exception("Slack down")),
+        patch("notifier._send_discord") as mock_discord,
+    ):
         send_findings_alert(cfg, [_row()])
         mock_discord.assert_called_once()  # Discord still called despite Slack failure
 

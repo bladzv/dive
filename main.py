@@ -51,6 +51,7 @@ import settings as st
 try:
     import categorizer as categorizer_module
     import collector as collector_module
+
     _COLLECTOR_AVAILABLE = True
 except ImportError:
     _COLLECTOR_AVAILABLE = False
@@ -78,8 +79,10 @@ _SESSION_MAX_AGE = 86400 * 7  # 7 days
 
 class _LoginRedirect(Exception):
     """Raised by _require_auth to redirect a browser to the login page."""
+
     def __init__(self, location: str) -> None:
         self.location = location
+
 
 # Pipeline run state — written under _pipeline_lock
 _pipeline_lock = threading.Lock()
@@ -100,23 +103,23 @@ _DEFAULT_PAGE_SIZE = 25
 
 # Interval select options shown in the settings page
 _INTERVAL_OPTIONS = [
-    ("3",   "Every 3 hours"),
-    ("6",   "Every 6 hours (default)"),
-    ("12",  "Every 12 hours"),
-    ("24",  "Every 24 hours"),
+    ("3", "Every 3 hours"),
+    ("6", "Every 6 hours (default)"),
+    ("12", "Every 12 hours"),
+    ("24", "Every 24 hours"),
     ("168", "Once a week"),
     ("720", "Once a month"),
 ]
 
 # Suggested Ollama models shown in the settings page
 _SUGGESTED_MODELS = [
-    {"name": "qwen2.5:3b",   "description": "~1.9 GB · 5–8 tok/s · Recommended for Pi 4"},
-    {"name": "gemma2:2b",    "description": "~1.6 GB · 8–12 tok/s · Fastest on Pi 4"},
-    {"name": "phi3.5:mini",  "description": "~2.2 GB · 4–6 tok/s · Strong reasoning"},
-    {"name": "llama3.2:3b",  "description": "~2.0 GB · 4–7 tok/s · Good general-purpose"},
-    {"name": "qwen2.5:7b",   "description": "~4.7 GB · Better quality, 8 GB+ RAM"},
-    {"name": "llama3.1:8b",  "description": "~4.7 GB · Strong general-purpose, Apple Silicon"},
-    {"name": "qwen2.5:14b",  "description": "~9 GB · High quality, 16 GB+ RAM"},
+    {"name": "qwen2.5:3b", "description": "~1.9 GB · 5–8 tok/s · Recommended for Pi 4"},
+    {"name": "gemma2:2b", "description": "~1.6 GB · 8–12 tok/s · Fastest on Pi 4"},
+    {"name": "phi3.5:mini", "description": "~2.2 GB · 4–6 tok/s · Strong reasoning"},
+    {"name": "llama3.2:3b", "description": "~2.0 GB · 4–7 tok/s · Good general-purpose"},
+    {"name": "qwen2.5:7b", "description": "~4.7 GB · Better quality, 8 GB+ RAM"},
+    {"name": "llama3.1:8b", "description": "~4.7 GB · Strong general-purpose, Apple Silicon"},
+    {"name": "qwen2.5:14b", "description": "~9 GB · High quality, 16 GB+ RAM"},
 ]
 
 
@@ -263,7 +266,9 @@ def _run_pipeline() -> None:
             except Exception as exc:
                 logger.error("GitHub issue creation failed: %s", exc, exc_info=True)
         else:
-            logger.debug("GitHub issue auto-creation disabled by feature toggle — skipping Step 3.5")
+            logger.debug(
+                "GitHub issue auto-creation disabled by feature toggle — skipping Step 3.5"
+            )
 
         # ------------------------------------------------------------------
         # Step 4 — Secrets scanner (gitleaks)
@@ -287,7 +292,9 @@ def _run_pipeline() -> None:
                     unnotified_secrets = db.get_unnotified_secret_findings(conn)
                     if unnotified_secrets:
                         notifier.send_secrets_alert(_config, list(unnotified_secrets))
-                        db.mark_secret_findings_notified(conn, [r["id"] for r in unnotified_secrets])
+                        db.mark_secret_findings_notified(
+                            conn, [r["id"] for r in unnotified_secrets]
+                        )
                         logger.info("Notifier: %d secrets alerted", len(unnotified_secrets))
             except Exception as exc:
                 logger.error("Secrets notifier failed: %s", exc, exc_info=True)
@@ -313,7 +320,7 @@ def _run_pipeline() -> None:
         # ------------------------------------------------------------------
         try:
             with db.get_conn() as conn:
-                threshold  = st.get_severity_threshold(conn)
+                threshold = st.get_severity_threshold(conn)
                 unnotified = db.get_unnotified_findings(conn)
                 if unnotified:
                     # Mark ALL new findings as notified regardless of threshold so
@@ -500,11 +507,13 @@ async def _login_redirect_handler(request: Request, exc: _LoginRedirect) -> Redi
 def _replace_query_param(url: Any, key: str, value: Any) -> str:
     """Jinja2 filter: replace or add a single query param while preserving others."""
     from urllib.parse import parse_qs, urlencode, urlparse
+
     parsed = urlparse(str(url))
     params = parse_qs(parsed.query, keep_blank_values=True)
     params[key] = [str(value)]
     new_query = urlencode({k: v[0] for k, v in params.items()})
     from urllib.parse import urlunparse
+
     return urlunparse(parsed._replace(query=new_query))
 
 
@@ -546,6 +555,7 @@ def _require_auth(request: Request) -> str:
         if request.url.path.startswith("/api/"):
             raise HTTPException(status_code=401, detail="Not authenticated")
         from urllib.parse import quote
+
         raise _LoginRedirect(f"/login?next={quote(request.url.path, safe='/')}")
     return session.get("username", "")
 
@@ -557,10 +567,10 @@ def _require_auth(request: Request) -> str:
 
 _SEVERITY_THRESHOLD_SCORES: dict[str, float | None] = {
     "critical": 9.0,
-    "high":     7.0,
-    "medium":   4.0,
-    "low":      0.0,
-    "all":      None,  # no minimum score — include all findings
+    "high": 7.0,
+    "medium": 4.0,
+    "low": 0.0,
+    "all": None,  # no minimum score — include all findings
 }
 
 
@@ -573,10 +583,7 @@ def _apply_severity_threshold(findings: list, threshold: str) -> list:
     min_score = _SEVERITY_THRESHOLD_SCORES.get(threshold, 7.0)
     if min_score is None:
         return findings
-    return [
-        r for r in findings
-        if r["cvss_score"] is not None and r["cvss_score"] >= min_score
-    ]
+    return [r for r in findings if r["cvss_score"] is not None and r["cvss_score"] >= min_score]
 
 
 def _cvss_severity(score: float | None) -> tuple[str, str]:
@@ -635,10 +642,7 @@ def _check_ollama_status() -> bool:
                 return False
             tags = resp.json()
             model_base = _config.ollama.model.split(":")[0]
-            return any(
-                m.get("name", "").startswith(model_base)
-                for m in tags.get("models", [])
-            )
+            return any(m.get("name", "").startswith(model_base) for m in tags.get("models", []))
     except Exception:
         return False
 
@@ -669,13 +673,13 @@ def _paginate(page: int, per_page: int, total: int) -> dict:
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     return {
-        "page":             page,
-        "per_page":         per_page,
-        "total":            total,
-        "total_pages":      total_pages,
-        "offset":           (page - 1) * per_page,
-        "has_prev":         page > 1,
-        "has_next":         page < total_pages,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+        "offset": (page - 1) * per_page,
+        "has_prev": page > 1,
+        "has_next": page < total_pages,
         "page_size_options": _PAGE_SIZE_OPTIONS,
     }
 
@@ -705,16 +709,24 @@ def _findings_summary() -> dict:
                 FROM findings
             """).fetchone()
         return {
-            "critical":     int(row["critical"] or 0),
-            "high":         int(row["high"] or 0),
-            "medium":       int(row["medium"] or 0),
-            "low":          int(row["low"] or 0),
-            "new":          int(row["new"] or 0),
+            "critical": int(row["critical"] or 0),
+            "high": int(row["high"] or 0),
+            "medium": int(row["medium"] or 0),
+            "low": int(row["low"] or 0),
+            "new": int(row["new"] or 0),
             "acknowledged": int(row["acknowledged"] or 0),
-            "resolved":     int(row["resolved"] or 0),
+            "resolved": int(row["resolved"] or 0),
         }
     except Exception:
-        return {"critical": 0, "high": 0, "medium": 0, "low": 0, "new": 0, "acknowledged": 0, "resolved": 0}
+        return {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "new": 0,
+            "acknowledged": 0,
+            "resolved": 0,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -780,20 +792,24 @@ async def dashboard(
 ) -> HTMLResponse:
     """Main dashboard — recent news + open findings summary."""
     with db.get_conn() as conn:
-        findings_rows  = db.get_findings(conn, state="new", limit=10)
-        news_rows      = db.get_recent_items(conn, hours=24, limit=15)
+        findings_rows = db.get_findings(conn, state="new", limit=10)
+        news_rows = db.get_recent_items(conn, hours=24, limit=15)
         bookmarked_ids = db.get_bookmarked_ids(conn)
 
-    return templates.TemplateResponse(request, "index.html", {
-        "nav_active":      "dashboard",
-        "run_token":       _get_run_token(),
-        "current_model":   _get_current_model(),
-        "recent_findings": [_enrich_finding(r) for r in findings_rows],
-        "news_items":      [_enrich_news(r) for r in news_rows],
-        "summary":         _findings_summary(),
-        "secrets_summary": _secrets_summary(),
-        "bookmarked_ids":  list(bookmarked_ids),
-    })
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "nav_active": "dashboard",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "recent_findings": [_enrich_finding(r) for r in findings_rows],
+            "news_items": [_enrich_news(r) for r in news_rows],
+            "summary": _findings_summary(),
+            "secrets_summary": _secrets_summary(),
+            "bookmarked_ids": list(bookmarked_ids),
+        },
+    )
 
 
 @app.get("/findings", response_class=HTMLResponse)
@@ -809,21 +825,27 @@ async def findings_page(
     with db.get_conn() as conn:
         total = db.get_findings_count(conn, state=state, repo=repo)
         pg = _paginate(page, per_page, total)
-        rows = db.get_findings(conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"])
+        rows = db.get_findings(
+            conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
+        )
         repo_rows = conn.execute(
             "SELECT DISTINCT repo_full_name FROM findings ORDER BY repo_full_name"
         ).fetchall()
 
-    return templates.TemplateResponse(request, "findings.html", {
-        "nav_active":   "findings",
-        "run_token":    _get_run_token(),
-        "current_model": _get_current_model(),
-        "findings":     [_enrich_finding(r) for r in rows],
-        "state_filter": state,
-        "repo_filter":  repo,
-        "repos":        [r["repo_full_name"] for r in repo_rows],
-        "pagination":   pg,
-    })
+    return templates.TemplateResponse(
+        request,
+        "findings.html",
+        {
+            "nav_active": "findings",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "findings": [_enrich_finding(r) for r in rows],
+            "state_filter": state,
+            "repo_filter": repo,
+            "repos": [r["repo_full_name"] for r in repo_rows],
+            "pagination": pg,
+        },
+    )
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -835,14 +857,18 @@ async def settings_page(
     with db.get_conn() as conn:
         current_interval = db.get_setting(conn, "run_interval_hours", "6")
 
-    return templates.TemplateResponse(request, "settings.html", {
-        "nav_active":        "settings",
-        "run_token":         _get_run_token(),
-        "current_model":     _get_current_model(),
-        "current_interval":  current_interval,
-        "interval_options":  _INTERVAL_OPTIONS,
-        "interval_values":   [v for v, _ in _INTERVAL_OPTIONS],
-    })
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "nav_active": "settings",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "current_interval": current_interval,
+            "interval_options": _INTERVAL_OPTIONS,
+            "interval_values": [v for v, _ in _INTERVAL_OPTIONS],
+        },
+    )
 
 
 @app.get("/secrets", response_class=HTMLResponse)
@@ -858,21 +884,27 @@ async def secrets_page(
     with db.get_conn() as conn:
         total = db.get_secret_findings_count(conn, state=state, repo=repo)
         pg = _paginate(page, per_page, total)
-        rows = db.get_secret_findings(conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"])
+        rows = db.get_secret_findings(
+            conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
+        )
         repo_rows = conn.execute(
             "SELECT DISTINCT repo_full_name FROM secret_findings ORDER BY repo_full_name"
         ).fetchall()
 
-    return templates.TemplateResponse(request, "secrets.html", {
-        "nav_active":   "secrets",
-        "run_token":    _get_run_token(),
-        "current_model": _get_current_model(),
-        "secrets":      [dict(r) for r in rows],
-        "state_filter": state,
-        "repo_filter":  repo,
-        "repos":        [r["repo_full_name"] for r in repo_rows],
-        "pagination":   pg,
-    })
+    return templates.TemplateResponse(
+        request,
+        "secrets.html",
+        {
+            "nav_active": "secrets",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "secrets": [dict(r) for r in rows],
+            "state_filter": state,
+            "repo_filter": repo,
+            "repos": [r["repo_full_name"] for r in repo_rows],
+            "pagination": pg,
+        },
+    )
 
 
 @app.get("/personal", response_class=HTMLResponse)
@@ -882,18 +914,22 @@ async def personal_page(
 ) -> HTMLResponse:
     """Personal workspace — bookmarks and annotated findings."""
     with db.get_conn() as conn:
-        bookmarks        = db.get_bookmarks(conn)
-        annotated        = db.get_annotated_findings(conn)
+        bookmarks = db.get_bookmarks(conn)
+        annotated = db.get_annotated_findings(conn)
 
     enriched_annotated = [_enrich_finding(r) for r in annotated]
 
-    return templates.TemplateResponse(request, "personal.html", {
-        "nav_active":    "personal",
-        "run_token":     _get_run_token(),
-        "current_model": _get_current_model(),
-        "bookmarks":     [dict(r) for r in bookmarks],
-        "annotated":     enriched_annotated,
-    })
+    return templates.TemplateResponse(
+        request,
+        "personal.html",
+        {
+            "nav_active": "personal",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "bookmarks": [dict(r) for r in bookmarks],
+            "annotated": enriched_annotated,
+        },
+    )
 
 
 @app.get("/history", response_class=HTMLResponse)
@@ -902,11 +938,15 @@ async def history_page(
     _user: Annotated[str, Depends(_require_auth)],
 ) -> HTMLResponse:
     """History view — trend charts and source reliability."""
-    return templates.TemplateResponse(request, "history.html", {
-        "nav_active":    "history",
-        "run_token":     _get_run_token(),
-        "current_model": _get_current_model(),
-    })
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        {
+            "nav_active": "history",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+        },
+    )
 
 
 @app.get("/weekly", response_class=HTMLResponse)
@@ -918,12 +958,16 @@ async def weekly_page(
     with db.get_conn() as conn:
         digest = db.get_weekly_digest(conn)
 
-    return templates.TemplateResponse(request, "weekly.html", {
-        "nav_active":    "weekly",
-        "run_token":     _get_run_token(),
-        "current_model": _get_current_model(),
-        "digest":        digest,
-    })
+    return templates.TemplateResponse(
+        request,
+        "weekly.html",
+        {
+            "nav_active": "weekly",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "digest": digest,
+        },
+    )
 
 
 @app.get("/news", response_class=HTMLResponse)
@@ -953,18 +997,22 @@ async def news_page(
             "SELECT DISTINCT category FROM news_items WHERE category IS NOT NULL ORDER BY category"
         ).fetchall()
 
-    return templates.TemplateResponse(request, "news.html", {
-        "nav_active":       "news",
-        "run_token":        _get_run_token(),
-        "current_model":    _get_current_model(),
-        "news_items":       [_enrich_news(r) for r in rows],
-        "bookmarked_ids":   list(bookmarked_ids),
-        "categories":       [r["category"] for r in cat_rows],
-        "category_filter":  category,
-        "severity_filter":  severity,
-        "search_filter":    search,
-        "pagination":       pg,
-    })
+    return templates.TemplateResponse(
+        request,
+        "news.html",
+        {
+            "nav_active": "news",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "news_items": [_enrich_news(r) for r in rows],
+            "bookmarked_ids": list(bookmarked_ids),
+            "categories": [r["category"] for r in cat_rows],
+            "category_filter": category,
+            "severity_filter": severity,
+            "search_filter": search,
+            "pagination": pg,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -983,13 +1031,15 @@ async def health() -> JSONResponse:
         if job and job.next_run_time:
             next_run = job.next_run_time.isoformat()
     ollama_ok = await asyncio.to_thread(_check_ollama_status)
-    return JSONResponse({
-        "status":       "ok",
-        "version":      "0.1.0",
-        "pipeline":     pipeline,
-        "next_run":     next_run,
-        "ollama_ok":    ollama_ok,
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "version": "0.1.0",
+            "pipeline": pipeline,
+            "next_run": next_run,
+            "ollama_ok": ollama_ok,
+        }
+    )
 
 
 @app.post("/api/run")
@@ -1072,11 +1122,13 @@ async def get_ollama_models(
     except Exception as exc:
         logger.warning("Could not reach Ollama for model list: %s", exc)
 
-    return JSONResponse({
-        "installed": installed,
-        "suggested": _SUGGESTED_MODELS,
-        "current":   _get_current_model(),
-    })
+    return JSONResponse(
+        {
+            "installed": installed,
+            "suggested": _SUGGESTED_MODELS,
+            "current": _get_current_model(),
+        }
+    )
 
 
 @app.post("/api/findings/{finding_id}/acknowledge")
@@ -1179,7 +1231,7 @@ async def add_feed(
 ) -> JSONResponse:
     """Add a new RSS feed after validating it is a reachable RSS/Atom URL."""
     body = await request.json()
-    url  = str(body.get("url",  "")).strip()
+    url = str(body.get("url", "")).strip()
     name = str(body.get("name", "")).strip()
 
     if not url:
@@ -1314,11 +1366,13 @@ async def get_scanner_settings(
 ) -> JSONResponse:
     """Return scanner settings: severity threshold and excluded repos."""
     with db.get_conn() as conn:
-        return JSONResponse({
-            "severity_threshold": st.get_severity_threshold(conn),
-            "excluded_repos":     st.get_excluded_repos(conn),
-            "severity_levels":    st.SEVERITY_LEVELS,
-        })
+        return JSONResponse(
+            {
+                "severity_threshold": st.get_severity_threshold(conn),
+                "excluded_repos": st.get_excluded_repos(conn),
+                "severity_levels": st.SEVERITY_LEVELS,
+            }
+        )
 
 
 @app.post("/api/config/scanner")
@@ -1346,6 +1400,7 @@ def _validate_feed_url(url: str) -> bool:
     """Return True if url is a reachable RSS/Atom feed. Runs in a thread pool."""
     import feedparser
     import httpx as _httpx
+
     try:
         with _httpx.Client(timeout=10, follow_redirects=True) as client:
             resp = client.get(url)
@@ -1363,11 +1418,13 @@ async def get_settings(
     """Return editable pipeline settings."""
     with db.get_conn() as conn:
         interval = db.get_setting(conn, "run_interval_hours", "6")
-        model    = db.get_setting(conn, "active_model", "")
-    return JSONResponse({
-        "run_interval_hours": interval,
-        "active_model":       model or (_config.ollama.model if _config else ""),
-    })
+        model = db.get_setting(conn, "active_model", "")
+    return JSONResponse(
+        {
+            "run_interval_hours": interval,
+            "active_model": model or (_config.ollama.model if _config else ""),
+        }
+    )
 
 
 @app.post("/api/settings")
@@ -1384,7 +1441,9 @@ async def update_settings(
             if hours <= 0:
                 raise ValueError
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="run_interval_hours must be a positive number")
+            raise HTTPException(
+                status_code=400, detail="run_interval_hours must be a positive number"
+            )
         with db.get_conn() as conn:
             db.set_setting(conn, "run_interval_hours", str(hours))
         _reschedule(hours)
@@ -1452,11 +1511,25 @@ async def annotate_finding(
 def _findings_to_csv(rows) -> str:
     output = io.StringIO()
     fieldnames = [
-        "id", "repo_full_name", "cve_id", "ghsa_id", "package_name",
-        "package_ecosystem", "installed_version", "fixed_version",
-        "cvss_score", "is_kev", "patch_available", "priority_score",
-        "state", "first_seen_at", "last_seen_at", "resolved_at",
-        "manifest_path", "annotation", "github_issue_url",
+        "id",
+        "repo_full_name",
+        "cve_id",
+        "ghsa_id",
+        "package_name",
+        "package_ecosystem",
+        "installed_version",
+        "fixed_version",
+        "cvss_score",
+        "is_kev",
+        "patch_available",
+        "priority_score",
+        "state",
+        "first_seen_at",
+        "last_seen_at",
+        "resolved_at",
+        "manifest_path",
+        "annotation",
+        "github_issue_url",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
@@ -1468,8 +1541,17 @@ def _findings_to_csv(rows) -> str:
 def _news_to_csv(rows) -> str:
     output = io.StringIO()
     fieldnames = [
-        "id", "title", "url", "source", "published_at", "fetched_at",
-        "summary", "category", "severity", "affected_products", "tags",
+        "id",
+        "title",
+        "url",
+        "source",
+        "published_at",
+        "fetched_at",
+        "summary",
+        "category",
+        "severity",
+        "affected_products",
+        "tags",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()

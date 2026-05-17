@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 FEATURE_TOGGLES: dict[str, dict] = {
-    "github_scanning":       {"label": "GitHub repository scanning",   "default": True},
-    "secrets_scanning":      {"label": "Secrets scanning",             "default": True},
-    "github_issue_creation": {"label": "GitHub issue auto-creation",   "default": False},
-    "news_clustering":       {"label": "News clustering",              "default": True},
-    "outdated_tracking":     {"label": "Outdated dependency tracking", "default": True},
-    "weekly_digest":         {"label": "Weekly digest",                "default": True},
-    "patch_alerts":          {"label": "Patch availability alerts",    "default": True},
+    "github_scanning": {"label": "GitHub repository scanning", "default": True},
+    "secrets_scanning": {"label": "Secrets scanning", "default": True},
+    "github_issue_creation": {"label": "GitHub issue auto-creation", "default": False},
+    "news_clustering": {"label": "News clustering", "default": True},
+    "outdated_tracking": {"label": "Outdated dependency tracking", "default": True},
+    "weekly_digest": {"label": "Weekly digest", "default": True},
+    "patch_alerts": {"label": "Patch availability alerts", "default": True},
 }
 
 # ---------------------------------------------------------------------------
@@ -55,15 +55,15 @@ DEFAULT_SEVERITY_THRESHOLD = "high"
 # ---------------------------------------------------------------------------
 
 DEFAULT_FEEDS: list[tuple[str, str]] = [
-    ("Bleeping Computer",         "https://www.bleepingcomputer.com/feed/"),
-    ("Krebs on Security",         "https://krebsonsecurity.com/feed/"),
-    ("The Hacker News",           "https://feeds.feedburner.com/TheHackersNews"),
-    ("SANS ISC",                  "https://isc.sans.edu/rssfeed_full.xml"),
-    ("Cisco Talos",               "https://blog.talosintelligence.com/rss/"),
-    ("Palo Alto Unit 42",         "https://unit42.paloaltonetworks.com/feed/"),
-    ("Google Mandiant",           "https://cloud.google.com/blog/topics/threat-intelligence/rss/"),
-    ("CrowdStrike Blog",          "https://www.crowdstrike.com/blog/feed/"),
-    ("Dark Reading",              "https://www.darkreading.com/rss_simple.asp"),
+    ("Bleeping Computer", "https://www.bleepingcomputer.com/feed/"),
+    ("Krebs on Security", "https://krebsonsecurity.com/feed/"),
+    ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
+    ("SANS ISC", "https://isc.sans.edu/rssfeed_full.xml"),
+    ("Cisco Talos", "https://blog.talosintelligence.com/rss/"),
+    ("Palo Alto Unit 42", "https://unit42.paloaltonetworks.com/feed/"),
+    ("Google Mandiant", "https://cloud.google.com/blog/topics/threat-intelligence/rss/"),
+    ("CrowdStrike Blog", "https://www.crowdstrike.com/blog/feed/"),
+    ("Dark Reading", "https://www.darkreading.com/rss_simple.asp"),
 ]
 
 
@@ -78,15 +78,11 @@ def _now() -> str:
 
 def get_feeds(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all feeds, bootstrapping defaults if the table is empty."""
-    rows = conn.execute(
-        "SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC").fetchall()
     if not rows:
         _bootstrap_default_feeds(conn)
         conn.connection.commit() if hasattr(conn, "connection") else None
-        rows = conn.execute(
-            "SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC").fetchall()
     return rows
 
 
@@ -123,9 +119,7 @@ def _bootstrap_default_feeds(conn: sqlite3.Connection) -> None:
 
 def add_feed(conn: sqlite3.Connection, name: str, url: str) -> sqlite3.Row:
     """Insert a new user-defined feed. Raises ValueError on duplicate URL."""
-    existing = conn.execute(
-        "SELECT id FROM rss_feeds WHERE url = ?", (url,)
-    ).fetchone()
+    existing = conn.execute("SELECT id FROM rss_feeds WHERE url = ?", (url,)).fetchone()
     if existing:
         raise ValueError(f"A feed with URL '{url}' already exists.")
 
@@ -136,9 +130,7 @@ def add_feed(conn: sqlite3.Connection, name: str, url: str) -> sqlite3.Row:
         """,
         (name, url, _now()),
     )
-    return conn.execute(
-        "SELECT * FROM rss_feeds WHERE url = ?", (url,)
-    ).fetchone()
+    return conn.execute("SELECT * FROM rss_feeds WHERE url = ?", (url,)).fetchone()
 
 
 def set_feed_enabled(conn: sqlite3.Connection, feed_id: int, enabled: bool) -> bool:
@@ -153,9 +145,7 @@ def set_feed_enabled(conn: sqlite3.Connection, feed_id: int, enabled: bool) -> b
 def remove_feed(conn: sqlite3.Connection, feed_id: int) -> bool:
     """Delete a feed. Raises ValueError if it is a default feed (those can only be disabled).
     Returns True if deleted."""
-    row = conn.execute(
-        "SELECT is_default FROM rss_feeds WHERE id = ?", (feed_id,)
-    ).fetchone()
+    row = conn.execute("SELECT is_default FROM rss_feeds WHERE id = ?", (feed_id,)).fetchone()
     if row is None:
         return False
     if row["is_default"]:
@@ -185,9 +175,7 @@ def update_feed_stats(
 
 def get_keywords(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all keywords ordered alphabetically."""
-    return conn.execute(
-        "SELECT * FROM keywords ORDER BY keyword ASC"
-    ).fetchall()
+    return conn.execute("SELECT * FROM keywords ORDER BY keyword ASC").fetchall()
 
 
 def add_keyword(conn: sqlite3.Connection, keyword: str) -> sqlite3.Row:
@@ -206,9 +194,7 @@ def add_keyword(conn: sqlite3.Connection, keyword: str) -> sqlite3.Row:
         "INSERT INTO keywords (keyword, created_at) VALUES (?, ?)",
         (keyword.strip(), _now()),
     )
-    return conn.execute(
-        "SELECT * FROM keywords WHERE keyword = ?", (keyword.strip(),)
-    ).fetchone()
+    return conn.execute("SELECT * FROM keywords WHERE keyword = ?", (keyword.strip(),)).fetchone()
 
 
 def remove_keyword(conn: sqlite3.Connection, keyword_id: int) -> bool:

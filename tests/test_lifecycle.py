@@ -115,7 +115,9 @@ def test_reopen_resolved_finding(conn):
     fid = _insert(conn)
     lifecycle.resolve(conn, fid)
     assert lifecycle.reopen(conn, fid) is True
-    row = conn.execute("SELECT state, notified_at, resolved_at FROM findings WHERE id=?", (fid,)).fetchone()
+    row = conn.execute(
+        "SELECT state, notified_at, resolved_at FROM findings WHERE id=?", (fid,)
+    ).fetchone()
     assert row["state"] == "new"
     assert row["notified_at"] is None
     assert row["resolved_at"] is None

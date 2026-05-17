@@ -41,9 +41,7 @@ def _make_row(
     """Build a sqlite3.Row-compatible dict for testing."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE t (id INTEGER, title TEXT, content TEXT, source TEXT, url TEXT)"
-    )
+    conn.execute("CREATE TABLE t (id INTEGER, title TEXT, content TEXT, source TEXT, url TEXT)")
     conn.execute("INSERT INTO t VALUES (?,?,?,?,?)", (item_id, title, content, source, url))
     conn.commit()
     return conn.execute("SELECT * FROM t").fetchone()

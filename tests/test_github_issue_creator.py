@@ -193,16 +193,18 @@ def test_build_issue_body_no_kev_when_false():
 
 def test_run_creates_issue(in_memory_db):
     # Seed a finding that needs an issue
-    in_memory_db.execute(
-        """
+    in_memory_db.execute("""
         INSERT INTO findings
             (repo_full_name, cve_id, package_name, package_ecosystem,
              state, first_seen_at, last_seen_at)
         VALUES ('user/repo', 'CVE-2024-0001', 'requests', 'PyPI',
                 'new', '2026-01-01', '2026-01-01')
-        """
+        """)
+    (
+        in_memory_db.connection.commit()
+        if hasattr(in_memory_db, "connection")
+        else in_memory_db.commit()
     )
-    in_memory_db.connection.commit() if hasattr(in_memory_db, "connection") else in_memory_db.commit()
 
     mock_issue = MagicMock()
     mock_issue.html_url = "https://github.com/user/repo/issues/42"
@@ -227,16 +229,18 @@ def test_run_creates_issue(in_memory_db):
 
 
 def test_run_skips_duplicate_open_issue(in_memory_db):
-    in_memory_db.execute(
-        """
+    in_memory_db.execute("""
         INSERT INTO findings
             (repo_full_name, cve_id, package_name, package_ecosystem,
              state, first_seen_at, last_seen_at)
         VALUES ('user/repo', 'CVE-2024-9999', 'flask', 'PyPI',
                 'new', '2026-01-01', '2026-01-01')
-        """
+        """)
+    (
+        in_memory_db.connection.commit()
+        if hasattr(in_memory_db, "connection")
+        else in_memory_db.commit()
     )
-    in_memory_db.connection.commit() if hasattr(in_memory_db, "connection") else in_memory_db.commit()
 
     existing_issue = MagicMock()
     existing_issue.title = "[Security] CVE-2024-9999 in flask"
@@ -271,16 +275,18 @@ def test_run_no_findings_returns_empty_stats(in_memory_db):
 def test_run_handles_github_exception(in_memory_db):
     from github import GithubException
 
-    in_memory_db.execute(
-        """
+    in_memory_db.execute("""
         INSERT INTO findings
             (repo_full_name, cve_id, package_name, package_ecosystem,
              state, first_seen_at, last_seen_at)
         VALUES ('user/repo', 'CVE-2024-5555', 'numpy', 'PyPI',
                 'new', '2026-01-01', '2026-01-01')
-        """
+        """)
+    (
+        in_memory_db.connection.commit()
+        if hasattr(in_memory_db, "connection")
+        else in_memory_db.commit()
     )
-    in_memory_db.connection.commit() if hasattr(in_memory_db, "connection") else in_memory_db.commit()
 
     mock_repo = MagicMock()
     mock_repo.get_issues.side_effect = GithubException(403, "Forbidden", None)
@@ -295,17 +301,19 @@ def test_run_handles_github_exception(in_memory_db):
 
 def test_run_skips_already_issued_findings(in_memory_db):
     # Finding already has a github_issue_url — should not be returned by DB query
-    in_memory_db.execute(
-        """
+    in_memory_db.execute("""
         INSERT INTO findings
             (repo_full_name, cve_id, package_name, package_ecosystem,
              state, first_seen_at, last_seen_at, github_issue_url)
         VALUES ('user/repo', 'CVE-2024-3333', 'boto3', 'PyPI',
                 'new', '2026-01-01', '2026-01-01',
                 'https://github.com/user/repo/issues/10')
-        """
+        """)
+    (
+        in_memory_db.connection.commit()
+        if hasattr(in_memory_db, "connection")
+        else in_memory_db.commit()
     )
-    in_memory_db.connection.commit() if hasattr(in_memory_db, "connection") else in_memory_db.commit()
 
     with patch("github_issue_creator.Github") as mock_gh_cls:
         stats = gic.run(in_memory_db, _make_config())

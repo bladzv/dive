@@ -78,8 +78,7 @@ def main() -> int:
         if results:
             r0 = results[0]
             vulns = r0.get("vulns") or []
-            if not check("requests 2.6.0 has vulns", len(vulns) > 0,
-                         f"got {len(vulns)} vulns"):
+            if not check("requests 2.6.0 has vulns", len(vulns) > 0, f"got {len(vulns)} vulns"):
                 failures += 1
             if vulns:
                 v = vulns[0]
@@ -115,8 +114,9 @@ def main() -> int:
         with db.get_conn(db_path) as conn:
             stats = gs.run(conn, config)
 
-            if not check("Repos scanned > 0", stats.repos_scanned > 0,
-                         f"got {stats.repos_scanned}"):
+            if not check(
+                "Repos scanned > 0", stats.repos_scanned > 0, f"got {stats.repos_scanned}"
+            ):
                 failures += 1
 
             print(f"  Repos scanned:    {stats.repos_scanned}")
@@ -137,8 +137,7 @@ def main() -> int:
                     failures += 1
                 if not check("Finding has package_name", bool(f["package_name"])):
                     failures += 1
-                if not check("Finding state is 'new'", f["state"] == "new",
-                             f"got '{f['state']}'"):
+                if not check("Finding state is 'new'", f["state"] == "new", f"got '{f['state']}'"):
                     failures += 1
                 print("\n  Sample finding:")
                 print(f"    repo:     {f['repo_full_name']}")
@@ -147,7 +146,9 @@ def main() -> int:
                 print(f"    severity: cvss={f['cvss_score']} kev={bool(f['is_kev'])}")
                 print(f"    priority: {f['priority_score']}")
             else:
-                print("  [INFO] No Critical/High findings — repo may be clean or have no scannable manifests")
+                print(
+                    "  [INFO] No Critical/High findings — repo may be clean or have no scannable manifests"
+                )
 
     # ------------------------------------------------------------------
     # Summary

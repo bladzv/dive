@@ -6,15 +6,11 @@ No real network calls are made — httpx and smtplib are mocked throughout.
 
 from __future__ import annotations
 
-import smtplib
 import sqlite3
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import db
 import notifier
 from notifier import (
     MAX_FINDINGS_PER_ALERT,
@@ -25,7 +21,6 @@ from notifier import (
     send_failure_alert,
     send_findings_alert,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -319,7 +314,6 @@ def test_send_email_uses_starttls():
 
 
 def test_discord_truncates_long_message():
-    cfg = _make_config(discord_url="https://discord.com/api/webhooks/test")
     # Create a very long finding line
     long_text = "x" * 3000
     with patch("httpx.Client") as mock_client_cls:

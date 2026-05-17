@@ -23,8 +23,6 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 
-import db
-
 logger = logging.getLogger(__name__)
 
 

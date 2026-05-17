@@ -15,6 +15,7 @@ FastAPI application with:
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -24,22 +25,19 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from filelock import FileLock, Timeout
 from itsdangerous import URLSafeTimedSerializer
-
-import asyncio
-
-from apscheduler.triggers.cron import CronTrigger
 
 import config as cfg_module
 import db
@@ -51,8 +49,8 @@ import secrets_scanner as ss
 import settings as st
 
 try:
-    import collector as collector_module
     import categorizer as categorizer_module
+    import collector as collector_module
     _COLLECTOR_AVAILABLE = True
 except ImportError:
     _COLLECTOR_AVAILABLE = False
@@ -501,7 +499,7 @@ async def _login_redirect_handler(request: Request, exc: _LoginRedirect) -> Redi
 
 def _replace_query_param(url: Any, key: str, value: Any) -> str:
     """Jinja2 filter: replace or add a single query param while preserving others."""
-    from urllib.parse import urlencode, urlparse, parse_qs
+    from urllib.parse import parse_qs, urlencode, urlparse
     parsed = urlparse(str(url))
     params = parse_qs(parsed.query, keep_blank_values=True)
     params[key] = [str(value)]

@@ -16,7 +16,6 @@ import pytest
 
 import secrets_scanner as ss
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -38,7 +37,7 @@ def in_memory_db():
 
 
 def _make_config(token: str = "fake-token", username: str = "testuser"):
-    from config import AppConfig, GitHubConfig, DashboardConfig
+    from config import AppConfig, DashboardConfig, GitHubConfig
     return AppConfig(
         github=GitHubConfig(token=token, username=username),
         dashboard=DashboardConfig(username="admin", password="secret"),

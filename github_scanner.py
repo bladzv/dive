@@ -36,14 +36,16 @@ from typing import Any
 import httpx
 from github import Github, GithubException, RateLimitExceededException
 
-import db
-from config import AppConfig
-
 try:
-    from cvss import CVSS2 as _CVSS2, CVSS3 as _CVSS3, CVSS4 as _CVSS4
+    from cvss import CVSS2 as _CVSS2
+    from cvss import CVSS3 as _CVSS3
+    from cvss import CVSS4 as _CVSS4
     _CVSS_AVAILABLE = True
 except ImportError:
     _CVSS_AVAILABLE = False
+
+import db
+from config import AppConfig
 
 logger = logging.getLogger(__name__)
 

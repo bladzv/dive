@@ -17,7 +17,6 @@ import pytest
 import categorizer
 import db
 from categorizer import (
-    BATCH_SIZE,
     VALID_CATEGORIES,
     VALID_SEVERITIES,
     _assign_cluster,
@@ -26,7 +25,6 @@ from categorizer import (
     _parse_response,
     _sanitize_field,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

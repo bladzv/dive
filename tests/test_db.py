@@ -7,16 +7,11 @@ All tests use a temporary in-memory SQLite database; no file I/O.
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 import db
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

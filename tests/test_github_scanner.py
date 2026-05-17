@@ -8,16 +8,12 @@ No GitHub API or OSV.dev calls are made — everything is tested with fixtures.
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 import db
-import github_scanner as gs
 from github_scanner import (
-    Package,
     _cvss_to_severity_text,
     _extract_fixed_version,
     _extract_severity,
@@ -38,7 +34,6 @@ from github_scanner import (
     _parse_requirements_txt,
     _priority_score,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

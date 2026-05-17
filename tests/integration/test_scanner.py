@@ -13,14 +13,12 @@ Exit code 1 = one or more checks failed.
 
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import httpx
 
 import config as cfg_module
 import db
@@ -29,8 +27,6 @@ from github_scanner import (
     _extract_fixed_version,
     _extract_severity,
     _make_http_client,
-    _parse_package_json,
-    _parse_requirements_txt,
 )
 
 
@@ -144,7 +140,7 @@ def main() -> int:
                 if not check("Finding state is 'new'", f["state"] == "new",
                              f"got '{f['state']}'"):
                     failures += 1
-                print(f"\n  Sample finding:")
+                print("\n  Sample finding:")
                 print(f"    repo:     {f['repo_full_name']}")
                 print(f"    package:  {f['package_name']} {f['installed_version']}")
                 print(f"    cve:      {f['cve_id'] or f['ghsa_id']}")

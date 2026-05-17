@@ -16,8 +16,7 @@ from fastapi.testclient import TestClient
 
 import db
 import main
-from main import app, _require_auth
-
+from main import _require_auth, app
 
 # ---------------------------------------------------------------------------
 # Fixtures

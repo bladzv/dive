@@ -287,7 +287,7 @@ def test_run_splits_into_correct_batches(db_conn):
 
     call_count = 0
 
-    def fake_call_ollama(client, config, batch):
+    def fake_call_ollama(client, config, batch, model):
         nonlocal call_count
         call_count += 1
         return json.dumps([_valid_result() for _ in batch])

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import smtplib
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from typing import Any
 
@@ -88,7 +88,7 @@ def send_weekly_digest(config: AppConfig, conn: sqlite3.Connection) -> None:
     top_findings  = db.get_weekly_digest_top_findings(conn)
     top_repos     = db.get_top_affected_repos(conn, limit=5)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     week_label = now.strftime("Week of %B %-d, %Y")
 
     # Build serialisable snapshot for /weekly view
@@ -162,7 +162,7 @@ def send_pipeline_start_alert(config: AppConfig) -> None:
     if not config.has_any_notification_channel:
         return
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     body = f"⚙️ DIVE pipeline started at {now}"
     _dispatch(config, subject="⚙️ DIVE pipeline started", text=body)
 

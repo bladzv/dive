@@ -66,7 +66,6 @@ def _gitleaks_finding(**overrides) -> dict:
 
 def test_run_gitleaks_returns_findings(tmp_path):
     findings = [_gitleaks_finding()]
-    report = tmp_path / "report.json"
 
     def fake_run(cmd, **kwargs):
         # Write findings to the report path supplied in the command

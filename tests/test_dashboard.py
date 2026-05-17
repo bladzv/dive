@@ -78,10 +78,14 @@ def test_health_is_unauthenticated():
 
 
 def test_protected_routes_require_auth():
-    """Dashboard pages must return 401 without the dependency override."""
+    """Unauthenticated requests: page routes redirect to /login; API routes return 401."""
     app.dependency_overrides.clear()
-    c = TestClient(app, raise_server_exceptions=False)
-    for path in ["/", "/findings", "/settings", "/api/findings", "/api/news"]:
+    c = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
+    for path in ["/", "/findings", "/settings"]:
+        resp = c.get(path)
+        assert resp.status_code == 302, f"Expected 302 for {path}, got {resp.status_code}"
+        assert "/login" in resp.headers.get("location", ""), f"Expected redirect to /login for {path}"
+    for path in ["/api/findings", "/api/news"]:
         resp = c.get(path)
         assert resp.status_code == 401, f"Expected 401 for {path}, got {resp.status_code}"
     app.dependency_overrides[_require_auth] = lambda: "admin"
@@ -196,8 +200,8 @@ def test_api_news_empty_when_no_items(client):
 def test_api_news_returns_inserted_item(client):
     # Insert into the DB that _setup already patched onto db._DEFAULT_DB_PATH.
     # Use the current time so get_recent_items(hours=24) picks it up.
-    from datetime import datetime, timezone as tz
-    now = datetime.now(tz.utc).isoformat()
+    from datetime import UTC, datetime
+    now = datetime.now(UTC).isoformat()
     with db.get_conn() as conn:
         db.insert_news_item(conn, {
             "url": "https://example.com/cve-2024-test",
@@ -360,15 +364,15 @@ def test_cvss_severity_none():
 
 
 def test_time_ago_minutes():
-    from datetime import datetime, timedelta, timezone as tz
-    recent = (datetime.now(tz.utc) - timedelta(minutes=15)).isoformat()
+    from datetime import UTC, datetime, timedelta
+    recent = (datetime.now(UTC) - timedelta(minutes=15)).isoformat()
     result = main._time_ago(recent)
     assert "m ago" in result
 
 
 def test_time_ago_hours():
-    from datetime import datetime, timedelta, timezone as tz
-    recent = (datetime.now(tz.utc) - timedelta(hours=3)).isoformat()
+    from datetime import UTC, datetime, timedelta
+    recent = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
     result = main._time_ago(recent)
     assert "h ago" in result
 

@@ -101,6 +101,8 @@ class ScannerStats:
     api_requests_end: int = 0
     failed_repos: list[str] = field(default_factory=list)
     rate_limit_warning: bool = False
+    finding_keys: set = field(default_factory=set)
+    _enrich_queue: set = field(default_factory=set)  # (package_name, ecosystem) needing latest-version check
 
     @property
     def api_requests_used(self) -> int:
@@ -198,6 +200,11 @@ def run(
     # Query OSV.dev and process findings
     with _make_http_client() as client:
         _process_all_packages(conn, client, config, all_packages, kev_cves, stats)
+
+    # For findings with no known fix, look up the latest package version and
+    # check whether it is clean so the UI can suggest an upgrade path.
+    if stats._enrich_queue:
+        _enrich_latest_versions(conn, stats._enrich_queue)
 
     logger.info(
         "Scan complete: %d repos, %d packages, %d new findings, %d updated",
@@ -686,6 +693,120 @@ def _query_and_store_batch(
             _store_osv_finding(conn, config, pkg, vuln, kev_cves, stats)
 
 
+# ---------------------------------------------------------------------------
+# Latest-version enrichment
+# ---------------------------------------------------------------------------
+
+
+def _lookup_latest_pypi(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://pypi.org/pypi/{name}/json", timeout=10)
+        r.raise_for_status()
+        return r.json()["info"]["version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_npm(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://registry.npmjs.org/{name}/latest", timeout=10)
+        r.raise_for_status()
+        return r.json()["version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_crates(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(
+            f"https://crates.io/api/v1/crates/{name}",
+            headers={"User-Agent": "DIVE-security-scanner/1.0 (github.com/bladzv/dive)"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()["crate"]["max_stable_version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_go(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://proxy.golang.org/{name.lower()}/@latest", timeout=10)
+        r.raise_for_status()
+        return r.json()["Version"]
+    except Exception:
+        return None
+
+
+def _lookup_latest_rubygems(name: str, client: httpx.Client) -> str | None:
+    try:
+        r = client.get(f"https://rubygems.org/api/v1/gems/{name}.json", timeout=10)
+        r.raise_for_status()
+        return r.json()["version"]
+    except Exception:
+        return None
+
+
+_LATEST_VERSION_REGISTRIES: dict[str, Any] = {
+    "PyPI": _lookup_latest_pypi,
+    "npm": _lookup_latest_npm,
+    "crates.io": _lookup_latest_crates,
+    "Go": _lookup_latest_go,
+    "RubyGems": _lookup_latest_rubygems,
+}
+
+
+def _check_latest_osv_vuln_count(
+    package: str, ecosystem: str, version: str, client: httpx.Client
+) -> int:
+    """Return the number of known OSV vulnerabilities for package@version, or -1 on error."""
+    try:
+        r = client.post(
+            "https://api.osv.dev/v1/query",
+            json={"version": version, "package": {"name": package, "ecosystem": ecosystem}},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return len(r.json().get("vulns", []))
+    except Exception:
+        return -1
+
+
+def _enrich_latest_versions(
+    conn: sqlite3.Connection,
+    queue: set[tuple[str, str]],
+) -> None:
+    """Look up the latest published version for each (package, ecosystem) in queue.
+
+    For each, query OSV to see whether that version is clean. Updates findings
+    that have no fixed_version with the result so the UI can suggest an upgrade.
+    """
+    logger.info("Checking latest versions for %d package(s) with no known fix", len(queue))
+    with httpx.Client(follow_redirects=True) as client:
+        for package, ecosystem in queue:
+            lookup_fn = _LATEST_VERSION_REGISTRIES.get(ecosystem)
+            if not lookup_fn:
+                continue
+            try:
+                latest = lookup_fn(package, client)
+                if not latest:
+                    continue
+                vuln_count = _check_latest_osv_vuln_count(package, ecosystem, latest, client)
+                if vuln_count < 0:
+                    continue
+                db.update_latest_version_for_package(conn, package, ecosystem, latest, vuln_count)
+                logger.debug(
+                    "Latest %s/%s: %s (%d known vuln(s))", ecosystem, package, latest, vuln_count
+                )
+            except Exception:
+                logger.debug("Failed to enrich %s/%s", ecosystem, package, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# OSV finding storage
+# ---------------------------------------------------------------------------
+
+
 def _store_osv_finding(
     conn: sqlite3.Connection,
     config: AppConfig,
@@ -704,6 +825,7 @@ def _store_osv_finding(
 
     severity_text, cvss_score = _extract_severity(vuln)
     fixed_version = _extract_fixed_version(vuln, pkg.ecosystem, pkg.name)
+    affected_versions = _extract_affected_versions(vuln, pkg.ecosystem, pkg.name)
     patch_available = fixed_version is not None
     is_kev = bool(cve_id and cve_id.upper() in kev_cves)
     priority = _priority_score(cvss_score, is_kev, patch_available)
@@ -720,6 +842,7 @@ def _store_osv_finding(
         "package_ecosystem": pkg.ecosystem,
         "installed_version": pkg.version,
         "fixed_version": fixed_version,
+        "affected_versions": affected_versions,
         "cvss_score": cvss_score,
         "is_kev": is_kev,
         "patch_available": patch_available,
@@ -728,6 +851,20 @@ def _store_osv_finding(
     }
 
     is_new = db.upsert_finding(conn, finding)
+
+    # Track keys found this run so lifecycle.auto_resolve_gone() can detect
+    # findings that disappeared because the package was patched.
+    stats.finding_keys.add((
+        pkg.repo_full_name,
+        pkg.name,
+        pkg.ecosystem,
+        cve_id or "",
+        ghsa_id or "",
+    ))
+
+    # Queue for latest-version enrichment when OSV provides no fixed version
+    if not fixed_version:
+        stats._enrich_queue.add((pkg.name, pkg.ecosystem))
 
     if is_new:
         stats.findings_new += 1
@@ -757,14 +894,23 @@ def _extract_severity(vuln: dict) -> tuple[str, float | None]:
     Falls back to the database_specific.severity text label with an approximate
     midpoint score when no vector is present.
     """
-    # Try to calculate an accurate score from the CVSS vector first.
+    # 1. Top-level severity array (most databases).
     for sev_entry in vuln.get("severity") or []:
         if "CVSS" in sev_entry.get("type", ""):
             score = _score_from_vector(sev_entry.get("score", ""))
             if score is not None:
                 return _cvss_to_severity_text(score), score
 
-    # Fall back to the text severity label (reliable for GitHub advisories).
+    # 2. Per-affected-version severity (Go, npm, crates.io advisories often
+    #    omit the top-level array and place CVSS vectors here instead).
+    for affected in vuln.get("affected") or []:
+        for sev_entry in affected.get("severity") or []:
+            if "CVSS" in sev_entry.get("type", ""):
+                score = _score_from_vector(sev_entry.get("score", ""))
+                if score is not None:
+                    return _cvss_to_severity_text(score), score
+
+    # 3. Text severity label from database_specific (reliable for GitHub advisories).
     db_sev = (vuln.get("database_specific") or {}).get("severity", "").upper()
     if db_sev in _SEVERITY_CVSS_MAP:
         text = "Critical" if db_sev == "CRITICAL" else db_sev.capitalize()
@@ -818,6 +964,46 @@ def _cvss_to_severity_text(score: float) -> str:
     if score >= 4.0:
         return "Medium"
     return "Low"
+
+
+def _extract_affected_versions(vuln: dict, ecosystem: str, package_name: str) -> str | None:
+    """Return a human-readable affected-version range string from OSV data.
+
+    E.g. "< 2.32.0" or ">= 1.0.0, < 2.32.0". Returns None when no range is found.
+    Multiple disjoint ranges are joined with " | ".
+    """
+    for affected in vuln.get("affected") or []:
+        pkg = affected.get("package") or {}
+        if pkg.get("ecosystem", "").lower() != ecosystem.lower():
+            continue
+        if pkg.get("name", "").lower() != package_name.lower():
+            continue
+        ranges: list[str] = []
+        for range_ in affected.get("ranges") or []:
+            if range_.get("type") not in ("ECOSYSTEM", "SEMVER"):
+                continue
+            introduced: str | None = None
+            fixed: str | None = None
+            last_affected: str | None = None
+            for event in range_.get("events") or []:
+                if event.get("introduced"):
+                    introduced = event["introduced"]
+                if event.get("fixed"):
+                    fixed = event["fixed"]
+                if event.get("last_affected"):
+                    last_affected = event["last_affected"]
+            parts: list[str] = []
+            if introduced and introduced != "0":
+                parts.append(f">= {introduced}")
+            if fixed:
+                parts.append(f"< {fixed}")
+            elif last_affected:
+                parts.append(f"<= {last_affected}")
+            if parts:
+                ranges.append(", ".join(parts))
+        if ranges:
+            return " | ".join(ranges)
+    return None
 
 
 def _extract_fixed_version(vuln: dict, ecosystem: str, package_name: str) -> str | None:
@@ -908,8 +1094,9 @@ def _generate_next_steps_for_finding(
 
     prompt = _build_next_steps_prompt(finding, vuln)
     url = f"{config.ollama.host.rstrip('/')}/api/generate"
+    active_model = db.get_setting(conn, "active_model") or config.ollama.model
     payload = {
-        "model": config.ollama.model,
+        "model": active_model,
         "prompt": prompt,
         "stream": False,
         "format": "json",

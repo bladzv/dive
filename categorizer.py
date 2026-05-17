@@ -90,12 +90,15 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> CategorizerStats:
         logger.info("No uncategorized items — nothing to do")
         return stats
 
-    logger.info("Categorizing %d items in batches of %d", len(items), BATCH_SIZE)
+    # Prefer the model set via the Settings UI over the config.yaml default.
+    active_model = db.get_setting(conn, "active_model") or config.ollama.model
+    logger.info("Categorizing %d items in batches of %d (model: %s)",
+                len(items), BATCH_SIZE, active_model)
 
     with _make_client() as client:
         for batch_start in range(0, len(items), BATCH_SIZE):
             batch = items[batch_start : batch_start + BATCH_SIZE]
-            _process_batch(conn, client, config, batch, stats)
+            _process_batch(conn, client, config, batch, stats, active_model)
 
     stats.total_processed = stats.categorized + stats.uncategorized
 
@@ -126,11 +129,12 @@ def _process_batch(
     config: AppConfig,
     batch: list[sqlite3.Row],
     stats: CategorizerStats,
+    model: str,
 ) -> None:
     results: list[dict] | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
-        raw_response = _call_ollama(client, config, batch)
+        raw_response = _call_ollama(client, config, batch, model)
         if raw_response is None:
             logger.warning("Ollama call failed (attempt %d/%d)", attempt, MAX_RETRIES)
             continue
@@ -143,8 +147,8 @@ def _process_batch(
         )
 
     for i, row in enumerate(batch):
-        if results and i < len(results) and _is_valid(results[i]):
-            r = results[i]
+        r = _normalize_result(results[i]) if results and i < len(results) else None
+        if r and _is_valid(r):
             cluster_id = _assign_cluster(row["title"], row["content"] or "")
             db.update_item_categorization(
                 conn,
@@ -178,16 +182,27 @@ def _process_batch(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_result(r: dict) -> dict:
+    """Normalise model output casing so exact-match validation doesn't fail on
+    variants like 'vulnerability' or 'HIGH' returned by smaller models."""
+    if isinstance(r.get("category"), str):
+        r["category"] = r["category"].strip().capitalize()
+    if isinstance(r.get("severity"), str):
+        r["severity"] = r["severity"].strip().capitalize()
+    return r
+
+
 def _call_ollama(
     client: httpx.Client,
     config: AppConfig,
     batch: list[sqlite3.Row],
+    model: str,
 ) -> str | None:
     """Send a batch to Ollama. Returns the raw response text, or None on error."""
     prompt = _build_prompt(batch)
     url = f"{config.ollama.host.rstrip('/')}/api/generate"
     payload = {
-        "model": config.ollama.model,
+        "model": model,
         "prompt": prompt,
         "stream": False,
         "format": "json",  # Ollama JSON mode — constrains output to valid JSON

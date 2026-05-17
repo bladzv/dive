@@ -19,7 +19,7 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generator
 
@@ -206,6 +206,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # M10 columns
     if "github_issue_url" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN github_issue_url TEXT")
+    # Affected version range sourced directly from OSV/advisory data
+    if "affected_versions" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN affected_versions TEXT")
+    # Latest published version from package registry + OSV vulnerability count
+    if "latest_version" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN latest_version TEXT")
+    if "latest_version_vuln_count" not in existing:
+        conn.execute("ALTER TABLE findings ADD COLUMN latest_version_vuln_count INTEGER")
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +227,7 @@ def url_hash(url: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _json_dumps(value: Any) -> str | None:
@@ -282,12 +290,13 @@ def insert_news_item(conn: sqlite3.Connection, item: dict) -> bool:
 def get_uncategorized_items(
     conn: sqlite3.Connection, limit: int = 50
 ) -> list[sqlite3.Row]:
-    """Return news items that have not yet been categorized (category IS NULL)."""
+    """Return news items that have not yet been categorized, or that previously
+    fell back to 'Uncategorized' so they can be retried when the model improves."""
     return conn.execute(
         """
         SELECT id, title, content, source, url
         FROM news_items
-        WHERE category IS NULL
+        WHERE category IS NULL OR category = 'Uncategorized'
         ORDER BY fetched_at DESC
         LIMIT ?
         """,
@@ -458,11 +467,11 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             INSERT INTO findings (
                 repo_full_name, cve_id, ghsa_id,
                 package_name, package_ecosystem,
-                installed_version, fixed_version,
+                installed_version, fixed_version, affected_versions,
                 cvss_score, is_kev, patch_available, priority_score,
                 state, first_seen_at, last_seen_at,
                 manifest_path, ai_next_steps
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 finding["repo_full_name"],
@@ -472,6 +481,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
                 finding["package_ecosystem"],
                 finding.get("installed_version"),
                 finding.get("fixed_version"),
+                finding.get("affected_versions"),
                 finding.get("cvss_score"),
                 1 if finding.get("is_kev") else 0,
                 1 if finding.get("patch_available") else 0,
@@ -492,6 +502,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             last_seen_at      = ?,
             installed_version = ?,
             fixed_version     = ?,
+            affected_versions = ?,
             cvss_score        = ?,
             is_kev            = ?,
             patch_available   = ?,
@@ -503,6 +514,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             _now(),
             finding.get("installed_version"),
             finding.get("fixed_version"),
+            finding.get("affected_versions"),
             finding.get("cvss_score"),
             1 if finding.get("is_kev") else 0,
             1 if finding.get("patch_available") else 0,
@@ -521,6 +533,27 @@ def update_finding_next_steps(
     conn.execute(
         "UPDATE findings SET ai_next_steps = ? WHERE id = ?",
         (_json_dumps(next_steps), finding_id),
+    )
+
+
+def update_latest_version_for_package(
+    conn: sqlite3.Connection,
+    package_name: str,
+    ecosystem: str,
+    latest_version: str,
+    vuln_count: int,
+) -> None:
+    """Set latest_version and latest_version_vuln_count on findings that have no fixed_version."""
+    conn.execute(
+        """
+        UPDATE findings SET
+            latest_version = ?,
+            latest_version_vuln_count = ?
+        WHERE package_name = ?
+          AND package_ecosystem = ?
+          AND (fixed_version IS NULL OR fixed_version = '')
+        """,
+        (latest_version, vuln_count, package_name, ecosystem),
     )
 
 

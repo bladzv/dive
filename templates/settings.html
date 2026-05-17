@@ -164,6 +164,24 @@
   </div>
 
 </div>
+
+<!-- ── Confirm modal ─────────────────────────────────── -->
+<div id="confirm-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
+     onclick="closeConfirmModal()"></div>
+<div id="confirm-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+     padding:1.5rem;width:min(420px,92vw);z-index:201;box-shadow:var(--shadow)">
+  <p id="confirm-message" style="font-size:0.9rem;font-weight:600;margin-bottom:0.5rem"></p>
+  <p id="confirm-warning" style="display:none;font-size:0.82rem;color:var(--high);
+     background:rgba(220,120,0,0.1);border:1px solid var(--high);border-radius:var(--radius);
+     padding:0.45rem 0.7rem;margin-bottom:1rem"></p>
+  <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem">
+    <button class="btn btn-outline btn-sm" onclick="closeConfirmModal()">Cancel</button>
+    <button id="confirm-ok" class="btn btn-sm" style="background:var(--critical);color:#fff;border-color:var(--critical)"
+            onclick="_doConfirm()">Confirm</button>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -299,14 +317,15 @@ function toggleFeed(id, enabled) {
 }
 
 function deleteFeed(id) {
-  if (!confirm('Remove this feed?')) return;
-  fetch('/api/config/feeds/' + id, { method: 'DELETE', credentials: 'same-origin' })
-  .then(r => {
-    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
-    return r.json();
-  })
-  .then(() => { showToast('Feed removed', 'success'); loadFeeds(); })
-  .catch(err => showToast(err.message, 'error'));
+  showConfirm('Remove this feed?', null, () => {
+    fetch('/api/config/feeds/' + id, { method: 'DELETE', credentials: 'same-origin' })
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+      return r.json();
+    })
+    .then(() => { showToast('Feed removed', 'success'); loadFeeds(); })
+    .catch(err => showToast(err.message, 'error'));
+  });
 }
 
 function addFeed() {
@@ -499,31 +518,56 @@ function clearData() {
 
   const hasFindingsOrSecrets = types.includes('findings') || types.includes('secrets');
   const scope = days_back ? `older than ${days_back} days` : 'ALL records';
-  const warn = hasFindingsOrSecrets
-    ? `\n\n⚠️ This includes unresolved findings/secrets.`
-    : '';
-  if (!confirm(`Delete ${scope} for: ${types.join(', ')}?${warn}\n\nThis cannot be undone.`)) return;
+  const warnText = hasFindingsOrSecrets ? 'This includes unresolved findings/secrets.' : null;
+  showConfirm(`Delete ${scope} for: ${types.join(', ')}? This cannot be undone.`, warnText, () => {
+    fetch('/api/data/clear', {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ types, days_back })
+    })
+    .then(r => {
+      if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+      return r.json();
+    })
+    .then(data => {
+      const parts = Object.entries(data.deleted).map(([k, v]) => `${k}: ${v}`).join(', ');
+      showToast(`Deleted ${data.total} record(s) — ${parts}`, 'success');
+      ['clear-news','clear-findings','clear-secrets','clear-runhistory'].forEach(id => {
+        document.getElementById(id).checked = false;
+      });
+      document.getElementById('clear-days').value = '';
+    })
+    .catch(err => showToast(err.message, 'error'));
+  });
+}
 
-  fetch('/api/data/clear', {
-    method: 'DELETE',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ types, days_back })
-  })
-  .then(r => {
-    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
-    return r.json();
-  })
-  .then(data => {
-    const parts = Object.entries(data.deleted).map(([k, v]) => `${k}: ${v}`).join(', ');
-    showToast(`Deleted ${data.total} record(s) — ${parts}`, 'success');
-    // Uncheck all boxes after success
-    ['clear-news','clear-findings','clear-secrets','clear-runhistory'].forEach(id => {
-      document.getElementById(id).checked = false;
-    });
-    document.getElementById('clear-days').value = '';
-  })
-  .catch(err => showToast(err.message, 'error'));
+/* ── Confirm modal ─────────────────────────────────── */
+let _confirmCallback = null;
+
+function showConfirm(message, warning, onConfirm) {
+  document.getElementById('confirm-message').textContent = message;
+  const warnEl = document.getElementById('confirm-warning');
+  if (warning) {
+    warnEl.textContent = '⚠ ' + warning;
+    warnEl.style.display = '';
+  } else {
+    warnEl.style.display = 'none';
+  }
+  _confirmCallback = onConfirm;
+  document.getElementById('confirm-backdrop').style.display = '';
+  document.getElementById('confirm-modal').style.display   = '';
+}
+
+function _doConfirm() {
+  closeConfirmModal();
+  if (_confirmCallback) _confirmCallback();
+}
+
+function closeConfirmModal() {
+  _confirmCallback = null;
+  document.getElementById('confirm-backdrop').style.display = 'none';
+  document.getElementById('confirm-modal').style.display   = 'none';
 }
 
 /* ── Init ──────────────────────────────────────────── */

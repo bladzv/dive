@@ -149,6 +149,8 @@ code, pre {
 }
 .site-nav a:hover { color: var(--text); text-decoration: none; }
 .site-nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+.site-nav a.nav-logout { margin-left: auto; font-size: 0.78rem; color: var(--text-dim); opacity: 0.7; }
+.site-nav a.nav-logout:hover { color: var(--critical); opacity: 1; }
 
 /* ── Main content ───────────────────────────────────── */
 .page-main {

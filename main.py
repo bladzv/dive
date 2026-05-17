@@ -22,7 +22,7 @@ import logging
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -30,12 +30,12 @@ import httpx
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from filelock import FileLock, Timeout
+from itsdangerous import URLSafeTimedSerializer
 
 import asyncio
 
@@ -72,6 +72,16 @@ BASE_DIR = Path(__file__).parent
 
 _config: cfg_module.AppConfig | None = None
 _scheduler: BackgroundScheduler | None = None
+_session_serializer: URLSafeTimedSerializer | None = None
+
+_SESSION_COOKIE = "dive_session"
+_SESSION_MAX_AGE = 86400 * 7  # 7 days
+
+
+class _LoginRedirect(Exception):
+    """Raised by _require_auth to redirect a browser to the login page."""
+    def __init__(self, location: str) -> None:
+        self.location = location
 
 # Pipeline run state — written under _pipeline_lock
 _pipeline_lock = threading.Lock()
@@ -145,7 +155,7 @@ def _run_pipeline() -> None:
         return
 
     run_id: int | None = None
-    _pipeline_start_time = datetime.now(timezone.utc)
+    _pipeline_start_time = datetime.now(UTC)
     try:
         with _pipeline_lock:
             _pipeline_status["running"] = True
@@ -216,16 +226,9 @@ def _run_pipeline() -> None:
                 with db.get_conn() as conn:
                     scan_stats = gs.run(conn, _config, excluded_repos=_excluded_repos)
                     findings_new_total = scan_stats.findings_new
-
-                    rows = db.get_findings(conn, limit=10_000)
-                    for row in rows:
-                        current_finding_keys.add((
-                            row["repo_full_name"],
-                            row["package_name"],
-                            row["package_ecosystem"],
-                            row["cve_id"] or "",
-                            row["ghsa_id"] or "",
-                        ))
+                    # Use only keys found in this scan run — reading all DB findings
+                    # would prevent auto-resolving patched packages.
+                    current_finding_keys = scan_stats.finding_keys
 
                     logger.info(
                         "Scanner: %d repos, %d packages, %d new findings",
@@ -347,10 +350,10 @@ def _run_pipeline() -> None:
 
         with _pipeline_lock:
             _pipeline_status["running"] = False
-            _pipeline_status["last_completed"] = datetime.now(timezone.utc).isoformat()
+            _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "success"
 
-        duration = (datetime.now(timezone.utc) - _pipeline_start_time).total_seconds()
+        duration = (datetime.now(UTC) - _pipeline_start_time).total_seconds()
         if _config:
             try:
                 notifier.send_pipeline_summary_alert(
@@ -370,7 +373,7 @@ def _run_pipeline() -> None:
         logger.error("Pipeline run failed: %s", exc, exc_info=True)
         with _pipeline_lock:
             _pipeline_status["running"] = False
-            _pipeline_status["last_completed"] = datetime.now(timezone.utc).isoformat()
+            _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "error"
             _pipeline_status["last_error"] = str(exc)
         try:
@@ -418,7 +421,7 @@ def _reschedule(new_hours: float) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
-    global _config, _scheduler
+    global _config, _scheduler, _session_serializer
 
     logger.info("DIVE starting up")
 
@@ -432,11 +435,19 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     db.init()
     logger.info("Database ready")
 
-    # Generate run token if not already stored (CSRF protection for Run Now)
     with db.get_conn() as conn:
+        # Generate run token if not already stored (CSRF protection for Run Now)
         if not db.get_setting(conn, "run_token"):
             db.set_setting(conn, "run_token", secrets.token_hex(32))
             logger.debug("Run token generated")
+        # Generate session secret if not already stored
+        session_secret = db.get_setting(conn, "session_secret")
+        if not session_secret:
+            session_secret = secrets.token_hex(32)
+            db.set_setting(conn, "session_secret", session_secret)
+            logger.debug("Session secret generated")
+
+    _session_serializer = URLSafeTimedSerializer(session_secret)
 
     interval = _interval_hours(_config)
     _scheduler = BackgroundScheduler(daemon=True)
@@ -483,6 +494,11 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 
+@app.exception_handler(_LoginRedirect)
+async def _login_redirect_handler(request: Request, exc: _LoginRedirect) -> RedirectResponse:
+    return RedirectResponse(url=exc.location, status_code=302)
+
+
 def _replace_query_param(url: Any, key: str, value: Any) -> str:
     """Jinja2 filter: replace or add a single query param while preserving others."""
     from urllib.parse import urlencode, urlparse, parse_qs
@@ -496,30 +512,44 @@ def _replace_query_param(url: Any, key: str, value: Any) -> str:
 
 templates.env.filters["replace_query_param"] = _replace_query_param
 
-_security = HTTPBasic()
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
 
 
-def _require_auth(
-    credentials: Annotated[HTTPBasicCredentials, Depends(_security)],
-) -> str:
-    """Verify HTTP Basic credentials against config.yaml values."""
-    cfg = _config
-    if cfg is None:
-        raise HTTPException(status_code=503, detail="Server starting up")
+def _get_session(request: Request) -> dict:
+    """Decode the signed session cookie; returns {} if absent or invalid."""
+    if _session_serializer is None:
+        return {}
+    token = request.cookies.get(_SESSION_COOKIE)
+    if not token:
+        return {}
+    try:
+        return _session_serializer.loads(token, max_age=_SESSION_MAX_AGE)  # type: ignore[arg-type]
+    except Exception:
+        return {}
 
-    correct_user = secrets.compare_digest(
-        credentials.username.encode(), cfg.dashboard.username.encode()
-    )
-    correct_pass = secrets.compare_digest(
-        credentials.password.encode(), cfg.dashboard.password.encode()
-    )
-    if not (correct_user and correct_pass):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+
+def _make_session_token(data: dict) -> str:
+    assert _session_serializer is not None
+    return _session_serializer.dumps(data)  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+
+def _require_auth(request: Request) -> str:
+    """Check session cookie; redirect to /login for page routes, 401 for API routes."""
+    session = _get_session(request)
+    if not session.get("authenticated"):
+        if request.url.path.startswith("/api/"):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        from urllib.parse import quote
+        raise _LoginRedirect(f"/login?next={quote(request.url.path, safe='/')}")
+    return session.get("username", "")
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +600,7 @@ def _time_ago(iso_str: str | None) -> str:
         return "—"
     try:
         dt = datetime.fromisoformat(iso_str)
-        diff = (datetime.now(timezone.utc) - dt).total_seconds()
+        diff = (datetime.now(UTC) - dt).total_seconds()
         if diff < 60:
             return "just now"
         if diff < 3600:
@@ -687,6 +717,57 @@ def _findings_summary() -> dict:
         }
     except Exception:
         return {"critical": 0, "high": 0, "medium": 0, "low": 0, "new": 0, "acknowledged": 0, "resolved": 0}
+
+
+# ---------------------------------------------------------------------------
+# Login / logout routes (unauthenticated)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_get(request: Request, next: str = "/") -> HTMLResponse:
+    if _get_session(request).get("authenticated"):
+        return RedirectResponse(url=next, status_code=302)  # type: ignore[return-value]
+    return templates.TemplateResponse(request, "login.html", {"next_url": next, "error": None})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_post(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next_url: str = Form(default="/"),
+) -> HTMLResponse:
+    cfg = _config
+    valid = (
+        cfg is not None
+        and secrets.compare_digest(username.encode(), cfg.dashboard.username.encode())
+        and secrets.compare_digest(password.encode(), cfg.dashboard.password.encode())
+    )
+    if not valid:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"next_url": next_url, "error": "Invalid username or password"},
+            status_code=401,
+        )
+    token = _make_session_token({"authenticated": True, "username": username})
+    resp = RedirectResponse(url=next_url if next_url.startswith("/") else "/", status_code=303)
+    resp.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=_SESSION_MAX_AGE,
+    )
+    return resp  # type: ignore[return-value]
+
+
+@app.get("/logout")
+async def logout(request: Request) -> RedirectResponse:
+    resp = RedirectResponse(url="/login", status_code=302)
+    resp.delete_cookie(_SESSION_COOKIE)
+    return resp
 
 
 # ---------------------------------------------------------------------------

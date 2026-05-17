@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import db
 
@@ -73,7 +73,7 @@ DEFAULT_FEEDS: list[tuple[str, str]] = [
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def get_feeds(conn: sqlite3.Connection) -> list[sqlite3.Row]:

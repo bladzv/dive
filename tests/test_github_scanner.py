@@ -9,16 +9,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 import db
+from config import AppConfig, DashboardConfig, GitHubConfig
 from github_scanner import (
     Package,
     ScannerStats,
     _cvss_to_severity_text,
-    _store_osv_finding,
     _extract_fixed_version,
     _extract_severity,
     _extract_version,
@@ -38,6 +39,7 @@ from github_scanner import (
     _parse_requirements_txt,
     _priority_score,
     _query_and_store_batch,
+    _store_osv_finding,
 )
 
 # ---------------------------------------------------------------------------
@@ -987,9 +989,6 @@ def test_query_and_store_batch_deduplicates_vuln_detail_requests(db_conn):
 def test_query_and_store_batch_detail_fetch_failure_stores_with_null_cvss(db_conn):
     """If the detail GET fails, the finding is still stored (not silently dropped)
     but with a NULL cvss_score so it isn't lost."""
-    import httpx
-    from config import AppConfig, DashboardConfig, GitHubConfig
-
     config = AppConfig(
         github=GitHubConfig(token="tok", username="u"),
         dashboard=DashboardConfig(username="admin", password="pw"),

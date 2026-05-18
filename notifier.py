@@ -439,6 +439,6 @@ def _send_email(email_cfg: Any, *, subject: str, body: str) -> None:
         smtp.ehlo()
         smtp.starttls()
         smtp.ehlo()
-        if email_cfg.smtp_username and email_cfg.smtp_password:
-            smtp.login(email_cfg.smtp_username, email_cfg.smtp_password)
+        if email_cfg.username and email_cfg.password:
+            smtp.login(email_cfg.username, email_cfg.password)
         smtp.send_message(msg)

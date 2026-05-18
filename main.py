@@ -20,6 +20,7 @@ import csv
 import io
 import json
 import logging
+import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -135,6 +136,9 @@ def _run_weekly_digest() -> None:
         return
     try:
         with db.get_conn() as conn:
+            if not st.is_feature_enabled(conn, "weekly_digest"):
+                logger.info("Weekly digest disabled by feature toggle — skipping")
+                return
             notifier.send_weekly_digest(_config, conn)
     except Exception as exc:
         logger.error("Weekly digest failed: %s", exc, exc_info=True)
@@ -219,6 +223,7 @@ def _run_pipeline() -> None:
         # Step 3 — GitHub scanner
         # ------------------------------------------------------------------
         current_finding_keys: set[tuple] = set()
+        scanned_repos: set[str] = set()
         with db.get_conn() as conn:
             _github_scanning_on = st.is_feature_enabled(conn, "github_scanning")
             _excluded_repos = st.get_excluded_repos(conn)
@@ -227,9 +232,8 @@ def _run_pipeline() -> None:
                 with db.get_conn() as conn:
                     scan_stats = gs.run(conn, _config, excluded_repos=_excluded_repos)
                     findings_new_total = scan_stats.findings_new
-                    # Use only keys found in this scan run — reading all DB findings
-                    # would prevent auto-resolving patched packages.
                     current_finding_keys = scan_stats.finding_keys
+                    scanned_repos = scan_stats.scanned_repos
 
                     logger.info(
                         "Scanner: %d repos, %d packages, %d new findings",
@@ -307,7 +311,7 @@ def _run_pipeline() -> None:
         try:
             with db.get_conn() as conn:
                 reverted = lifecycle.recheck_resolved(conn, current_finding_keys)
-                resolved = lifecycle.auto_resolve_gone(conn, current_finding_keys)
+                resolved = lifecycle.auto_resolve_gone(conn, current_finding_keys, scanned_repos)
                 if reverted:
                     logger.info("Lifecycle: %d resolved→new (regression)", reverted)
                 if resolved:
@@ -560,6 +564,14 @@ def _require_auth(request: Request) -> str:
     return session.get("username", "")
 
 
+def _require_csrf(request: Request) -> None:
+    """Validate X-Run-Token header on mutation endpoints (CSRF protection)."""
+    token = request.headers.get("X-Run-Token", "")
+    stored = _get_run_token()
+    if not stored or not secrets.compare_digest(token, stored):
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Run-Token")
+
+
 # ---------------------------------------------------------------------------
 # Template helpers
 # ---------------------------------------------------------------------------
@@ -629,6 +641,41 @@ def _enrich_news(row) -> dict:
     d = dict(row)
     d["time_ago"] = _time_ago(d.get("fetched_at") or d.get("published_at"))
     return d
+
+
+_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-./]*(?::[a-zA-Z0-9_\-.]+)?$")
+
+_SUGGESTED_MODEL_NAMES = {m["name"] for m in _SUGGESTED_MODELS}
+
+
+def _validate_ollama_model(model: str) -> None:
+    """Raise HTTPException(400) if model is not a valid/known Ollama model name.
+
+    Validates format, then checks against installed + suggested models when
+    Ollama is reachable. Falls through silently if Ollama is unreachable so
+    users can pre-configure a model they plan to pull.
+    """
+    if not _MODEL_NAME_RE.match(model):
+        raise HTTPException(status_code=400, detail=f"Invalid model name: {model!r}")
+
+    if _config is None:
+        return
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{_config.ollama.host}/api/tags")
+            resp.raise_for_status()
+            installed = {m["name"] for m in resp.json().get("models", [])}
+    except Exception:
+        logger.warning("Could not reach Ollama to validate model name — saving anyway")
+        return
+
+    allowed = installed | _SUGGESTED_MODEL_NAMES
+    if model not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model {model!r} is not installed or recognised. Pull it first with `ollama pull {model}`.",
+        )
 
 
 def _check_ollama_status() -> bool:
@@ -976,18 +1023,22 @@ async def news_page(
     _user: Annotated[str, Depends(_require_auth)],
     category: str | None = None,
     severity: str | None = None,
+    source: str | None = None,
     search: str | None = None,
     page: int = 1,
     per_page: int = 25,
 ) -> HTMLResponse:
-    """All news items with category/severity/search filters and pagination."""
+    """All news items with category/severity/source/search filters and pagination."""
     with db.get_conn() as conn:
-        total = db.get_news_items_count(conn, category=category, severity=severity, search=search)
+        total = db.get_news_items_count(
+            conn, category=category, severity=severity, source=source, search=search
+        )
         pg = _paginate(page, per_page, total)
         rows = db.get_news_items_paginated(
             conn,
             category=category,
             severity=severity,
+            source=source,
             search=search,
             limit=pg["per_page"],
             offset=pg["offset"],
@@ -995,6 +1046,9 @@ async def news_page(
         bookmarked_ids = db.get_bookmarked_ids(conn)
         cat_rows = conn.execute(
             "SELECT DISTINCT category FROM news_items WHERE category IS NOT NULL ORDER BY category"
+        ).fetchall()
+        src_rows = conn.execute(
+            "SELECT DISTINCT source FROM news_items WHERE source IS NOT NULL ORDER BY source"
         ).fetchall()
 
     return templates.TemplateResponse(
@@ -1007,8 +1061,10 @@ async def news_page(
             "news_items": [_enrich_news(r) for r in rows],
             "bookmarked_ids": list(bookmarked_ids),
             "categories": [r["category"] for r in cat_rows],
+            "sources": [r["source"] for r in src_rows],
             "category_filter": category,
             "severity_filter": severity,
+            "source_filter": source,
             "search_filter": search,
             "pagination": pg,
         },
@@ -1091,10 +1147,22 @@ async def get_news(
     _user: Annotated[str, Depends(_require_auth)],
     hours: int = 24,
     limit: int = 50,
+    category: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    search: str | None = None,
 ) -> JSONResponse:
-    """Return recent news items as JSON."""
+    """Return recent news items as JSON, with optional filters."""
     with db.get_conn() as conn:
-        rows = db.get_recent_items(conn, hours=min(hours, 720), limit=min(limit, 200))
+        rows = db.get_recent_items(
+            conn,
+            hours=min(hours, 720),
+            limit=min(limit, 200),
+            category=category,
+            severity=severity,
+            source=source,
+            search=search,
+        )
     return JSONResponse([dict(r) for r in rows])
 
 
@@ -1135,6 +1203,7 @@ async def get_ollama_models(
 async def acknowledge_finding(
     finding_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Mark a finding as acknowledged."""
     with db.get_conn() as conn:
@@ -1148,6 +1217,7 @@ async def acknowledge_finding(
 async def resolve_finding(
     finding_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Manually mark a finding as resolved."""
     with db.get_conn() as conn:
@@ -1161,6 +1231,7 @@ async def resolve_finding(
 async def reopen_finding(
     finding_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Reopen a resolved or acknowledged finding."""
     with db.get_conn() as conn:
@@ -1168,6 +1239,30 @@ async def reopen_finding(
     if not updated:
         raise HTTPException(status_code=404, detail="Finding not found or already new")
     return JSONResponse({"status": "new", "finding_id": finding_id})
+
+
+@app.post("/api/findings/bulk")
+async def bulk_findings_action(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Apply an action to multiple findings at once."""
+    body = await request.json()
+    try:
+        ids = [int(i) for i in body.get("ids", [])]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ids must be a list of integers")
+    action = str(body.get("action", ""))
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+    if len(ids) > 500:
+        raise HTTPException(status_code=400, detail="Too many IDs (max 500)")
+    if action not in ("acknowledge", "resolve", "reopen"):
+        raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
+    with db.get_conn() as conn:
+        count = db.bulk_update_finding_state(conn, ids, action)
+    return JSONResponse({"updated": count, "action": action})
 
 
 @app.get("/api/secrets")
@@ -1187,6 +1282,7 @@ async def get_secrets_api(
 async def mark_secret_false_positive(
     finding_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Mark a secret finding as a false positive — suppresses future re-reporting."""
     with db.get_conn() as conn:
@@ -1200,6 +1296,7 @@ async def mark_secret_false_positive(
 async def resolve_secret_finding(
     finding_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Mark a secret finding as resolved (credential revoked and history cleaned)."""
     with db.get_conn() as conn:
@@ -1207,6 +1304,30 @@ async def resolve_secret_finding(
     if not updated:
         raise HTTPException(status_code=404, detail="Finding not found or already resolved")
     return JSONResponse({"status": "resolved", "finding_id": finding_id})
+
+
+@app.post("/api/secrets/bulk")
+async def bulk_secrets_action(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Apply an action to multiple secret findings at once."""
+    body = await request.json()
+    try:
+        ids = [int(i) for i in body.get("ids", [])]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ids must be a list of integers")
+    action = str(body.get("action", ""))
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+    if len(ids) > 500:
+        raise HTTPException(status_code=400, detail="Too many IDs (max 500)")
+    if action not in ("false-positive", "resolve"):
+        raise HTTPException(status_code=400, detail=f"Invalid action '{action}'")
+    with db.get_conn() as conn:
+        count = db.bulk_update_secret_state(conn, ids, action)
+    return JSONResponse({"updated": count, "action": action})
 
 
 # ---------------------------------------------------------------------------
@@ -1228,6 +1349,7 @@ async def list_feeds(
 async def add_feed(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Add a new RSS feed after validating it is a reachable RSS/Atom URL."""
     body = await request.json()
@@ -1259,6 +1381,7 @@ async def toggle_feed(
     feed_id: int,
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Enable or disable a feed. Body: {\"enabled\": true|false}"""
     body = await request.json()
@@ -1275,6 +1398,7 @@ async def toggle_feed(
 async def delete_feed(
     feed_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Delete a user-added feed. Default feeds cannot be deleted."""
     try:
@@ -1301,6 +1425,7 @@ async def list_keywords(
 async def add_keyword(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Add a keyword to the watchlist."""
     body = await request.json()
@@ -1319,6 +1444,7 @@ async def add_keyword(
 async def delete_keyword(
     keyword_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Remove a keyword from the watchlist."""
     with db.get_conn() as conn:
@@ -1343,6 +1469,7 @@ async def get_toggles(
 async def update_toggles(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Update one or more feature toggles. Body: {\"<key>\": true|false, ...}"""
     body = await request.json()
@@ -1364,13 +1491,19 @@ async def update_toggles(
 async def get_scanner_settings(
     _user: Annotated[str, Depends(_require_auth)],
 ) -> JSONResponse:
-    """Return scanner settings: severity threshold and excluded repos."""
+    """Return scanner settings: severity threshold, excluded repos, and secrets scan depth."""
     with db.get_conn() as conn:
+        raw_depth = db.get_setting(conn, "secrets_scan_depth", str(ss.DEFAULT_SCAN_DEPTH))
+        try:
+            scan_depth = max(1, int(raw_depth))
+        except ValueError:
+            scan_depth = ss.DEFAULT_SCAN_DEPTH
         return JSONResponse(
             {
                 "severity_threshold": st.get_severity_threshold(conn),
                 "excluded_repos": st.get_excluded_repos(conn),
                 "severity_levels": st.SEVERITY_LEVELS,
+                "secrets_scan_depth": scan_depth,
             }
         )
 
@@ -1379,6 +1512,7 @@ async def get_scanner_settings(
 async def update_scanner_settings(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Update scanner settings."""
     body = await request.json()
@@ -1393,7 +1527,42 @@ async def update_scanner_settings(
             if not isinstance(repos, list):
                 raise HTTPException(status_code=400, detail="excluded_repos must be a list")
             st.set_excluded_repos(conn, [str(r) for r in repos])
+        if "secrets_scan_depth" in body:
+            try:
+                depth = int(body["secrets_scan_depth"])
+                if depth < 1:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="secrets_scan_depth must be a positive integer"
+                )
+            db.set_setting(conn, "secrets_scan_depth", str(depth))
     return JSONResponse({"status": "updated"})
+
+
+def _is_ssrf_safe(url: str) -> bool:
+    """Return False if the URL resolves to a private, loopback, or reserved address."""
+    import ipaddress
+    import socket
+    import urllib.parse
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+        addr = ipaddress.ip_address(socket.gethostbyname(host))
+        return not (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+        )
+    except Exception:
+        return False
 
 
 def _validate_feed_url(url: str) -> bool:
@@ -1401,10 +1570,20 @@ def _validate_feed_url(url: str) -> bool:
     import feedparser
     import httpx as _httpx
 
+    if not _is_ssrf_safe(url):
+        logger.warning("Feed URL rejected (private/reserved address): %s", url)
+        return False
+
     try:
-        with _httpx.Client(timeout=10, follow_redirects=True) as client:
+        with _httpx.Client(timeout=10, follow_redirects=True, max_redirects=5) as client:
             resp = client.get(url)
             resp.raise_for_status()
+        # Re-check the final URL after redirects — guards against open-redirect
+        # chains that bounce through a public URL to reach an internal host.
+        final_url = str(resp.url)
+        if final_url != url and not _is_ssrf_safe(final_url):
+            logger.warning("Feed URL rejected after redirect to private address: %s", final_url)
+            return False
         feed = feedparser.parse(resp.text)
         return bool(feed.feed.get("title") or feed.entries)
     except Exception:
@@ -1431,6 +1610,7 @@ async def get_settings(
 async def update_settings(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Update pipeline settings: run_interval_hours and/or active_model."""
     body = await request.json()
@@ -1451,6 +1631,7 @@ async def update_settings(
     if "active_model" in body:
         model = str(body["active_model"]).strip()
         if model:
+            _validate_ollama_model(model)
             with db.get_conn() as conn:
                 db.set_setting(conn, "active_model", model)
             logger.info("Active model changed to: %s", model)
@@ -1467,6 +1648,7 @@ async def update_settings(
 async def toggle_bookmark(
     item_id: int,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Toggle bookmark on a news item. Returns current bookmarked state."""
     with db.get_conn() as conn:
@@ -1492,6 +1674,7 @@ async def annotate_finding(
     finding_id: int,
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Set or clear a personal annotation on a finding."""
     body = await request.json()
@@ -1621,6 +1804,7 @@ async def export_news(
 async def clear_data(
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Delete selected data types, optionally scoped to items older than N days.
 

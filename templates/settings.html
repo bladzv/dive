@@ -102,6 +102,15 @@
       <p class="form-hint">Repos listed here are skipped by the vulnerability and secrets scanner.</p>
     </div>
 
+    <div class="form-group">
+      <label class="form-label" for="secrets-scan-depth">Secrets scan depth (commits)</label>
+      <input type="number" id="secrets-scan-depth" min="1" max="500" step="1"
+             style="width:120px;background:var(--surface-2);border:1px solid var(--border);
+                    color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
+                    font-size:0.875rem;font-family:inherit" />
+      <p class="form-hint">Number of recent commits to scan for secrets per repository (default: 30).</p>
+    </div>
+
     <button class="btn btn-primary" onclick="saveScannerSettings()">Save Scanner Settings</button>
   </div>
 
@@ -212,8 +221,8 @@ function saveInterval() {
   } else {
     hours = parseFloat(sel.value);
   }
-  fetch('/api/settings', {
-    method: 'POST', credentials: 'same-origin',
+  apiFetch('/api/settings', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ run_interval_hours: hours })
   })
@@ -248,8 +257,8 @@ function loadToggles() {
 }
 
 function saveToggles() {
-  fetch('/api/config/toggles', {
-    method: 'POST', credentials: 'same-origin',
+  apiFetch('/api/config/toggles', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(_toggleState)
   })
@@ -307,8 +316,8 @@ function renderFeedsTable(feeds) {
 }
 
 function toggleFeed(id, enabled) {
-  fetch('/api/config/feeds/' + id, {
-    method: 'PATCH', credentials: 'same-origin',
+  apiFetch('/api/config/feeds/' + id, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled })
   })
@@ -319,7 +328,7 @@ function toggleFeed(id, enabled) {
 
 function deleteFeed(id) {
   showConfirm('Remove this feed?', null, () => {
-    fetch('/api/config/feeds/' + id, { method: 'DELETE', credentials: 'same-origin' })
+    apiFetch('/api/config/feeds/' + id, { method: 'DELETE' })
     .then(r => {
       if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
       return r.json();
@@ -338,8 +347,8 @@ function addFeed() {
   btn.disabled = true;
   btn.textContent = 'Validating…';
 
-  fetch('/api/config/feeds', {
-    method: 'POST', credentials: 'same-origin',
+  apiFetch('/api/config/feeds', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, url })
   })
@@ -388,8 +397,8 @@ function addKeyword() {
   const input = document.getElementById('new-keyword');
   const keyword = input.value.trim();
   if (!keyword) return;
-  fetch('/api/config/keywords', {
-    method: 'POST', credentials: 'same-origin',
+  apiFetch('/api/config/keywords', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ keyword })
   })
@@ -402,7 +411,7 @@ function addKeyword() {
 }
 
 function deleteKeyword(id) {
-  fetch('/api/config/keywords/' + id, { method: 'DELETE', credentials: 'same-origin' })
+  apiFetch('/api/config/keywords/' + id, { method: 'DELETE' })
   .then(r => {
     if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
     return r.json();
@@ -418,6 +427,7 @@ function loadScannerSettings() {
     .then(data => {
       document.getElementById('severity-select').value = data.severity_threshold || 'high';
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
+      document.getElementById('secrets-scan-depth').value = data.secrets_scan_depth ?? 30;
     })
     .catch(() => {});
 }
@@ -426,10 +436,11 @@ function saveScannerSettings() {
   const threshold = document.getElementById('severity-select').value;
   const raw = document.getElementById('excluded-repos').value;
   const excluded = raw.split('\n').map(s => s.trim()).filter(Boolean);
-  fetch('/api/config/scanner', {
-    method: 'POST', credentials: 'same-origin',
+  const depth = parseInt(document.getElementById('secrets-scan-depth').value, 10);
+  apiFetch('/api/config/scanner', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ severity_threshold: threshold, excluded_repos: excluded })
+    body: JSON.stringify({ severity_threshold: threshold, excluded_repos: excluded, secrets_scan_depth: depth })
   })
   .then(r => r.json())
   .then(() => showToast('Scanner settings saved', 'success'))
@@ -485,8 +496,8 @@ function selectModel(name, isInstalled) {
   }
 
   hint.style.display = 'none';
-  fetch('/api/settings', {
-    method: 'POST', credentials: 'same-origin',
+  apiFetch('/api/settings', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ active_model: name })
   })
@@ -524,9 +535,8 @@ function clearData() {
   const scope = days_back ? `older than ${days_back} days` : 'ALL records';
   const warnText = hasFindingsOrSecrets ? 'This includes unresolved findings/secrets.' : null;
   showConfirm(`Delete ${scope} for: ${types.join(', ')}? This cannot be undone.`, warnText, () => {
-    fetch('/api/data/clear', {
+    apiFetch('/api/data/clear', {
       method: 'DELETE',
-      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ types, days_back })
     })

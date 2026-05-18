@@ -78,6 +78,9 @@
             <td>
               <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
               {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+              {% if f.cvss_score is not none %}
+              <br><span style="font-size:0.68rem;color:var(--text-dim)">CVSS {{ '%.1f' % f.cvss_score }}</span>
+              {% endif %}
             </td>
             <td style="font-size:0.77rem;color:var(--text-dim)">
               {{ f.cve_id or f.ghsa_id or '—' }}
@@ -153,9 +156,8 @@
 {% block scripts %}
 <script>
 function toggleBookmark(itemId) {
-  fetch('/api/news/' + itemId + '/bookmark', {
+  apiFetch('/api/news/' + itemId + '/bookmark', {
     method: 'POST',
-    credentials: 'same-origin',
   })
   .then(r => r.json())
   .then(data => {

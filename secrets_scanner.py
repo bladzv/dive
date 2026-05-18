@@ -34,7 +34,8 @@ from config import AppConfig
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SCAN_DEPTH = 30
+DEFAULT_SCAN_DEPTH = 30
+_DEFAULT_SCAN_DEPTH = DEFAULT_SCAN_DEPTH
 _CLONE_TIMEOUT = 120  # seconds per repo
 _SCAN_TIMEOUT = 180  # seconds per repo
 

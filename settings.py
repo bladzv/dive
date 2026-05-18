@@ -36,10 +36,7 @@ FEATURE_TOGGLES: dict[str, dict] = {
     "github_scanning": {"label": "GitHub repository scanning", "default": True},
     "secrets_scanning": {"label": "Secrets scanning", "default": True},
     "github_issue_creation": {"label": "GitHub issue auto-creation", "default": False},
-    "news_clustering": {"label": "News clustering", "default": True},
-    "outdated_tracking": {"label": "Outdated dependency tracking", "default": True},
     "weekly_digest": {"label": "Weekly digest", "default": True},
-    "patch_alerts": {"label": "Patch availability alerts", "default": True},
 }
 
 # ---------------------------------------------------------------------------

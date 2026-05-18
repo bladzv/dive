@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import db
 from github_scanner import (
+    Package,
+    ScannerStats,
     _cvss_to_severity_text,
+    _store_osv_finding,
     _extract_fixed_version,
     _extract_severity,
     _extract_version,
@@ -33,6 +37,7 @@ from github_scanner import (
     _parse_pyproject_toml,
     _parse_requirements_txt,
     _priority_score,
+    _query_and_store_batch,
 )
 
 # ---------------------------------------------------------------------------
@@ -864,3 +869,203 @@ def test_parse_gemfile_lock_extracts_version():
 def test_parse_gemfile_lock_ecosystem():
     pkgs = _parse_gemfile_lock(_GEMFILE_LOCK, "Gemfile.lock")
     assert all(p.ecosystem == "RubyGems" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _query_and_store_batch — OSV full-detail fetch
+# ---------------------------------------------------------------------------
+
+# The /v1/querybatch endpoint only returns {id, modified}. The scanner must
+# fetch full details via GET /v1/vulns/{id} so that CVSS scores are available.
+
+
+def _make_batch_response(vuln_id: str) -> dict:
+    return {"results": [{"vulns": [{"id": vuln_id, "modified": "2024-01-01T00:00:00Z"}]}]}
+
+
+def _make_full_vuln(vuln_id: str) -> dict:
+    return {
+        "id": vuln_id,
+        "aliases": ["CVE-2024-9999"],
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+        ],
+        "affected": [
+            {
+                "package": {"name": "requests", "ecosystem": "PyPI"},
+                "ranges": [
+                    {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.32.0"}]}
+                ],
+            }
+        ],
+    }
+
+
+def test_query_and_store_batch_fetches_full_vuln_details(db_conn, tmp_path):
+    """Batch results carry only {id, modified}; full details must be fetched."""
+    from config import AppConfig, DashboardConfig, GitHubConfig
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+
+    vuln_id = "GHSA-test-1234-abcd"
+    pkg = Package(
+        name="requests",
+        version="2.28.0",
+        ecosystem="PyPI",
+        repo_full_name="user/repo",
+        manifest_path="requirements.txt",
+    )
+    stats = ScannerStats()
+
+    batch_resp = MagicMock()
+    batch_resp.raise_for_status = MagicMock()
+    batch_resp.json.return_value = _make_batch_response(vuln_id)
+
+    detail_resp = MagicMock()
+    detail_resp.raise_for_status = MagicMock()
+    detail_resp.json.return_value = _make_full_vuln(vuln_id)
+
+    client = MagicMock()
+    client.post.return_value = batch_resp
+    client.get.return_value = detail_resp
+
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+
+    # Full-detail GET must have been called with the vuln ID
+    client.get.assert_called_once()
+    assert vuln_id in client.get.call_args[0][0]
+
+    # Finding must be stored with a real CVSS score (not NULL)
+    row = db_conn.execute("SELECT cvss_score FROM findings").fetchone()
+    assert row is not None
+    assert row["cvss_score"] is not None
+    assert row["cvss_score"] > 0
+
+
+def test_query_and_store_batch_deduplicates_vuln_detail_requests(db_conn):
+    """Same vuln in two packages → only one GET /v1/vulns/{id} call."""
+    from config import AppConfig, DashboardConfig, GitHubConfig
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+
+    vuln_id = "GHSA-test-dedup-0001"
+    pkgs = [
+        Package("requests", "2.28.0", "PyPI", "requirements.txt", "user/repo-a"),
+        Package("requests", "2.28.0", "PyPI", "requirements.txt", "user/repo-b"),
+    ]
+    stats = ScannerStats()
+
+    batch_resp = MagicMock()
+    batch_resp.raise_for_status = MagicMock()
+    batch_resp.json.return_value = {
+        "results": [
+            {"vulns": [{"id": vuln_id, "modified": "2024-01-01T00:00:00Z"}]},
+            {"vulns": [{"id": vuln_id, "modified": "2024-01-01T00:00:00Z"}]},
+        ]
+    }
+
+    detail_resp = MagicMock()
+    detail_resp.raise_for_status = MagicMock()
+    detail_resp.json.return_value = _make_full_vuln(vuln_id)
+
+    client = MagicMock()
+    client.post.return_value = batch_resp
+    client.get.return_value = detail_resp
+
+    _query_and_store_batch(db_conn, client, config, pkgs, set(), stats, "high")
+
+    # Only one detail fetch despite two packages matching the same vuln
+    assert client.get.call_count == 1
+
+
+def test_query_and_store_batch_detail_fetch_failure_stores_with_null_cvss(db_conn):
+    """If the detail GET fails, the finding is still stored (not silently dropped)
+    but with a NULL cvss_score so it isn't lost."""
+    import httpx
+    from config import AppConfig, DashboardConfig, GitHubConfig
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+
+    pkg = Package("requests", "2.28.0", "PyPI", "requirements.txt", "user/repo")
+    stats = ScannerStats()
+
+    batch_resp = MagicMock()
+    batch_resp.raise_for_status = MagicMock()
+    batch_resp.json.return_value = _make_batch_response("GHSA-fail-0000-0000")
+
+    client = MagicMock()
+    client.post.return_value = batch_resp
+    client.get.side_effect = httpx.RequestError("timeout")
+
+    # Must not raise
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+
+    # Finding is stored but with NULL cvss_score (unknown severity)
+    row = db_conn.execute("SELECT cvss_score FROM findings").fetchone()
+    assert row is not None
+    assert row["cvss_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# _store_osv_finding — lifecycle key tracking with severity threshold
+# ---------------------------------------------------------------------------
+
+
+def _make_osv_vuln_with_cvss(
+    ghsa_id: str, cvss_vector: str, pkg_name: str, ecosystem: str
+) -> dict:
+    return {
+        "id": ghsa_id,
+        "aliases": [],
+        "severity": [{"type": "CVSS_V3", "score": cvss_vector}],
+        "affected": [
+            {
+                "package": {"name": pkg_name, "ecosystem": ecosystem},
+                "ranges": [
+                    {
+                        "type": "ECOSYSTEM",
+                        "events": [{"introduced": "0"}],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
+    """A Medium finding filtered by 'high' threshold must still appear in
+    finding_keys so auto_resolve_gone() does not mark it resolved."""
+    from config import AppConfig, DashboardConfig, GitHubConfig
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+    pkg = Package("astro", "4.0.0", "npm", "package.json", "user/repo")
+    stats = ScannerStats()
+    # CVSS 6.1 → Medium; threshold is "high" → should be filtered from storage
+    vuln = _make_osv_vuln_with_cvss(
+        "GHSA-test-med-0001",
+        "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        "astro",
+        "npm",
+    )
+
+    _store_osv_finding(db_conn, config, pkg, vuln, set(), stats, severity_threshold="high")
+
+    # Below threshold — nothing stored in DB
+    count = db_conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+    assert count == 0
+
+    # But the key IS recorded so lifecycle does not auto-resolve this finding
+    expected_key = ("user/repo", "astro", "npm", "", "GHSA-test-med-0001")
+    assert expected_key in stats.finding_keys

@@ -320,15 +320,19 @@ def test_get_settings_returns_model(client):
 
 
 def test_post_settings_interval(client):
-    resp = client.post("/api/settings", json={"run_interval_hours": 12},
-                       headers={"X-Run-Token": "test-token-abc"})
+    resp = client.post(
+        "/api/settings", json={"run_interval_hours": 12}, headers={"X-Run-Token": "test-token-abc"}
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "updated"
 
 
 def test_post_settings_active_model(client):
-    resp = client.post("/api/settings", json={"active_model": "llama3.2:3b"},
-                       headers={"X-Run-Token": "test-token-abc"})
+    resp = client.post(
+        "/api/settings",
+        json={"active_model": "llama3.2:3b"},
+        headers={"X-Run-Token": "test-token-abc"},
+    )
     assert resp.status_code == 200
 
     # Re-reading settings should reflect the change
@@ -337,14 +341,16 @@ def test_post_settings_active_model(client):
 
 
 def test_post_settings_invalid_interval_returns_400(client):
-    resp = client.post("/api/settings", json={"run_interval_hours": -1},
-                       headers={"X-Run-Token": "test-token-abc"})
+    resp = client.post(
+        "/api/settings", json={"run_interval_hours": -1}, headers={"X-Run-Token": "test-token-abc"}
+    )
     assert resp.status_code == 400
 
 
 def test_post_settings_zero_interval_returns_400(client):
-    resp = client.post("/api/settings", json={"run_interval_hours": 0},
-                       headers={"X-Run-Token": "test-token-abc"})
+    resp = client.post(
+        "/api/settings", json={"run_interval_hours": 0}, headers={"X-Run-Token": "test-token-abc"}
+    )
     assert resp.status_code == 400
 
 

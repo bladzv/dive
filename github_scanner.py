@@ -219,7 +219,9 @@ def run(
 
     # Query OSV.dev and process findings
     with _make_http_client() as client:
-        _process_all_packages(conn, client, config, all_packages, kev_cves, stats, severity_threshold)
+        _process_all_packages(
+            conn, client, config, all_packages, kev_cves, stats, severity_threshold
+        )
 
     # For findings with no known fix, look up the latest package version and
     # check whether it is clean so the UI can suggest an upgrade path.
@@ -808,8 +810,16 @@ def _query_and_store_batch(
         vuln = vuln_details.get(vuln_id, {"id": vuln_id})
         vid = vuln.get("id", "")
         valiases: list[str] = vuln.get("aliases") or []
-        vcve = vid if vid.startswith("CVE-") else next((a for a in valiases if a.startswith("CVE-")), "")
-        vghsa = vid if vid.startswith("GHSA-") else next((a for a in valiases if a.startswith("GHSA-")), "")
+        vcve = (
+            vid
+            if vid.startswith("CVE-")
+            else next((a for a in valiases if a.startswith("CVE-")), "")
+        )
+        vghsa = (
+            vid
+            if vid.startswith("GHSA-")
+            else next((a for a in valiases if a.startswith("GHSA-")), "")
+        )
         if vcve and (pkg_i, vcve) in seen_pkg_cve:
             continue
         if vghsa and (pkg_i, vghsa) in seen_pkg_ghsa:

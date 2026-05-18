@@ -889,9 +889,7 @@ def _make_full_vuln(vuln_id: str) -> dict:
     return {
         "id": vuln_id,
         "aliases": ["CVE-2024-9999"],
-        "severity": [
-            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
-        ],
+        "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
         "affected": [
             {
                 "package": {"name": "requests", "ecosystem": "PyPI"},
@@ -1019,9 +1017,7 @@ def test_query_and_store_batch_detail_fetch_failure_stores_with_null_cvss(db_con
 # ---------------------------------------------------------------------------
 
 
-def _make_osv_vuln_with_cvss(
-    ghsa_id: str, cvss_vector: str, pkg_name: str, ecosystem: str
-) -> dict:
+def _make_osv_vuln_with_cvss(ghsa_id: str, cvss_vector: str, pkg_name: str, ecosystem: str) -> dict:
     return {
         "id": ghsa_id,
         "aliases": [],

@@ -223,8 +223,7 @@ def _dedup_aliased_findings(conn: sqlite3.Connection) -> None:
     Safe to run repeatedly — no-op when no duplicates exist.
     """
     for col_have, col_null in (("ghsa_id", "cve_id"), ("cve_id", "ghsa_id")):
-        pairs = conn.execute(
-            f"""
+        pairs = conn.execute(f"""
             SELECT a.id AS keep_id, b.id AS drop_id,
                    CASE WHEN a.first_seen_at < b.first_seen_at
                         THEN a.first_seen_at ELSE b.first_seen_at END AS oldest
@@ -236,8 +235,7 @@ def _dedup_aliased_findings(conn: sqlite3.Connection) -> None:
               AND a.{col_have}        = b.{col_have}
               AND a.{col_null} IS NOT NULL
               AND b.{col_null} IS NULL
-            """
-        ).fetchall()
+            """).fetchall()
         for keep_id, drop_id, oldest in pairs:
             conn.execute("UPDATE findings SET first_seen_at = ? WHERE id = ?", (oldest, keep_id))
             conn.execute("DELETE FROM findings WHERE id = ?", (drop_id,))
@@ -500,7 +498,13 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
               AND (ghsa_id = ? OR cve_id = ?)
             LIMIT 1
         """
-        lookup_params = (finding["repo_full_name"], finding["package_name"], finding["package_ecosystem"], ghsa_id, cve_id)
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+            ghsa_id,
+            cve_id,
+        )
     elif ghsa_id:
         lookup_sql = """
             SELECT id, state FROM findings
@@ -508,7 +512,12 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
               AND ghsa_id = ?
             LIMIT 1
         """
-        lookup_params = (finding["repo_full_name"], finding["package_name"], finding["package_ecosystem"], ghsa_id)
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+            ghsa_id,
+        )
     elif cve_id:
         lookup_sql = """
             SELECT id, state FROM findings
@@ -516,7 +525,12 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
               AND cve_id = ?
             LIMIT 1
         """
-        lookup_params = (finding["repo_full_name"], finding["package_name"], finding["package_ecosystem"], cve_id)
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+            cve_id,
+        )
     else:
         lookup_sql = """
             SELECT id, state FROM findings
@@ -524,7 +538,11 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
               AND cve_id IS NULL AND ghsa_id IS NULL
             LIMIT 1
         """
-        lookup_params = (finding["repo_full_name"], finding["package_name"], finding["package_ecosystem"])
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+        )
 
     existing = conn.execute(lookup_sql, lookup_params).fetchone()
 

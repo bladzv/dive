@@ -77,6 +77,16 @@ function toggleNav() {
 /* ── Shared helpers ──────────────────────────────────── */
 const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
 
+/* apiFetch — like fetch() but auto-injects X-Run-Token on mutations */
+function apiFetch(url, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = Object.assign({}, options.headers);
+  if (method !== 'GET' && method !== 'HEAD') {
+    headers['X-Run-Token'] = RUN_TOKEN;
+  }
+  return fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
+}
+
 function showToast(msg, type = 'info') {
   const t = document.getElementById('toast');
   t.textContent = msg;

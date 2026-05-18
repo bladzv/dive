@@ -240,6 +240,39 @@ def test_auto_resolve_acknowledged_finding_gets_resolved(conn):
     assert resolved == 1
 
 
+def test_auto_resolve_clean_scan_resolves_via_scanned_repos(conn):
+    """Regression: repo scans clean (zero findings) — explicit scanned_repos triggers resolution.
+
+    Before the fix, scanned_repos was derived from current_finding_keys, so a repo
+    with no findings this run would never appear in scanned_repos and its stale
+    findings would remain 'new' forever.
+    """
+    fid = _insert(conn)
+    # No finding keys at all — the repo produced zero vulnerabilities this scan.
+    resolved = lifecycle.auto_resolve_gone(conn, set(), scanned_repos={"user/repo"})
+    assert resolved == 1
+    row = conn.execute("SELECT state FROM findings WHERE id=?", (fid,)).fetchone()
+    assert row["state"] == "resolved"
+
+
+def test_auto_resolve_scanned_repos_does_not_touch_unscanned_repo(conn):
+    """Explicit scanned_repos must still exclude repos not in the set."""
+    _insert(conn, repo_full_name="user/other-repo")
+    # Only user/repo was scanned — user/other-repo findings must not be touched.
+    resolved = lifecycle.auto_resolve_gone(conn, set(), scanned_repos={"user/repo"})
+    assert resolved == 0
+
+
+def test_auto_resolve_clean_scan_acknowledged_finding(conn):
+    """Acknowledged findings in a cleanly-scanned repo are also auto-resolved."""
+    fid = _insert(conn)
+    lifecycle.acknowledge(conn, fid)
+    resolved = lifecycle.auto_resolve_gone(conn, set(), scanned_repos={"user/repo"})
+    assert resolved == 1
+    row = conn.execute("SELECT state FROM findings WHERE id=?", (fid,)).fetchone()
+    assert row["state"] == "resolved"
+
+
 # ---------------------------------------------------------------------------
 # db.get_unnotified_findings / db.mark_findings_notified
 # ---------------------------------------------------------------------------

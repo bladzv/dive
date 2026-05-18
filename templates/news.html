@@ -30,19 +30,23 @@
     {% endfor %}
   </select>
 
+  <!-- Source filter -->
+  <select onchange="applyFilter('source', this.value)" style="max-width:200px">
+    <option value="">All sources</option>
+    {% for src in sources %}
+    <option value="{{ src }}" {{ 'selected' if source_filter == src else '' }}>{{ src }}</option>
+    {% endfor %}
+  </select>
+
   <!-- Search box -->
   <form id="search-form" onsubmit="applySearch(event)" style="display:flex;gap:0.35rem">
     <input type="text" id="search-input" placeholder="Search title or summary…"
            value="{{ search_filter or '' }}"
            style="max-width:240px">
     <button type="submit" class="btn btn-outline btn-sm">Search</button>
-    {% if search_filter %}
-    <a href="{{ request.url | replace_query_param('search', '') | replace_query_param('page', 1) }}"
-       class="btn btn-outline btn-sm" title="Clear search">✕</a>
-    {% endif %}
   </form>
 
-  {% if category_filter or severity_filter or search_filter %}
+  {% if category_filter or severity_filter or source_filter or search_filter %}
   <a href="/news" class="btn btn-outline btn-sm">Clear all</a>
   {% endif %}
 </div>
@@ -158,9 +162,8 @@ function setPageSize(size) {
 }
 
 function toggleBookmark(itemId) {
-  fetch('/api/news/' + itemId + '/bookmark', {
+  apiFetch('/api/news/' + itemId + '/bookmark', {
     method: 'POST',
-    credentials: 'same-origin',
   })
   .then(r => r.json())
   .then(data => {

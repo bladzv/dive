@@ -112,9 +112,8 @@
 {% block scripts %}
 <script>
 function removeBookmark(itemId) {
-  fetch('/api/news/' + itemId + '/bookmark', {
+  apiFetch('/api/news/' + itemId + '/bookmark', {
     method: 'POST',
-    credentials: 'same-origin',
   })
   .then(r => r.json())
   .then(data => {

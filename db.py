@@ -213,6 +213,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "latest_version_vuln_count" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN latest_version_vuln_count INTEGER")
 
+    _dedup_aliased_findings(conn)
+
+
+def _dedup_aliased_findings(conn: sqlite3.Connection) -> None:
+    """Merge duplicate findings created when OSV returned the same vulnerability
+    under both its GHSA primary ID and its aliased CVE ID (or vice versa).
+    Keeps the row with both IDs populated; takes the earlier first_seen_at.
+    Safe to run repeatedly — no-op when no duplicates exist.
+    """
+    for col_have, col_null in (("ghsa_id", "cve_id"), ("cve_id", "ghsa_id")):
+        pairs = conn.execute(f"""
+            SELECT a.id AS keep_id, b.id AS drop_id,
+                   CASE WHEN a.first_seen_at < b.first_seen_at
+                        THEN a.first_seen_at ELSE b.first_seen_at END AS oldest
+            FROM findings a
+            JOIN findings b
+              ON  a.repo_full_name    = b.repo_full_name
+              AND a.package_name      = b.package_name
+              AND a.package_ecosystem = b.package_ecosystem
+              AND a.{col_have}        = b.{col_have}
+              AND a.{col_null} IS NOT NULL
+              AND b.{col_null} IS NULL
+            """).fetchall()
+        for keep_id, drop_id, oldest in pairs:
+            conn.execute("UPDATE findings SET first_seen_at = ? WHERE id = ?", (oldest, keep_id))
+            conn.execute("DELETE FROM findings WHERE id = ?", (drop_id,))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -330,19 +357,43 @@ def update_item_categorization(
 
 
 def get_recent_items(
-    conn: sqlite3.Connection, *, hours: int = 24, limit: int = 200
+    conn: sqlite3.Connection,
+    *,
+    hours: int = 24,
+    limit: int = 200,
+    category: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    search: str | None = None,
 ) -> list[sqlite3.Row]:
-    """Return recently fetched items for the dashboard feed view."""
+    """Return recently fetched items with optional filters."""
+    clauses: list[str] = ["fetched_at >= datetime('now', ? || ' hours')"]
+    params: list[Any] = [f"-{hours}"]
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    if severity:
+        clauses.append("severity = ?")
+        params.append(severity)
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
+    if search:
+        clauses.append("(title LIKE ? OR summary LIKE ?)")
+        s = f"%{search}%"
+        params.extend([s, s])
+    where = "WHERE " + " AND ".join(clauses)
+    params.append(limit)
     return conn.execute(
-        """
+        f"""
         SELECT id, title, source, published_at, fetched_at,
                summary, category, severity, affected_products, tags, cluster_id, url
         FROM news_items
-        WHERE fetched_at >= datetime('now', ? || ' hours')
+        {where}
         ORDER BY fetched_at DESC
         LIMIT ?
         """,
-        (f"-{hours}", limit),
+        params,
     ).fetchall()
 
 
@@ -435,23 +486,65 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     For existing findings the last_seen_at and vulnerability data are updated;
     the state is NOT changed here — lifecycle.py (M4) owns state transitions.
     """
-    existing = conn.execute(
+    cve_id = finding.get("cve_id")
+    ghsa_id = finding.get("ghsa_id")
+
+    # Match flexibly: a row with (None, 'GHSA-xxx') is the same finding as one with
+    # ('CVE-yyy', 'GHSA-xxx'). Match on any non-null identifier that is present.
+    if ghsa_id and cve_id:
+        lookup_sql = """
+            SELECT id, state FROM findings
+            WHERE repo_full_name = ? AND package_name = ? AND package_ecosystem = ?
+              AND (ghsa_id = ? OR cve_id = ?)
+            LIMIT 1
         """
-        SELECT id, state FROM findings
-        WHERE repo_full_name      = ?
-          AND package_name        = ?
-          AND package_ecosystem   = ?
-          AND COALESCE(cve_id,  '') = COALESCE(?, '')
-          AND COALESCE(ghsa_id, '') = COALESCE(?, '')
-        """,
-        (
+        lookup_params = (
             finding["repo_full_name"],
             finding["package_name"],
             finding["package_ecosystem"],
-            finding.get("cve_id"),
-            finding.get("ghsa_id"),
-        ),
-    ).fetchone()
+            ghsa_id,
+            cve_id,
+        )
+    elif ghsa_id:
+        lookup_sql = """
+            SELECT id, state FROM findings
+            WHERE repo_full_name = ? AND package_name = ? AND package_ecosystem = ?
+              AND ghsa_id = ?
+            LIMIT 1
+        """
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+            ghsa_id,
+        )
+    elif cve_id:
+        lookup_sql = """
+            SELECT id, state FROM findings
+            WHERE repo_full_name = ? AND package_name = ? AND package_ecosystem = ?
+              AND cve_id = ?
+            LIMIT 1
+        """
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+            cve_id,
+        )
+    else:
+        lookup_sql = """
+            SELECT id, state FROM findings
+            WHERE repo_full_name = ? AND package_name = ? AND package_ecosystem = ?
+              AND cve_id IS NULL AND ghsa_id IS NULL
+            LIMIT 1
+        """
+        lookup_params = (
+            finding["repo_full_name"],
+            finding["package_name"],
+            finding["package_ecosystem"],
+        )
+
+    existing = conn.execute(lookup_sql, lookup_params).fetchone()
 
     if existing is None:
         conn.execute(
@@ -467,8 +560,8 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             """,
             (
                 finding["repo_full_name"],
-                finding.get("cve_id"),
-                finding.get("ghsa_id"),
+                cve_id,
+                ghsa_id,
                 finding["package_name"],
                 finding["package_ecosystem"],
                 finding.get("installed_version"),
@@ -487,10 +580,14 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
         )
         return True
 
-    # Refresh mutable fields; leave state and first_seen_at alone
+    # Refresh mutable fields; leave state and first_seen_at alone.
+    # Also backfill cve_id/ghsa_id if the existing row was created before we had
+    # full OSV detail (e.g. stored with cve_id=NULL, now we know the real CVE ID).
     conn.execute(
         """
         UPDATE findings SET
+            cve_id            = COALESCE(cve_id,  ?),
+            ghsa_id           = COALESCE(ghsa_id, ?),
             last_seen_at      = ?,
             installed_version = ?,
             fixed_version     = ?,
@@ -503,6 +600,8 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
         WHERE id = ?
         """,
         (
+            cve_id,
+            ghsa_id,
             _now(),
             finding.get("installed_version"),
             finding.get("fixed_version"),
@@ -763,6 +862,52 @@ def mark_secret_finding_resolved(conn: sqlite3.Connection, finding_id: int) -> b
     return cur.rowcount > 0
 
 
+def bulk_update_finding_state(conn: sqlite3.Connection, ids: list[int], action: str) -> int:
+    """Update state for multiple findings at once. Returns the count of rows changed."""
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    now = _now()
+    if action == "acknowledge":
+        cur = conn.execute(
+            f"UPDATE findings SET state = 'acknowledged' WHERE id IN ({ph}) AND state = 'new'",
+            ids,
+        )
+    elif action == "resolve":
+        cur = conn.execute(
+            f"UPDATE findings SET state = 'resolved', resolved_at = ? WHERE id IN ({ph}) AND state IN ('new', 'acknowledged')",
+            [now, *ids],
+        )
+    elif action == "reopen":
+        cur = conn.execute(
+            f"UPDATE findings SET state = 'new', notified_at = NULL, resolved_at = NULL WHERE id IN ({ph}) AND state IN ('resolved', 'acknowledged')",
+            ids,
+        )
+    else:
+        return 0
+    return cur.rowcount
+
+
+def bulk_update_secret_state(conn: sqlite3.Connection, ids: list[int], action: str) -> int:
+    """Update state for multiple secret findings at once. Returns the count of rows changed."""
+    if not ids:
+        return 0
+    ph = ",".join("?" * len(ids))
+    if action == "false-positive":
+        cur = conn.execute(
+            f"UPDATE secret_findings SET state = 'false_positive' WHERE id IN ({ph}) AND state = 'new'",
+            ids,
+        )
+    elif action == "resolve":
+        cur = conn.execute(
+            f"UPDATE secret_findings SET state = 'resolved' WHERE id IN ({ph}) AND state = 'new'",
+            ids,
+        )
+    else:
+        return 0
+    return cur.rowcount
+
+
 def get_false_positive_fingerprints(conn: sqlite3.Connection) -> set[str]:
     """Return all fingerprints the user has marked as false positives."""
     rows = conn.execute(
@@ -987,6 +1132,7 @@ def get_news_items_paginated(
     *,
     category: str | None = None,
     severity: str | None = None,
+    source: str | None = None,
     search: str | None = None,
     limit: int = 25,
     offset: int = 0,
@@ -1000,6 +1146,9 @@ def get_news_items_paginated(
     if severity:
         clauses.append("severity = ?")
         params.append(severity)
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
     if search:
         clauses.append("(title LIKE ? OR summary LIKE ?)")
         s = f"%{search}%"
@@ -1023,6 +1172,7 @@ def get_news_items_count(
     *,
     category: str | None = None,
     severity: str | None = None,
+    source: str | None = None,
     search: str | None = None,
 ) -> int:
     """Return total count of news items matching the given filters."""
@@ -1034,6 +1184,9 @@ def get_news_items_count(
     if severity:
         clauses.append("severity = ?")
         params.append(severity)
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
     if search:
         clauses.append("(title LIKE ? OR summary LIKE ?)")
         s = f"%{search}%"

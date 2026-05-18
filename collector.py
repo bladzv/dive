@@ -155,8 +155,9 @@ def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None
         response.raise_for_status()
         if len(response.content) > _MAX_RESPONSE_BYTES:
             logger.warning(
-                "Response too large (%d bytes), truncating: %s", len(response.content), url
+                "Response too large (%d bytes), skipping: %s", len(response.content), url
             )
+            return None
         return response
     except httpx.HTTPStatusError as exc:
         logger.warning("HTTP %s from %s", exc.response.status_code, url)

@@ -46,6 +46,7 @@ except ImportError:
     _CVSS_AVAILABLE = False
 
 import db
+import settings as st
 from config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+_OSV_VULN_URL = "https://api.osv.dev/v1/vulns"
 _OSV_BATCH_SIZE = 500  # max queries per OSV.dev batch request
 _HTTP_TIMEOUT = 30.0
 _MAX_MANIFESTS_PER_REPO = 25  # guard against monorepos with hundreds of lockfiles
@@ -105,6 +107,7 @@ class ScannerStats:
     failed_repos: list[str] = field(default_factory=list)
     rate_limit_warning: bool = False
     finding_keys: set = field(default_factory=set)
+    scanned_repos: set[str] = field(default_factory=set)
     _enrich_queue: set = field(
         default_factory=set
     )  # (package_name, ecosystem) needing latest-version check
@@ -118,6 +121,14 @@ class ScannerStats:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+_SEVERITY_ALLOW: dict[str, set[str]] = {
+    "critical": {"Critical", "Unknown"},
+    "high": {"Critical", "High", "Unknown"},
+    "medium": {"Critical", "High", "Medium", "Unknown"},
+    "low": {"Critical", "High", "Medium", "Low", "Unknown"},
+    "all": {"Critical", "High", "Medium", "Low", "Info", "Unknown"},
+}
+
 
 def run(
     conn: sqlite3.Connection,
@@ -127,6 +138,7 @@ def run(
     """Scan all repos and store vulnerability findings. Never raises."""
     stats = ScannerStats()
     kev_cves = db.get_kev_cve_ids(conn)
+    severity_threshold = st.get_severity_threshold(conn)
     _excluded = set(excluded_repos or [])
 
     g = Github(config.github.token)
@@ -177,6 +189,7 @@ def run(
             packages = _scan_repo(repo)
             all_packages.extend(packages)
             stats.repos_scanned += 1
+            stats.scanned_repos.add(repo.full_name)
         except RateLimitExceededException:
             logger.warning("Rate limit exceeded mid-scan — stopping early")
             stats.rate_limit_warning = True
@@ -206,7 +219,9 @@ def run(
 
     # Query OSV.dev and process findings
     with _make_http_client() as client:
-        _process_all_packages(conn, client, config, all_packages, kev_cves, stats)
+        _process_all_packages(
+            conn, client, config, all_packages, kev_cves, stats, severity_threshold
+        )
 
     # For findings with no known fix, look up the latest package version and
     # check whether it is clean so the UI can suggest an upgrade path.
@@ -718,6 +733,7 @@ def _process_all_packages(
     packages: list[Package],
     kev_cves: set[str],
     stats: ScannerStats,
+    severity_threshold: str = "high",
 ) -> None:
     """Query OSV.dev in batches and process findings."""
     # Filter: only query packages with a known version
@@ -728,7 +744,7 @@ def _process_all_packages(
     # Process in batches
     for batch_start in range(0, len(queryable), _OSV_BATCH_SIZE):
         batch = queryable[batch_start : batch_start + _OSV_BATCH_SIZE]
-        _query_and_store_batch(conn, client, config, batch, kev_cves, stats)
+        _query_and_store_batch(conn, client, config, batch, kev_cves, stats, severity_threshold)
 
 
 def _query_and_store_batch(
@@ -738,6 +754,7 @@ def _query_and_store_batch(
     batch: list[Package],
     kev_cves: set[str],
     stats: ScannerStats,
+    severity_threshold: str = "high",
 ) -> None:
     payload = {
         "queries": [
@@ -758,12 +775,60 @@ def _query_and_store_batch(
         return
 
     results = data.get("results", [])
+
+    # The querybatch endpoint returns only {id, modified} — collect IDs so we
+    # can fetch full details (severity, affected versions, etc.) per vuln.
+    pkg_vuln_pairs: list[tuple[int, str]] = []
     for i, result in enumerate(results):
         if i >= len(batch):
             break
-        pkg = batch[i]
         for vuln in result.get("vulns") or []:
-            _store_osv_finding(conn, config, pkg, vuln, kev_cves, stats)
+            vuln_id = vuln.get("id")
+            if vuln_id:
+                pkg_vuln_pairs.append((i, vuln_id))
+
+    if not pkg_vuln_pairs:
+        return
+
+    unique_ids = {vuln_id for _, vuln_id in pkg_vuln_pairs}
+    vuln_details: dict[str, dict] = {}
+    for vuln_id in unique_ids:
+        try:
+            r = client.get(f"{_OSV_VULN_URL}/{vuln_id}", timeout=_HTTP_TIMEOUT)
+            r.raise_for_status()
+            vuln_details[vuln_id] = r.json()
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+            logger.warning("OSV.dev vuln detail fetch failed for %s: %s", vuln_id, exc)
+            vuln_details[vuln_id] = {"id": vuln_id}
+
+    # Deduplicate: OSV batch results can include both the GHSA primary ID and the
+    # aliased CVE ID for the same vulnerability. After fixing cve_id extraction both
+    # would resolve to identical (cve_id, ghsa_id) pairs — skip the second occurrence.
+    seen_pkg_cve: set[tuple[int, str]] = set()
+    seen_pkg_ghsa: set[tuple[int, str]] = set()
+    for pkg_i, vuln_id in pkg_vuln_pairs:
+        vuln = vuln_details.get(vuln_id, {"id": vuln_id})
+        vid = vuln.get("id", "")
+        valiases: list[str] = vuln.get("aliases") or []
+        vcve = (
+            vid
+            if vid.startswith("CVE-")
+            else next((a for a in valiases if a.startswith("CVE-")), "")
+        )
+        vghsa = (
+            vid
+            if vid.startswith("GHSA-")
+            else next((a for a in valiases if a.startswith("GHSA-")), "")
+        )
+        if vcve and (pkg_i, vcve) in seen_pkg_cve:
+            continue
+        if vghsa and (pkg_i, vghsa) in seen_pkg_ghsa:
+            continue
+        if vcve:
+            seen_pkg_cve.add((pkg_i, vcve))
+        if vghsa:
+            seen_pkg_ghsa.add((pkg_i, vghsa))
+        _store_osv_finding(conn, config, batch[pkg_i], vuln, kev_cves, stats, severity_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -887,11 +952,16 @@ def _store_osv_finding(
     vuln: dict,
     kev_cves: set[str],
     stats: ScannerStats,
+    severity_threshold: str = "high",
 ) -> None:
     """Map one OSV vulnerability to a finding and upsert it."""
     osv_id = vuln.get("id", "")
     aliases: list[str] = vuln.get("aliases") or []
-    cve_id = next((a for a in aliases if a.startswith("CVE-")), None)
+    cve_id = (
+        osv_id
+        if osv_id.startswith("CVE-")
+        else next((a for a in aliases if a.startswith("CVE-")), None)
+    )
     ghsa_id = (
         osv_id
         if osv_id.startswith("GHSA-")
@@ -905,8 +975,22 @@ def _store_osv_finding(
     is_kev = bool(cve_id and cve_id.upper() in kev_cves)
     priority = _priority_score(cvss_score, is_kev, patch_available)
 
-    # Apply severity threshold — skip Medium/Low/Info findings
-    if severity_text not in ("Critical", "High", "Unknown"):
+    # Always record the key before the threshold check. "Below threshold" means
+    # "don't store or alert", not "the vulnerability disappeared". Without this,
+    # auto_resolve_gone() would see the repo as scanned but the key absent and
+    # incorrectly mark the finding resolved.
+    stats.finding_keys.add(
+        (
+            pkg.repo_full_name,
+            pkg.name,
+            pkg.ecosystem,
+            cve_id or "",
+            ghsa_id or "",
+        )
+    )
+
+    allowed = _SEVERITY_ALLOW.get(severity_threshold, _SEVERITY_ALLOW["high"])
+    if severity_text not in allowed:
         return
 
     finding = {
@@ -926,18 +1010,6 @@ def _store_osv_finding(
     }
 
     is_new = db.upsert_finding(conn, finding)
-
-    # Track keys found this run so lifecycle.auto_resolve_gone() can detect
-    # findings that disappeared because the package was patched.
-    stats.finding_keys.add(
-        (
-            pkg.repo_full_name,
-            pkg.name,
-            pkg.ecosystem,
-            cve_id or "",
-            ghsa_id or "",
-        )
-    )
 
     # Queue for latest-version enrichment when OSV provides no fixed version
     if not fixed_version:

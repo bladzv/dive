@@ -86,22 +86,24 @@ def recheck_resolved(
 def auto_resolve_gone(
     conn: sqlite3.Connection,
     current_finding_keys: set[tuple[str, str, str, str, str]],
+    scanned_repos: set[str] | None = None,
 ) -> int:
     """
     Mark 'new' or 'acknowledged' findings as 'resolved' when they are no
     longer present in the current scan for a repo that *was* scanned.
 
-    Only resolves findings for repos that appear in current_finding_keys
-    (i.e. we actually scanned those repos this run — don't auto-resolve
-    findings for repos we couldn't reach due to API errors).
+    scanned_repos: the set of repo full names successfully scanned this run.
+    Only findings in those repos are candidates for auto-resolution — repos
+    that errored or were skipped are left untouched.
 
     Returns the count of findings auto-resolved.
     """
-    if not current_finding_keys:
-        return 0
+    if scanned_repos is None:
+        # Fallback: derive from finding keys (misses clean-scan repos)
+        scanned_repos = {key[0] for key in current_finding_keys}
 
-    # Repos that were successfully scanned this run
-    scanned_repos = {key[0] for key in current_finding_keys}
+    if not scanned_repos:
+        return 0
 
     active_rows = conn.execute(
         "SELECT id, repo_full_name, package_name, package_ecosystem, "

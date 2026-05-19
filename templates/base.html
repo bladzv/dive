@@ -14,41 +14,77 @@
     })();
   </script>
 </head>
-<body>
+<body class="page-{{ nav_active or 'default' }}">
 
-<header class="page-header">
-  <span class="brand">DIVE</span>
-  <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation" onclick="toggleNav()">&#9776;</button>
-  <span class="status-dot idle" id="status-dot" style="display:none"></span>
-  <span class="status-text" id="status-text"></span>
-  <span class="next-run-text" id="next-run-text"></span>
-  <span class="header-spacer"></span>
-  <span class="ollama-dot" id="ollama-dot" title="Ollama: checking…"></span>
-  <span class="model-chip" id="model-chip">{{ current_model }}</span>
-  <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
-  <button class="btn btn-primary btn-sm" id="run-now-btn" onclick="triggerRun()">&#9654; Run Now</button>
-</header>
+<div class="app-shell">
+  <aside class="app-sidebar" id="site-nav">
+    <div class="sidebar-head">
+      <a class="brand" href="/" aria-label="DIVE dashboard">
+        <span class="brand-copy">
+          <strong>DIVE</strong>
+          <small>Dependency Intelligence for Vulnerability Exposure</small>
+        </span>
+      </a>
+      <div class="sidebar-head-actions">
+        <button class="btn-theme sidebar-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
+        <button class="nav-toggle nav-close" aria-label="Close navigation" onclick="toggleNav()">×</button>
+      </div>
+    </div>
 
-<nav class="site-nav" id="site-nav">
-  <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">Dashboard</a>
-  <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">Findings</a>
-  <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">News</a>
-  <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">Secrets</a>
-  <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">History</a>
-  <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">Weekly</a>
-  <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">Personal</a>
-  <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">Settings</a>
-  <a href="/logout" class="nav-logout" title="Log out">Log out</a>
-</nav>
+    <button class="btn btn-primary sidebar-run" id="run-now-btn" onclick="triggerRun()" aria-label="Run Now">RUN</button>
 
-<main class="page-main">
-  {% block content %}{% endblock %}
-</main>
+    <div class="sidebar-model">
+      <div class="sidebar-field-row model-row">
+        <span class="sidebar-field-label">Model:</span>
+        <span class="model-chip" id="model-chip">{{ current_model }}</span>
+      </div>
+    </div>
 
-<footer class="page-footer">
-  DIVE — DIVE &nbsp;·&nbsp;
-  <a href="https://github.com/your-org/dive" target="_blank" rel="noopener">GitHub</a>
-</footer>
+    <div class="sidebar-status" aria-live="polite">
+      <div class="sidebar-field-row">
+        <span class="sidebar-field-label">Last run:</span>
+        <span class="status-text" id="status-text"></span>
+      </div>
+      <div class="sidebar-field-row">
+        <span class="sidebar-field-label">Next Auto-scan in:</span>
+        <span class="next-run-text" id="next-run-text"></span>
+      </div>
+    </div>
+
+    <nav class="site-nav" aria-label="Primary">
+      <div class="nav-group-label">Operations</div>
+      <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">Command Center</a>
+      <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">Vulnerabilities</a>
+      <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">Secrets</a>
+      <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">Intelligence</a>
+
+      <div class="nav-group-label">Reporting</div>
+      <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">Telemetry</a>
+      <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">Weekly Brief</a>
+      <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">Workspace</a>
+
+      <div class="nav-group-label">System</div>
+      <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">Configuration</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <a href="/logout" class="sidebar-logout" title="Log out">Log out</a>
+    </div>
+  </aside>
+
+  <div class="mobile-scrim" onclick="toggleNav()" aria-hidden="true"></div>
+  <button class="mobile-menu-btn" id="nav-toggle" aria-label="Toggle navigation" onclick="toggleNav()">☰</button>
+
+  <section class="app-workspace">
+    <main class="page-main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="page-footer">
+      DIVE · Security operations dashboard
+    </footer>
+  </section>
+</div>
 
 <div id="toast"></div>
 
@@ -72,6 +108,7 @@ _applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
 /* ── Mobile nav ─────────────────────────────────────── */
 function toggleNav() {
   document.getElementById('site-nav').classList.toggle('nav-open');
+  document.body.classList.toggle('nav-open');
 }
 
 /* ── Shared helpers ──────────────────────────────────── */
@@ -116,23 +153,23 @@ function updateStatusBadge(pipeline) {
   const dot  = document.getElementById('status-dot');
   const text = document.getElementById('status-text');
   const btn  = document.getElementById('run-now-btn');
-  dot.style.display = '';
+  if (dot) dot.style.display = '';
 
   if (pipeline.running) {
-    dot.className = 'status-dot running';
-    text.textContent = 'Running…';
+    if (dot) dot.className = 'status-dot running';
+    text.textContent = 'Running';
     btn.disabled = true;
   } else if (pipeline.last_status === 'success') {
-    dot.className = 'status-dot success';
+    if (dot) dot.className = 'status-dot success';
     const ago = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
-    text.textContent = 'Last run ' + ago;
+    text.textContent = ago;
     btn.disabled = false;
   } else if (pipeline.last_status === 'error') {
-    dot.className = 'status-dot error';
-    text.textContent = 'Last run failed';
+    if (dot) dot.className = 'status-dot error';
+    text.textContent = 'Failed';
     btn.disabled = false;
   } else {
-    dot.className = 'status-dot idle';
+    if (dot) dot.className = 'status-dot idle';
     text.textContent = 'Never run';
     btn.disabled = false;
   }
@@ -145,9 +182,10 @@ function pollStatus() {
       updateStatusBadge(data.pipeline);
 
       const nr = document.getElementById('next-run-text');
-      nr.textContent = data.next_run ? '· next run ' + timeUntil(data.next_run) : '';
+      nr.textContent = data.next_run ? timeUntil(data.next_run) : 'Not scheduled';
 
       const od = document.getElementById('ollama-dot');
+      if (!od) return;
       if (data.ollama_ok === true) {
         od.className = 'ollama-dot ollama-ok';
         od.title = 'Ollama: running';

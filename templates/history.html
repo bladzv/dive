@@ -2,10 +2,14 @@
 {% block title %}History — DIVE{% endblock %}
 
 {% block content %}
-<div class="page-heading">
-  <h1>History</h1>
-  <div style="display:flex;gap:0.5rem;align-items:center">
-    <label style="font-size:0.8rem;color:var(--text-dim)">Days:</label>
+<section class="page-heading">
+  <div>
+    <span class="page-kicker">Telemetry</span>
+    <h1>Pipeline history</h1>
+    <p class="heading-copy">Collection volume, source health, and pipeline runs over time.</p>
+  </div>
+  <div class="hero-actions">
+    <label class="mini-label" for="days-select">Window</label>
     <select id="days-select" style="max-width:100px;padding:0.3rem 0.5rem;font-size:0.8rem"
             onchange="loadAll()">
       <option value="7">7</option>
@@ -14,13 +18,13 @@
       <option value="90">90</option>
     </select>
   </div>
-</div>
+</section>
 
-<div style="display:flex;flex-direction:column;gap:1.25rem">
+<div class="telemetry-grid">
 
   <!-- ── News trend ─────────────────────────────────── -->
   <div class="card">
-    <div class="card-title">📈 News Items Collected</div>
+    <div class="card-title">News Items Collected</div>
     <div style="position:relative;height:220px">
       <canvas id="news-chart"></canvas>
     </div>
@@ -28,7 +32,7 @@
 
   <!-- ── Findings trend ────────────────────────────── -->
   <div class="card">
-    <div class="card-title">🔍 New Findings per Day</div>
+    <div class="card-title">New Findings per Day</div>
     <div style="position:relative;height:180px">
       <canvas id="findings-chart"></canvas>
     </div>
@@ -36,7 +40,7 @@
 
   <!-- ── Source reliability ─────────────────────────── -->
   <div class="card">
-    <div class="card-title">📡 Source Reliability</div>
+    <div class="card-title">Source Reliability</div>
     <div id="sources-wrap">
       <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
     </div>
@@ -68,12 +72,15 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const SEVERITY_COLORS = {
-  'Critical': '#ef4444',
-  'High':     '#f97316',
-  'Medium':   '#eab308',
-  'Low':      '#3b82f6',
-  'Unknown':  '#6b7280',
+  'Critical': '#fb7185',
+  'High':     '#fb923c',
+  'Medium':   '#facc15',
+  'Low':      '#60a5fa',
+  'Unknown':  '#64748b',
 };
+const CHART_TEXT = '#8b96a8';
+const CHART_GRID = 'rgba(139, 150, 168, 0.2)';
+const CHART_LEGEND = '#d8dee8';
 
 let _newsChart = null;
 let _findingsChart = null;
@@ -125,12 +132,12 @@ function renderNewsChart(rows) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: '#c9d1e0', font: { size: 11 } } },
+        legend: { labels: { color: CHART_LEGEND, font: { size: 11 } } },
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { stacked: true, ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
-        y: { stacked: true, ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+        x: { stacked: true, ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
+        y: { stacked: true, ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
       },
     },
   });
@@ -152,8 +159,8 @@ function renderFindingsChart(rows) {
       datasets: [{
         label: 'New Findings',
         data:  labels.map(d => lookup[d] || 0),
-        borderColor: '#6366f1',
-        backgroundColor: 'rgba(99,102,241,0.15)',
+        borderColor: '#2dd4bf',
+        backgroundColor: 'rgba(45,212,191,0.16)',
         borderWidth: 2,
         pointRadius: 3,
         fill: true,
@@ -168,8 +175,8 @@ function renderFindingsChart(rows) {
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
-        y: { ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+        x: { ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
+        y: { ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
       },
     },
   });
@@ -191,11 +198,11 @@ function renderSources(rows) {
         </tr></thead>
         <tbody>${rows.map(r => `
           <tr>
-            <td style="font-size:0.85rem">${r.name}</td>
-            <td style="font-size:0.85rem">${r.week_items || 0}</td>
-            <td style="font-size:0.82rem;color:var(--text-dim)">${r.total_items || 0}</td>
-            <td style="font-size:0.75rem;color:var(--text-dim)">${r.last_fetched_at ? r.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
-            <td>${r.enabled
+            <td data-label="Source" style="font-size:0.85rem">${r.name}</td>
+            <td data-label="Last 7 days" style="font-size:0.85rem">${r.week_items || 0}</td>
+            <td data-label="Total items" style="font-size:0.82rem;color:var(--text-dim)">${r.total_items || 0}</td>
+            <td data-label="Last fetched" style="font-size:0.75rem;color:var(--text-dim)">${r.last_fetched_at ? r.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
+            <td data-label="Status">${r.enabled
               ? '<span class="badge badge-resolved">enabled</span>'
               : '<span class="badge badge-unknown">disabled</span>'}</td>
           </tr>`).join('')}
@@ -231,12 +238,12 @@ function renderRuns(rows) {
               ? '<span class="badge badge-new">running</span>'
               : '<span class="badge badge-critical">error</span>';
           return `<tr>
-            <td style="font-size:0.8rem;color:var(--text-dim)">${started}</td>
-            <td style="font-size:0.8rem;color:var(--text-dim)">${dur}</td>
-            <td>${statusBadge}</td>
-            <td style="font-size:0.82rem">${r.items_collected || 0}</td>
-            <td style="font-size:0.82rem">${r.items_categorized || 0}</td>
-            <td style="font-size:0.82rem">${r.findings_new || 0}</td>
+            <td data-label="Started" style="font-size:0.8rem;color:var(--text-dim)">${started}</td>
+            <td data-label="Duration" style="font-size:0.8rem;color:var(--text-dim)">${dur}</td>
+            <td data-label="Status">${statusBadge}</td>
+            <td data-label="Items" style="font-size:0.82rem">${r.items_collected || 0}</td>
+            <td data-label="Categorized" style="font-size:0.82rem">${r.items_categorized || 0}</td>
+            <td data-label="New findings" style="font-size:0.82rem">${r.findings_new || 0}</td>
           </tr>`;
         }).join('')}
         </tbody>
@@ -269,9 +276,9 @@ let _feedChart = null;
 
 // Stable colour palette for up to ~12 sources
 const FEED_PALETTE = [
-  '#6366f1','#22c55e','#f97316','#3b82f6','#eab308',
-  '#ef4444','#8b5cf6','#14b8a6','#f43f5e','#0ea5e9',
-  '#a3e635','#fb923c',
+  '#2dd4bf','#38bdf8','#fb923c','#60a5fa','#facc15',
+  '#fb7185','#a78bfa','#34d399','#f472b6','#22d3ee',
+  '#bef264','#fdba74',
 ];
 
 function renderFeedChart(rows) {
@@ -312,12 +319,12 @@ function renderFeedChart(rows) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: '#c9d1e0', font: { size: 10 }, boxWidth: 12 } },
+        legend: { labels: { color: CHART_LEGEND, font: { size: 10 }, boxWidth: 12 } },
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { stacked: true, ticks: { color: '#6b7280', maxRotation: 45 }, grid: { color: '#2d3154' } },
-        y: { stacked: true, ticks: { color: '#6b7280' }, grid: { color: '#2d3154' }, beginAtZero: true },
+        x: { stacked: true, ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
+        y: { stacked: true, ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
       },
     },
   });
@@ -334,8 +341,8 @@ function renderFeedChart(rows) {
         <thead><tr><th>Source</th><th>Items in window</th></tr></thead>
         <tbody>${totals.map(s => `
           <tr>
-            <td style="font-size:0.85rem">${s.name}</td>
-            <td style="font-size:0.85rem">${s.total}</td>
+            <td data-label="Source" style="font-size:0.85rem">${s.name}</td>
+            <td data-label="Items" style="font-size:0.85rem">${s.total}</td>
           </tr>`).join('')}
         </tbody>
       </table>

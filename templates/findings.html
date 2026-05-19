@@ -2,14 +2,18 @@
 {% block title %}Findings — DIVE{% endblock %}
 
 {% block content %}
-<div class="page-heading">
-  <h1>Findings</h1>
-  <div style="display:flex;gap:0.5rem;align-items:center">
-    <span style="font-size:0.8rem;color:var(--text-dim)">{{ pagination.total }} total</span>
+<section class="page-heading">
+  <div>
+    <span class="page-kicker">Vulnerabilities</span>
+    <h1>Dependency findings</h1>
+    <p class="heading-copy">Prioritize by exploitability, KEV signal, patch availability, and repository ownership.</p>
+  </div>
+  <div class="hero-actions">
+    <span class="badge badge-unknown">{{ pagination.total }} total</span>
     <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">JSON</a>
     <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">CSV</a>
   </div>
-</div>
+</section>
 
 <!-- ── Filter bar ───────────────────────────────────── -->
 <div class="filter-bar">
@@ -31,9 +35,7 @@
 <div id="action-msg" style="display:none;margin-bottom:0.75rem"></div>
 
 <!-- ── Bulk action bar ───────────────────────────────── -->
-<div id="bulk-bar" style="display:none;align-items:center;gap:0.6rem;padding:0.55rem 0.85rem;
-     background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);
-     margin-bottom:0.6rem">
+<div id="bulk-bar" class="bulk-bar" style="display:none">
   <span id="bulk-count" style="font-size:0.875rem;font-weight:500"></span>
   <div style="display:flex;gap:0.4rem;margin-left:auto;flex-wrap:wrap">
     <button class="btn btn-outline btn-sm" onclick="bulkAction('acknowledge')">Acknowledge</button>

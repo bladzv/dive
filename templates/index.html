@@ -1,168 +1,165 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — DIVE{% endblock %}
+{% block title %}Command Center — DIVE{% endblock %}
 
 {% block content %}
-<div class="page-heading">
-  <h1>Dashboard</h1>
-  <span style="font-size:0.8rem;color:var(--text-dim)">Last 24 hours</span>
-</div>
+<section class="metric-grid metric-grid-7">
+  <a class="metric metric-critical" href="/findings?state=new">
+    <span class="metric-label">Critical</span>
+    <strong>{{ summary.critical }}</strong>
+    <span class="metric-foot">highest priority</span>
+  </a>
+  <a class="metric metric-high" href="/findings?state=new">
+    <span class="metric-label">High</span>
+    <strong>{{ summary.high }}</strong>
+    <span class="metric-foot">needs triage</span>
+  </a>
+  <a class="metric metric-medium" href="/findings?state=new">
+    <span class="metric-label">Medium</span>
+    <strong>{{ summary.medium }}</strong>
+    <span class="metric-foot">watch list</span>
+  </a>
+  <a class="metric metric-low" href="/findings?state=new">
+    <span class="metric-label">Low</span>
+    <strong>{{ summary.low }}</strong>
+    <span class="metric-foot">tracked</span>
+  </a>
+  <a class="metric" href="/findings?state=new">
+    <span class="metric-label">New</span>
+    <strong>{{ summary.new }}</strong>
+    <span class="metric-foot">unreviewed</span>
+  </a>
+  <a class="metric metric-success" href="/findings?state=resolved">
+    <span class="metric-label">Resolved</span>
+    <strong>{{ summary.resolved }}</strong>
+    <span class="metric-foot">closed</span>
+  </a>
+  <a class="metric {{ 'metric-critical' if secrets_summary.new > 0 else '' }}" href="/secrets?state=new">
+    <span class="metric-label">Secrets</span>
+    <strong>{{ secrets_summary.new }}</strong>
+    <span class="metric-foot">new leaks</span>
+  </a>
+</section>
 
-<!-- ── Severity summary ─────────────────────────────── -->
-<div class="grid-stats" style="margin-bottom:1.5rem">
-  <div class="stat-card stat-critical">
-    <div class="stat-number">{{ summary.critical }}</div>
-    <div class="stat-label">Critical</div>
-  </div>
-  <div class="stat-card stat-high">
-    <div class="stat-number">{{ summary.high }}</div>
-    <div class="stat-label">High</div>
-  </div>
-  <div class="stat-card stat-medium">
-    <div class="stat-number">{{ summary.medium }}</div>
-    <div class="stat-label">Medium</div>
-  </div>
-  <div class="stat-card stat-low">
-    <div class="stat-number">{{ summary.low }}</div>
-    <div class="stat-label">Low</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-number" style="color:var(--accent)">{{ summary.new }}</div>
-    <div class="stat-label">New</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-number" style="color:var(--success)">{{ summary.resolved }}</div>
-    <div class="stat-label">Resolved</div>
-  </div>
-  <div class="stat-card {{ 'stat-critical' if secrets_summary.new > 0 else '' }}">
-    <a href="/secrets?state=new" style="text-decoration:none;color:inherit">
-      <div class="stat-number">{{ secrets_summary.new }}</div>
-      <div class="stat-label">Secrets</div>
-    </a>
-  </div>
-</div>
-
-<div class="grid-2">
-
-  <!-- ── Open findings (new only) ──────────────────── -->
-  <div class="card">
-    <div class="card-title">
-      Open Findings
-      <span style="float:right;display:flex;gap:0.35rem;text-transform:none;font-weight:400">
-        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm" style="font-size:0.68rem">CSV</a>
-        <a href="/findings?state=new" style="font-size:0.78rem;line-height:2">View all →</a>
-      </span>
+<section class="ops-grid">
+  <div class="panel panel-primary">
+    <div class="panel-head">
+      <div>
+        <span class="panel-kicker">Action Queue</span>
+        <h2>Open Findings</h2>
+      </div>
+      <div class="panel-actions">
+        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+        <a href="/findings?state=new" class="btn btn-primary btn-sm">View All</a>
+      </div>
     </div>
 
     {% if recent_findings %}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Repo</th>
-            <th>Package</th>
-            <th>Severity</th>
-            <th>CVE / GHSA</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for f in recent_findings %}
-          <tr>
-            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
-            <td>
-              {{ f.package_name }}
-              {% if f.installed_version %}
-              <span style="color:var(--text-dim);font-size:0.76rem">&nbsp;{{ f.installed_version }}</span>
-              {% endif %}
-            </td>
-            <td>
-              <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
-              {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
-              {% if f.cvss_score is not none %}
-              <br><span style="font-size:0.68rem;color:var(--text-dim)">CVSS {{ '%.1f' % f.cvss_score }}</span>
-              {% endif %}
-            </td>
-            <td style="font-size:0.77rem;color:var(--text-dim)">
-              {{ f.cve_id or f.ghsa_id or '—' }}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <div class="empty-state">
-      <div class="empty-icon">&#9989;</div>
-      <p>No open findings. Looking clean!</p>
-    </div>
-    {% endif %}
-  </div>
-
-  <!-- ── Security news feed ────────────────────────── -->
-  <div class="card">
-    <div class="card-title">
-      Security News
-      <span style="float:right;display:flex;gap:0.35rem;text-transform:none;font-weight:400">
-        <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm" style="font-size:0.68rem">CSV</a>
-        <a href="/news" style="font-size:0.78rem;line-height:2">View all →</a>
-      </span>
-    </div>
-
-    {% if news_items %}
-      {% for item in news_items %}
-      <div class="news-item" id="ni-{{ item.id }}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.4rem">
-          <div style="flex:1;min-width:0">
-            <div class="news-title">
-              <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
-            </div>
-            <div class="news-meta">
-              <span>{{ item.source }}</span>
-              {% if item.category %}
-              <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
-              {% endif %}
-              {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
-              <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
-              {% endif %}
-              <span>{{ item.time_ago }}</span>
-            </div>
-            {% if item.summary %}
-            <div class="news-summary">
-              {{ item.summary[:220] }}{% if item.summary | length > 220 %}…{% endif %}
-            </div>
-            {% endif %}
-          </div>
-          <button class="bm-btn" id="bm-btn-{{ item.id }}"
-                  onclick="toggleBookmark({{ item.id }})"
-                  title="Bookmark"
-                  style="background:none;border:none;cursor:pointer;font-size:1rem;
-                         padding:0.15rem;line-height:1;flex-shrink:0;color:var(--text-dim)">
-            {{ '🔖' if item.id in bookmarked_ids else '🔗' }}
-          </button>
+    <div class="exposure-list">
+      {% for f in recent_findings %}
+      <article class="exposure-item">
+        <div class="exposure-score {{ 'is-critical' if f.priority_score and f.priority_score >= 60 else ('is-high' if f.priority_score and f.priority_score >= 40 else '') }}">
+          {{ '%d' % f.priority_score if f.priority_score else '—' }}
         </div>
-      </div>
+        <div class="exposure-body">
+          <div class="exposure-title">
+            <strong>{{ f.package_name }}</strong>
+            <span>{{ f.repo_full_name }}</span>
+          </div>
+          <div class="meta-line">
+            <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
+            {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+            <span>{{ f.cve_id or f.ghsa_id or 'No advisory ID' }}</span>
+            {% if f.fixed_version %}<span>Fix {{ f.fixed_version }}</span>{% endif %}
+          </div>
+        </div>
+      </article>
       {% endfor %}
+    </div>
     {% else %}
-    <div class="empty-state">
-      <div class="empty-icon">&#128237;</div>
-      <p>No recent news. Run the pipeline to collect.</p>
+    <div class="empty-state compact">
+      <div class="empty-icon">✓</div>
+      <p>No open findings in the active queue.</p>
     </div>
     {% endif %}
   </div>
 
-</div><!-- /.grid-2 -->
+  <aside class="panel panel-secondary">
+    <div class="panel-head">
+      <div>
+        <span class="panel-kicker">Operator Notes</span>
+        <h2>Next Moves</h2>
+      </div>
+    </div>
+    <div class="decision-list">
+      <a href="/findings?state=new">
+        <strong>Triage new vulnerabilities</strong>
+        <span>Sort by priority score, KEV flag, and patch availability.</span>
+      </a>
+      <a href="/secrets?state=new">
+        <strong>Resolve leaked credentials</strong>
+        <span>Revoke credentials before marking records resolved.</span>
+      </a>
+      <a href="/history">
+        <strong>Review pipeline telemetry</strong>
+        <span>Check collection volume, failed sources, and run history.</span>
+      </a>
+    </div>
+  </aside>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <span class="panel-kicker">Intelligence Stream</span>
+      <h2>Security News</h2>
+    </div>
+    <div class="panel-actions">
+      <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+      <a href="/news" class="btn btn-outline btn-sm">Open Feed</a>
+    </div>
+  </div>
+
+  {% if news_items %}
+  <div class="intel-grid">
+    {% for item in news_items[:6] %}
+    <article class="intel-card" id="ni-{{ item.id }}">
+      <div class="intel-meta">
+        <span>{{ item.source }}</span>
+        <span>{{ item.time_ago }}</span>
+      </div>
+      <h3><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></h3>
+      <div class="meta-line">
+        {% if item.category %}<span class="badge badge-unknown">{{ item.category }}</span>{% endif %}
+        {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+        <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
+        {% endif %}
+      </div>
+      {% if item.summary %}
+      <p>{{ item.summary[:180] }}{% if item.summary | length > 180 %}…{% endif %}</p>
+      {% endif %}
+      <button class="bm-btn" id="bm-btn-{{ item.id }}" onclick="toggleBookmark({{ item.id }})" title="Bookmark">
+        {{ 'Saved' if item.id in bookmarked_ids else 'Save' }}
+      </button>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state compact">
+    <div class="empty-icon">•</div>
+    <p>No recent intelligence collected in the last 24 hours.</p>
+  </div>
+  {% endif %}
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
 function toggleBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', {
-    method: 'POST',
-  })
+  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
     const btn = document.getElementById('bm-btn-' + itemId);
-    if (btn) btn.textContent = data.bookmarked ? '🔖' : '🔗';
+    if (btn) btn.textContent = data.bookmarked ? 'Saved' : 'Save';
     showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
   })
   .catch(() => showToast('Failed to toggle bookmark', 'error'));

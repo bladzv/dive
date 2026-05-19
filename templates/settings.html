@@ -2,11 +2,15 @@
 {% block title %}Settings — DIVE{% endblock %}
 
 {% block content %}
-<div class="page-heading">
-  <h1>Settings</h1>
-</div>
+<section class="page-heading">
+  <div>
+    <span class="page-kicker">Configuration</span>
+    <h1>System settings</h1>
+    <p class="heading-copy">Tune pipeline cadence, scanners, feeds, models, and retention behavior.</p>
+  </div>
+</section>
 
-<div style="max-width:720px;display:flex;flex-direction:column;gap:1.25rem">
+<div class="settings-grid">
 
   <!-- ── Pipeline Schedule ──────────────────────────── -->
   <div class="card">

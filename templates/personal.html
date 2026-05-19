@@ -1,75 +1,72 @@
 {% extends "base.html" %}
-{% block title %}Personal — DIVE{% endblock %}
+{% block title %}Workspace — DIVE{% endblock %}
 
 {% block content %}
-<div class="page-heading">
-  <h1>Personal</h1>
-</div>
+<section class="page-heading">
+  <div>
+    <span class="page-kicker">Workspace</span>
+    <h1>Saved intelligence and analyst notes</h1>
+    <p class="heading-copy">A personal queue for bookmarked news and annotated vulnerability records.</p>
+  </div>
+</section>
 
-<div style="display:flex;flex-direction:column;gap:1.25rem">
-
-  <!-- ── Bookmarks ────────────────────────────────────── -->
-  <div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-      <span>Bookmarks</span>
+<section class="ops-grid">
+  <div class="panel">
+    <div class="panel-head">
+      <div>
+        <span class="panel-kicker">Saved Intelligence</span>
+        <h2>Bookmarks</h2>
+      </div>
       {% if bookmarks %}
-      <div style="display:flex;gap:0.5rem">
-        <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">Export JSON</a>
-        <a href="/api/export/news?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
+      <div class="panel-actions">
+        <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">JSON</a>
+        <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">CSV</a>
       </div>
       {% endif %}
     </div>
 
     {% if bookmarks %}
-    <div>
+    <div class="record-list">
       {% for item in bookmarks %}
-      <div class="news-item" id="bm-{{ item.id }}">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem">
-          <div style="flex:1;min-width:0">
-            <div class="news-title">
-              <a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>
-            </div>
-            <div class="news-meta">
-              <span>{{ item.source }}</span>
-              {% if item.category %}
-              <span class="badge badge-unknown" style="font-size:0.65rem">{{ item.category }}</span>
-              {% endif %}
-              {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
-              <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
-              {% endif %}
-              <span>bookmarked {{ item.bookmarked_at[:10] }}</span>
-            </div>
-            {% if item.summary %}
-            <div class="news-summary">
-              {{ item.summary[:200] }}{% if item.summary | length > 200 %}…{% endif %}
-            </div>
+      <article class="record-item" id="bm-{{ item.id }}">
+        <div class="record-main">
+          <div class="intel-meta">
+            <span>{{ item.source }}</span>
+            <span>saved {{ item.bookmarked_at[:10] }}</span>
+          </div>
+          <h3><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></h3>
+          <div class="meta-line">
+            {% if item.category %}<span class="badge badge-unknown">{{ item.category }}</span>{% endif %}
+            {% if item.severity and item.severity not in ('Unknown', 'unknown') %}
+            <span class="badge badge-{{ item.severity | lower }}">{{ item.severity }}</span>
             {% endif %}
           </div>
-          <button class="btn btn-outline btn-sm" style="flex-shrink:0"
-                  onclick="removeBookmark({{ item.id }})">Remove</button>
+          {% if item.summary %}
+          <p>{{ item.summary[:220] }}{% if item.summary | length > 220 %}…{% endif %}</p>
+          {% endif %}
         </div>
-      </div>
+        <button class="btn btn-outline btn-sm" onclick="removeBookmark({{ item.id }})">Remove</button>
+      </article>
       {% endfor %}
     </div>
     {% else %}
-    <div class="empty-state" style="padding:2rem 0">
-      <div class="empty-icon">🔖</div>
-      <p>No bookmarks yet.</p>
-      <p style="font-size:0.82rem;color:var(--text-dim);margin-top:0.35rem">
-        Click the bookmark icon on any news item to save it here.
-      </p>
+    <div class="empty-state compact">
+      <div class="empty-icon">•</div>
+      <p>No bookmarked intelligence yet.</p>
     </div>
     {% endif %}
   </div>
 
-  <!-- ── Annotated Findings ───────────────────────────── -->
-  <div class="card">
-    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-      <span>Annotated Findings</span>
+  <aside class="panel">
+    <div class="panel-head">
+      <div>
+        <span class="panel-kicker">Finding Context</span>
+        <h2>Annotated Findings</h2>
+      </div>
       {% if annotated %}
-      <div style="display:flex;gap:0.5rem">
-        <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">Export JSON</a>
-        <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
+      <div class="panel-actions">
+        <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">JSON</a>
+        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm">CSV</a>
       </div>
       {% endif %}
     </div>
@@ -83,38 +80,31 @@
         <tbody>
           {% for f in annotated %}
           <tr>
-            <td style="font-size:0.82rem;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
-            <td style="font-size:0.82rem">{{ f.package_name }}</td>
-            <td style="font-size:0.75rem;color:var(--text-dim)">{{ f.cve_id or f.ghsa_id or '—' }}</td>
+            <td>{{ f.repo_full_name }}</td>
+            <td>{{ f.package_name }}</td>
+            <td>{{ f.cve_id or f.ghsa_id or '—' }}</td>
             <td><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
             <td><span class="badge badge-{{ 'new' if f.state == 'new' else ('ack' if f.state == 'acknowledged' else 'resolved') }}">{{ f.state }}</span></td>
-            <td style="font-size:0.8rem;color:var(--text-dim);max-width:260px">{{ f.annotation }}</td>
+            <td>{{ f.annotation }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
     {% else %}
-    <div class="empty-state" style="padding:2rem 0">
-      <div class="empty-icon">📝</div>
+    <div class="empty-state compact">
+      <div class="empty-icon">•</div>
       <p>No annotated findings yet.</p>
-      <p style="font-size:0.82rem;color:var(--text-dim);margin-top:0.35rem">
-        Add notes to findings on the <a href="/findings">Findings</a> page.
-      </p>
     </div>
     {% endif %}
-  </div>
-
-</div>
+  </aside>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
 function removeBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', {
-    method: 'POST',
-  })
+  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
     if (!data.bookmarked) {

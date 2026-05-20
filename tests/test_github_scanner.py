@@ -23,6 +23,10 @@ from github_scanner import (
     _extract_fixed_version,
     _extract_severity,
     _extract_version,
+    _LATEST_VERSION_REGISTRIES,
+    _lookup_latest_maven,
+    _lookup_latest_nuget,
+    _lookup_latest_packagist,
     _parse_build_gradle,
     _parse_cargo_lock,
     _parse_cargo_toml,
@@ -1064,3 +1068,152 @@ def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
     # But the key IS recorded so lifecycle does not auto-resolve this finding
     expected_key = ("user/repo", "astro", "npm", "", "GHSA-test-med-0001")
     assert expected_key in stats.finding_keys
+
+
+# ---------------------------------------------------------------------------
+# Latest-version registry adapters: Maven / NuGet / Packagist
+# ---------------------------------------------------------------------------
+
+
+def _mock_client_response(json_body=None, raise_for_status_exc=None, status_code=200):
+    """Build a MagicMock httpx.Client that returns one canned response."""
+    response = MagicMock()
+    response.status_code = status_code
+    if raise_for_status_exc is not None:
+        response.raise_for_status.side_effect = raise_for_status_exc
+    else:
+        response.raise_for_status.return_value = None
+    response.json.return_value = json_body if json_body is not None else {}
+    client = MagicMock()
+    client.get.return_value = response
+    return client
+
+
+# --- Maven ----------------------------------------------------------------
+
+
+def test_lookup_latest_maven_happy_path():
+    client = _mock_client_response(
+        {"response": {"docs": [{"latestVersion": "3.2.1"}]}}
+    )
+    assert _lookup_latest_maven("org.example:widget", client) == "3.2.1"
+
+
+def test_lookup_latest_maven_requires_group_artifact_form():
+    client = MagicMock()
+    assert _lookup_latest_maven("not-a-coordinate", client) is None
+    client.get.assert_not_called()
+
+
+def test_lookup_latest_maven_handles_empty_docs():
+    client = _mock_client_response({"response": {"docs": []}})
+    assert _lookup_latest_maven("org.example:nonexistent", client) is None
+
+
+def test_lookup_latest_maven_handles_malformed_json():
+    client = _mock_client_response({"response": "garbage"})
+    assert _lookup_latest_maven("org.example:widget", client) is None
+
+
+def test_lookup_latest_maven_swallows_http_errors():
+    client = _mock_client_response(raise_for_status_exc=httpx.HTTPError("boom"))
+    assert _lookup_latest_maven("org.example:widget", client) is None
+
+
+# --- NuGet ----------------------------------------------------------------
+
+
+def test_lookup_latest_nuget_prefers_stable_releases():
+    """When stable and prerelease versions coexist, the latest *stable* wins."""
+    client = _mock_client_response(
+        {"versions": ["1.0.0", "1.1.0", "2.0.0-preview1", "2.0.0-preview2"]}
+    )
+    assert _lookup_latest_nuget("Newtonsoft.Json", client) == "1.1.0"
+
+
+def test_lookup_latest_nuget_falls_back_to_prerelease_if_only_pre():
+    client = _mock_client_response({"versions": ["0.1.0-alpha", "0.2.0-alpha"]})
+    assert _lookup_latest_nuget("Newtonsoft.Json", client) == "0.2.0-alpha"
+
+
+def test_lookup_latest_nuget_lowercases_package_id_in_url():
+    client = _mock_client_response({"versions": ["1.0.0"]})
+    _lookup_latest_nuget("Newtonsoft.Json", client)
+    called_url = client.get.call_args[0][0]
+    assert "newtonsoft.json" in called_url
+    assert "Newtonsoft.Json" not in called_url
+
+
+def test_lookup_latest_nuget_handles_missing_versions_key():
+    client = _mock_client_response({})
+    assert _lookup_latest_nuget("Newtonsoft.Json", client) is None
+
+
+def test_lookup_latest_nuget_swallows_404():
+    client = _mock_client_response(
+        raise_for_status_exc=httpx.HTTPStatusError(
+            "404", request=MagicMock(), response=MagicMock(status_code=404)
+        )
+    )
+    assert _lookup_latest_nuget("does.not.exist", client) is None
+
+
+# --- Packagist ------------------------------------------------------------
+
+
+def test_lookup_latest_packagist_returns_first_stable():
+    client = _mock_client_response(
+        {
+            "packages": {
+                "vendor/pkg": [
+                    {"version": "2.4.0"},
+                    {"version": "2.3.5"},
+                    {"version": "2.3.4"},
+                ]
+            }
+        }
+    )
+    assert _lookup_latest_packagist("vendor/pkg", client) == "2.4.0"
+
+
+def test_lookup_latest_packagist_skips_dev_branches():
+    client = _mock_client_response(
+        {
+            "packages": {
+                "vendor/pkg": [
+                    {"version": "dev-main"},
+                    {"version": "dev-master"},
+                    {"version": "1.5.0"},
+                ]
+            }
+        }
+    )
+    assert _lookup_latest_packagist("vendor/pkg", client) == "1.5.0"
+
+
+def test_lookup_latest_packagist_requires_vendor_package_form():
+    client = MagicMock()
+    assert _lookup_latest_packagist("not-a-coordinate", client) is None
+    client.get.assert_not_called()
+
+
+def test_lookup_latest_packagist_handles_missing_package_entry():
+    client = _mock_client_response({"packages": {}})
+    assert _lookup_latest_packagist("vendor/pkg", client) is None
+
+
+def test_lookup_latest_packagist_swallows_network_errors():
+    client = MagicMock()
+    client.get.side_effect = httpx.RequestError("connection refused")
+    assert _lookup_latest_packagist("vendor/pkg", client) is None
+
+
+# --- Registry registration ------------------------------------------------
+
+
+def test_new_ecosystems_registered():
+    """Maven / NuGet / Packagist must be present in the registry dispatch table
+    so _enrich_latest_versions actually calls them."""
+    assert _LATEST_VERSION_REGISTRIES["Maven"] is _lookup_latest_maven
+    assert _LATEST_VERSION_REGISTRIES["NuGet"] is _lookup_latest_nuget
+    assert _LATEST_VERSION_REGISTRIES["Packagist"] is _lookup_latest_packagist

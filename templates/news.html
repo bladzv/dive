@@ -1,17 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Intelligence — DIVE{% endblock %}
+{% block title %}News — DIVE{% endblock %}
+{% block topbar_title %}News{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="page-kicker">Intelligence</span>
-    <h1>Security news feed</h1>
-    <p class="heading-copy">Collected advisories, exploit reports, and ecosystem signals for review.</p>
+    <p class="heading-copy">Aggregated advisories, exploit reports, and ecosystem signals.</p>
   </div>
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} items</span>
-    <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">CSV</a>
-    <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">JSON</a>
+    <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+    <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">Export JSON</a>
   </div>
 </section>
 
@@ -75,7 +74,7 @@
 </section>
 {% else %}
 <section class="panel empty-state">
-  <div class="empty-icon">•</div>
+  <div class="empty-icon"><svg><use href="#i-rss"/></svg></div>
   <p>No news items match the current filter.</p>
 </section>
 {% endif %}

@@ -1,183 +1,218 @@
 {% extends "base.html" %}
 {% block title %}Settings — DIVE{% endblock %}
+{% block topbar_title %}Settings{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="page-kicker">Configuration</span>
-    <h1>System settings</h1>
-    <p class="heading-copy">Tune pipeline cadence, scanners, feeds, models, and retention behavior.</p>
+    <p class="heading-copy">Tune pipeline cadence, scanners, feeds, models, and retention behaviour.</p>
   </div>
 </section>
 
-<div class="settings-grid">
+<!-- ══ Section: Pipeline ═══════════════════════════════ -->
+<section class="settings-section">
+  <header class="settings-section-head">
+    <h2>Pipeline</h2>
+    <p>Cadence and on/off switches for each pipeline step.</p>
+  </header>
 
-  <!-- ── Pipeline Schedule ──────────────────────────── -->
-  <div class="card">
-    <div class="card-title">⏱ Pipeline Schedule</div>
-    <div class="form-group">
-      <label class="form-label" for="interval-select">Run every</label>
-      <select id="interval-select" onchange="handleIntervalChange(this.value)">
-        {% for val, label in interval_options %}
-        <option value="{{ val }}" {{ 'selected' if val == current_interval else '' }}>{{ label }}</option>
-        {% endfor %}
-        <option value="custom" {{ 'selected' if current_interval not in interval_values else '' }}>Custom…</option>
-      </select>
-      <div id="custom-interval-row" style="display:none;margin-top:0.6rem;display:flex;gap:0.5rem;align-items:center">
-        <input type="number" id="custom-hours" min="1" max="8760" placeholder="hours"
-               style="max-width:100px" value="{{ current_interval if current_interval not in interval_values else '' }}">
-        <span style="font-size:0.85rem;color:var(--text-dim)">hours (minimum 1)</span>
+  <div class="settings-grid-2col">
+
+    <!-- ── Pipeline Schedule ──────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Pipeline schedule</div>
+      <div class="form-group">
+        <label class="form-label" for="interval-select">Run every</label>
+        <select id="interval-select" onchange="handleIntervalChange(this.value)">
+          {% for val, label in interval_options %}
+          <option value="{{ val }}" {{ 'selected' if val == current_interval else '' }}>{{ label }}</option>
+          {% endfor %}
+          <option value="custom" {{ 'selected' if current_interval not in interval_values else '' }}>Custom…</option>
+        </select>
+        <div id="custom-interval-row" class="custom-interval-row">
+          <input type="number" id="custom-hours" min="1" max="8760" placeholder="hours"
+                 value="{{ current_interval if current_interval not in interval_values else '' }}">
+          <span class="form-hint-inline">hours (minimum 1)</span>
+        </div>
+        <p class="form-hint">How often the pipeline collects news and scans repositories.</p>
       </div>
-      <p class="form-hint">How often the pipeline collects news and scans repositories.</p>
+      <div class="card-actions">
+        <button class="btn btn-primary btn-sm" onclick="saveInterval()">Save schedule</button>
+      </div>
     </div>
-    <button class="btn btn-primary" onclick="saveInterval()">Save Schedule</button>
-  </div>
 
-  <!-- ── Feature Toggles ───────────────────────────── -->
-  <div class="card">
-    <div class="card-title">🔧 Feature Toggles</div>
-    <div id="toggles-list" style="display:flex;flex-direction:column;gap:0.6rem">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+    <!-- ── Feature Toggles ───────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Feature toggles</div>
+      <p class="card-desc">Enable or disable individual pipeline steps and channels.</p>
+      <div id="toggles-list" class="toggle-list">
+        <p class="form-hint">Loading…</p>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-primary btn-sm" onclick="saveToggles()">Save toggles</button>
+      </div>
     </div>
-    <button class="btn btn-primary" style="margin-top:1rem" onclick="saveToggles()">Save Toggles</button>
-  </div>
 
-  <!-- ── RSS Feeds ──────────────────────────────────── -->
+  </div>
+</section>
+
+<!-- ══ Section: Scanner ════════════════════════════════ -->
+<section class="settings-section">
+  <header class="settings-section-head">
+    <h2>Scanner</h2>
+    <p>What to flag, what to skip, and which keywords matter.</p>
+  </header>
+
+  <div class="settings-grid-2col">
+
+    <!-- ── Scanner Settings ───────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Scanner settings</div>
+
+      <div class="form-group">
+        <label class="form-label" for="severity-select">Minimum severity for notifications</label>
+        <select id="severity-select">
+          <option value="critical">Critical only</option>
+          <option value="high">High and above (default)</option>
+          <option value="medium">Medium and above</option>
+          <option value="low">Low and above</option>
+          <option value="all">All findings</option>
+        </select>
+        <p class="form-hint">Findings below this threshold are recorded but do not trigger alerts.</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="excluded-repos">Excluded repositories</label>
+        <textarea id="excluded-repos" rows="3" class="form-textarea"
+                  placeholder="owner/repo-name, one per line"></textarea>
+        <p class="form-hint">Repos listed here are skipped by the vulnerability and secrets scanner.</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="secrets-scan-depth">Secrets scan depth (commits)</label>
+        <input type="number" id="secrets-scan-depth" min="1" max="500" step="1" class="form-input-narrow">
+        <p class="form-hint">Number of recent commits to scan for secrets per repository (default 30).</p>
+      </div>
+
+      <div class="card-actions">
+        <button class="btn btn-primary btn-sm" onclick="saveScannerSettings()">Save scanner settings</button>
+      </div>
+    </div>
+
+    <!-- ── Keyword Watchlist ─────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Keyword watchlist</div>
+      <p class="card-desc">
+        Keywords are highlighted in the news feed and can be used for filtering.
+      </p>
+
+      <div id="keywords-list" class="chip-list">
+        <p class="form-hint">Loading…</p>
+      </div>
+
+      <div class="inline-add-row">
+        <input type="text" id="new-keyword" placeholder="e.g. nginx, Kubernetes"
+               onkeydown="if(event.key==='Enter')addKeyword()">
+        <button class="btn btn-primary btn-sm" onclick="addKeyword()">Add</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══ Section: Data sources ═══════════════════════════ -->
+<section class="settings-section">
+  <header class="settings-section-head">
+    <h2>Data sources</h2>
+    <p>RSS and Atom feeds the collector ingests on every pipeline run.</p>
+  </header>
+
   <div class="card">
-    <div class="card-title">📡 RSS Feeds</div>
+    <div class="card-title">RSS feeds</div>
 
     <div id="feeds-table-wrap">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+      <p class="form-hint">Loading…</p>
     </div>
 
-    <!-- Add feed form -->
-    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border)">
-      <p class="form-label" style="margin-bottom:0.6rem">Add a feed</p>
-      <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
-        <input type="text" id="new-feed-name" placeholder="Name" style="max-width:180px">
-        <input type="text" id="new-feed-url"  placeholder="https://example.com/feed.xml" style="max-width:300px">
-        <button class="btn btn-primary btn-sm" onclick="addFeed()">Add</button>
-      </div>
-      <p class="form-hint">URL is validated as a reachable RSS/Atom feed before saving.</p>
+    <div class="card-divider"></div>
+
+    <p class="form-label">Add a feed</p>
+    <div class="inline-add-row inline-add-row-wide">
+      <input type="text" id="new-feed-name" placeholder="Name">
+      <input type="text" id="new-feed-url"  placeholder="https://example.com/feed.xml">
+      <button class="btn btn-primary btn-sm" onclick="addFeed()">Add</button>
     </div>
+    <p class="form-hint">URL is validated as a reachable RSS/Atom feed before saving.</p>
   </div>
+</section>
 
-  <!-- ── Keyword Watchlist ─────────────────────────── -->
+<!-- ══ Section: AI model ═══════════════════════════════ -->
+<section class="settings-section">
+  <header class="settings-section-head">
+    <h2>AI model</h2>
+    <p>Ollama model used to categorise news items. Active: <code id="active-model-label">{{ current_model }}</code></p>
+  </header>
+
   <div class="card">
-    <div class="card-title">🔍 Keyword Watchlist</div>
-    <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:0.75rem">
-      Keywords are highlighted in the news feed and can be used for filtering.
-    </p>
-
-    <div id="keywords-list" style="display:flex;flex-wrap:wrap;gap:0.4rem;min-height:1.5rem">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+    <div id="model-grid" class="model-grid">
+      <p class="form-hint">Loading available models…</p>
     </div>
-
-    <div style="display:flex;gap:0.5rem;margin-top:0.85rem">
-      <input type="text" id="new-keyword" placeholder="e.g. nginx, Kubernetes"
-             style="max-width:240px" onkeydown="if(event.key==='Enter')addKeyword()">
-      <button class="btn btn-primary btn-sm" onclick="addKeyword()">Add</button>
+    <div class="install-hint" id="install-hint" style="display:none">
+      <p class="form-hint">To install this model, run one of:</p>
+      <p class="install-hint-label">Docker</p>
+      <code id="install-cmd-docker"></code>
+      <p class="install-hint-label">Bare-metal / Mac</p>
+      <code id="install-cmd-bare"></code>
     </div>
   </div>
+</section>
 
-  <!-- ── Scanner Settings ───────────────────────────── -->
-  <div class="card">
-    <div class="card-title">🔎 Scanner Settings</div>
+<!-- ══ Section: Danger zone ════════════════════════════ -->
+<section class="settings-section settings-section-danger">
+  <header class="settings-section-head">
+    <h2>Danger zone</h2>
+    <p>Destructive actions. There is no undo.</p>
+  </header>
 
-    <div class="form-group">
-      <label class="form-label" for="severity-select">Minimum severity for notifications</label>
-      <select id="severity-select">
-        <option value="critical">Critical only</option>
-        <option value="high">High and above (default)</option>
-        <option value="medium">Medium and above</option>
-        <option value="low">Low and above</option>
-        <option value="all">All findings</option>
-      </select>
-      <p class="form-hint">Findings below this threshold are recorded but do not trigger alerts.</p>
-    </div>
+  <div class="card card-danger">
+    <div class="card-title">Clear data</div>
+    <p class="card-desc">Permanently delete selected data. This cannot be undone.</p>
 
-    <div class="form-group">
-      <label class="form-label" for="excluded-repos">Excluded repositories</label>
-      <textarea id="excluded-repos" rows="3"
-                style="width:100%;max-width:100%;background:var(--surface-2);border:1px solid var(--border);
-                       color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
-                       font-size:0.875rem;font-family:inherit;resize:vertical"
-                placeholder="owner/repo-name, one per line"></textarea>
-      <p class="form-hint">Repos listed here are skipped by the vulnerability and secrets scanner.</p>
-    </div>
-
-    <div class="form-group">
-      <label class="form-label" for="secrets-scan-depth">Secrets scan depth (commits)</label>
-      <input type="number" id="secrets-scan-depth" min="1" max="500" step="1"
-             style="width:120px;background:var(--surface-2);border:1px solid var(--border);
-                    color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
-                    font-size:0.875rem;font-family:inherit" />
-      <p class="form-hint">Number of recent commits to scan for secrets per repository (default: 30).</p>
-    </div>
-
-    <button class="btn btn-primary" onclick="saveScannerSettings()">Save Scanner Settings</button>
-  </div>
-
-  <!-- ── Clear Data ───────────────────────────────────── -->
-  <div class="card" style="border-color:var(--error);border-width:1px;border-style:solid">
-    <div class="card-title" style="color:var(--error)">🗑 Clear Data</div>
-    <p style="font-size:0.84rem;color:var(--text-dim);margin-bottom:1rem">
-      Permanently delete selected data. This cannot be undone.
-    </p>
-
-    <div style="display:flex;flex-direction:column;gap:0.55rem;margin-bottom:1rem">
-      <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
-        <input type="checkbox" id="clear-news" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
+    <fieldset class="clear-options">
+      <label>
+        <input type="checkbox" id="clear-news">
         News items
       </label>
-      <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
-        <input type="checkbox" id="clear-findings" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
+      <label>
+        <input type="checkbox" id="clear-findings">
         Vulnerability findings
-        <span style="font-size:0.75rem;color:var(--error)">⚠ includes unresolved</span>
+        <span class="clear-warn">includes unresolved</span>
       </label>
-      <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
-        <input type="checkbox" id="clear-secrets" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
+      <label>
+        <input type="checkbox" id="clear-secrets">
         Secret findings
-        <span style="font-size:0.75rem;color:var(--error)">⚠ includes unresolved</span>
+        <span class="clear-warn">includes unresolved</span>
       </label>
-      <label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
-        <input type="checkbox" id="clear-runhistory" style="width:1.1rem;height:1.1rem;accent-color:var(--error)">
+      <label>
+        <input type="checkbox" id="clear-runhistory">
         Pipeline run history
       </label>
-    </div>
+    </fieldset>
 
-    <div class="form-group" style="margin-bottom:1rem">
+    <div class="form-group">
       <label class="form-label" for="clear-days">Older than (days)</label>
-      <div style="display:flex;gap:0.5rem;align-items:center">
-        <input type="number" id="clear-days" min="1" placeholder="leave blank = all"
-               autocomplete="off" style="max-width:160px">
-        <span style="font-size:0.82rem;color:var(--text-dim)">days — leave blank to delete everything</span>
+      <div class="clear-days-row">
+        <input type="number" id="clear-days" min="1" placeholder="leave blank = all" autocomplete="off">
+        <span class="form-hint-inline">days — leave blank to delete everything</span>
       </div>
       <p class="form-hint">Deletes only records older than N days. Set to blank to delete all records of the selected types.</p>
     </div>
 
-    <button class="btn btn-danger" onclick="clearData()">Delete Selected Data</button>
-  </div>
-
-  <!-- ── Ollama Model ───────────────────────────────── -->
-  <div class="card">
-    <div class="card-title">🤖 Ollama Model</div>
-    <p style="font-size:0.875rem;color:var(--text-dim);margin-bottom:1rem">
-      Active model: <code id="active-model-label">{{ current_model }}</code>
-    </p>
-    <div id="model-grid" class="model-grid">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading available models…</p>
-    </div>
-    <div class="install-hint" id="install-hint" style="display:none;margin-top:1rem">
-      <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:0.5rem">To install this model, run one of:</p>
-      <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:0.25rem">Docker:</p>
-      <code id="install-cmd-docker"></code>
-      <p style="font-size:0.75rem;color:var(--text-dim);margin:0.5rem 0 0.25rem">Bare-metal / Mac:</p>
-      <code id="install-cmd-bare"></code>
+    <div class="card-actions">
+      <button class="btn btn-danger btn-sm" onclick="clearData()">Delete selected data</button>
     </div>
   </div>
-
-</div>
+</section>
 
 <!-- ── Confirm modal ─────────────────────────────────── -->
 <div id="confirm-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
@@ -205,14 +240,14 @@ const INTERVAL_VALUES = {{ interval_values | tojson }};
 /* ── Schedule ──────────────────────────────────────── */
 function handleIntervalChange(val) {
   const row = document.getElementById('custom-interval-row');
-  row.style.display = val === 'custom' ? 'flex' : 'none';
+  row.classList.toggle('open', val === 'custom');
 }
 
 // Show custom input if current_interval is not a preset
 (function() {
   const sel = document.getElementById('interval-select');
   if (sel.value === 'custom') {
-    document.getElementById('custom-interval-row').style.display = 'flex';
+    document.getElementById('custom-interval-row').classList.add('open');
   }
 })();
 
@@ -246,17 +281,16 @@ function loadToggles() {
       const list = document.getElementById('toggles-list');
       list.innerHTML = Object.entries(data).map(([key, meta]) => {
         _toggleState[key] = meta.enabled;
-        return `<label style="display:flex;align-items:center;gap:0.65rem;cursor:pointer;font-size:0.875rem">
+        return `<label>
           <input type="checkbox" id="toggle-${key}" ${meta.enabled ? 'checked' : ''}
-                 onchange="_toggleState['${key}']=this.checked"
-                 style="width:1.1rem;height:1.1rem;accent-color:var(--accent)">
+                 onchange="_toggleState['${key}']=this.checked">
           ${meta.label}
         </label>`;
       }).join('');
     })
     .catch(() => {
       document.getElementById('toggles-list').innerHTML =
-        '<p style="color:var(--error);font-size:0.85rem">Could not load feature toggles.</p>';
+        '<p class="form-hint" style="color:var(--error)">Could not load feature toggles.</p>';
     });
 }
 
@@ -474,7 +508,7 @@ function renderModels(installed, suggested, current) {
     const isActive = m.name === current;
     const cls = ['model-card', m.isInstalled ? 'installed' : '', isActive ? 'active' : ''].join(' ').trim();
     const statusHtml = isActive
-      ? '<span style="color:var(--accent)">✓ Active</span>'
+      ? '<span style="color:var(--accent);font-weight:600">Active</span>'
       : m.isInstalled
         ? '<span style="color:var(--success)">Installed</span>'
         : '<span style="color:var(--text-dim)">Not installed</span>';
@@ -575,7 +609,7 @@ function showConfirm(message, warning, onConfirm) {
   document.getElementById('confirm-message').textContent = message;
   const warnEl = document.getElementById('confirm-warning');
   if (warning) {
-    warnEl.textContent = '⚠ ' + warning;
+    warnEl.textContent = warning;
     warnEl.style.display = '';
   } else {
     warnEl.style.display = 'none';

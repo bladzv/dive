@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Log in — DIVE</title>
+  <title>Sign in — DIVE</title>
+  <link rel="preconnect" href="https://rsms.me/">
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
   <link rel="stylesheet" href="/static/style.css">
   <script>
     (function() {
@@ -12,67 +14,96 @@
     })();
   </script>
   <style>
-    body { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:1rem; }
-    .login-card {
-      background:var(--surface);
-      border:1px solid var(--border);
-      border-radius:var(--radius-lg);
-      padding:2rem 2rem 1.75rem;
-      width:min(380px,100%);
-      box-shadow:var(--shadow);
+    .login-head {
+      text-align: center;
+      margin-bottom: 1.4rem;
     }
     .login-brand {
-      font-size:1.7rem;
-      font-weight:800;
-      letter-spacing:-0.5px;
-      color:var(--text);
-      margin-bottom:0.2rem;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text-bright);
+      margin: 0;
     }
     .login-sub {
-      font-size:0.8rem;
-      color:var(--text-dim);
-      margin-bottom:1.75rem;
+      margin-top: 0.3rem;
+      color: var(--text-muted);
+      font-size: 0.82rem;
     }
-    .login-field { margin-bottom:1rem; }
+
+    .login-field { margin-bottom: 0.95rem; }
     .login-field label {
-      display:block;
-      font-size:0.78rem;
-      color:var(--text-dim);
-      margin-bottom:0.35rem;
-      font-weight:500;
+      display: block;
+      margin-bottom: 0.32rem;
+      color: var(--text-bright);
+      font-size: 0.8rem;
+      font-weight: 600;
     }
-    .login-field input {
-      width:100%;
-      box-sizing:border-box;
-      background:var(--surface-2);
-      border:1px solid var(--border);
-      color:var(--text);
-      border-radius:var(--radius);
-      padding:0.6rem 0.75rem;
-      font-size:0.9rem;
-      font-family:inherit;
-      transition:border-color 0.15s;
+    .login-field input { max-width: 100%; }
+
+    /* Password field with mask/unmask toggle */
+    .login-pw-wrap {
+      position: relative;
     }
-    .login-field input:focus {
-      outline:none;
-      border-color:var(--accent);
+    .login-pw-wrap input { padding-right: 2.4rem; }
+    .pw-toggle {
+      position: absolute;
+      top: 50%;
+      right: 0.35rem;
+      transform: translateY(-50%);
+      width: 1.8rem;
+      height: 1.8rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color 0.12s, background 0.12s, border-color 0.12s;
     }
+    .pw-toggle:hover {
+      color: var(--text-bright);
+      background: var(--hover);
+      border-color: var(--border);
+    }
+    .pw-toggle svg { width: 16px; height: 16px; }
+
     .login-error {
-      background:rgba(220,60,60,0.12);
-      border:1px solid var(--critical);
-      border-radius:var(--radius);
-      padding:0.55rem 0.75rem;
-      font-size:0.82rem;
-      color:var(--critical);
-      margin-bottom:1.1rem;
+      margin-bottom: 1rem;
+      padding: 0.55rem 0.75rem;
+      background: var(--critical-bg);
+      border: 1px solid color-mix(in srgb, var(--critical) 40%, var(--border));
+      border-radius: var(--radius);
+      color: var(--critical);
+      font-size: 0.82rem;
     }
-    .login-btn { width:100%; padding:0.65rem; font-size:0.9rem; margin-top:0.25rem; }
+    .login-btn { width: 100%; margin-top: 0.4rem; }
   </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.9 4.3A10 10 0 0 1 12 4c6.5 0 10 8 10 8a18 18 0 0 1-2.5 3.6"/>
+      <path d="M6.6 6.6A18 18 0 0 0 2 12s3.5 8 10 8a10 10 0 0 0 4.5-1.1"/>
+      <path d="M9.9 9.9a3 3 0 1 0 4.2 4.2"/>
+      <path d="M2 2l20 20"/>
+    </symbol>
+  </defs>
+</svg>
+
 <div class="login-card">
-  <div class="login-brand">DIVE</div>
-  <div class="login-sub">Dependency Intelligence for Vulnerability Exposure</div>
+  <div class="login-head">
+    <h1 class="login-brand">DIVE</h1>
+    <p class="login-sub">Dependency Intelligence for Vulnerability Exposure</p>
+  </div>
 
   {% if error %}
   <div class="login-error" role="alert">{{ error }}</div>
@@ -80,21 +111,38 @@
 
   <form method="post" action="/login">
     <input type="hidden" name="next_url" value="{{ next_url }}">
-
     <div class="login-field">
       <label for="username">Username</label>
       <input type="text" id="username" name="username"
              autofocus autocomplete="username" required spellcheck="false">
     </div>
-
     <div class="login-field">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password"
-             autocomplete="current-password" required>
+      <div class="login-pw-wrap">
+        <input type="password" id="password" name="password"
+               autocomplete="current-password" required>
+        <button type="button" class="pw-toggle" id="pw-toggle"
+                aria-label="Show password" aria-pressed="false"
+                onclick="togglePassword()">
+          <svg id="pw-icon" aria-hidden="true"><use href="#i-eye"/></svg>
+        </button>
+      </div>
     </div>
-
-    <button type="submit" class="btn btn-primary login-btn">Log in</button>
+    <button type="submit" class="btn btn-primary login-btn">Sign in</button>
   </form>
 </div>
+
+<script>
+function togglePassword() {
+  const input = document.getElementById('password');
+  const btn = document.getElementById('pw-toggle');
+  const icon = document.getElementById('pw-icon');
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  btn.setAttribute('aria-pressed', showing ? 'false' : 'true');
+  icon.innerHTML = '<use href="#' + (showing ? 'i-eye' : 'i-eye-off') + '"/>';
+}
+</script>
 </body>
 </html>

@@ -845,6 +845,11 @@ def mark_secret_findings_notified(conn: sqlite3.Connection, finding_ids: list[in
     )
 
 
+def get_secret_finding(conn: sqlite3.Connection, finding_id: int) -> sqlite3.Row | None:
+    """Return a single secret finding by primary key, or None."""
+    return conn.execute("SELECT * FROM secret_findings WHERE id = ?", (finding_id,)).fetchone()
+
+
 def mark_secret_finding_false_positive(conn: sqlite3.Connection, finding_id: int) -> bool:
     """Mark a secret finding as a false positive. Returns True if updated."""
     cur = conn.execute(

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import db
+import dive.db as db
 
 # ---------------------------------------------------------------------------
 # Fixtures

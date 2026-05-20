@@ -57,7 +57,8 @@ def test_ci_workflow_present():
 
 
 def test_main_entrypoint_present():
-    assert _exists("main.py"), "main.py missing"
+    assert _exists("dive", "main.py"), "dive/main.py missing"
+    assert _exists("dive", "__init__.py"), "dive/__init__.py missing"
 
 
 def test_gitignore_excludes_secrets():

@@ -237,6 +237,108 @@ html.sidebar-collapsed .app-sidebar {
   border-bottom: 1px solid var(--border);
 }
 
+/* ─── Pipeline step ticker ──────────────────────────── */
+.step-ticker {
+  position: fixed;
+  top: var(--topbar);
+  left: var(--sidebar);
+  right: 0;
+  z-index: 95;
+  display: none;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.55rem 1.1rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  transition: left 0.12s ease;
+}
+.step-ticker.open { display: flex; }
+
+.step-ticker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.65rem;
+  flex: 1;
+  min-width: 0;
+}
+.step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--panel-2);
+  white-space: nowrap;
+}
+.step-dot {
+  width: 7px; height: 7px;
+  border-radius: 999px;
+  background: var(--text-subtle);
+  flex: 0 0 auto;
+}
+.step-label { font-weight: 500; font-size: 0.72rem; letter-spacing: 0.02em; }
+
+.step-pill.step-done  { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.step-pill.step-done  .step-dot { background: var(--success); }
+
+.step-pill.step-running {
+  color: var(--text-bright);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.step-pill.step-running .step-dot {
+  background: var(--accent);
+  animation: step-pulse 1.4s ease-in-out infinite;
+}
+@keyframes step-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(1.6); opacity: 0.6; }
+}
+
+.step-pill.step-error  { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
+.step-pill.step-error  .step-dot { background: var(--error); }
+
+.step-pill.step-skipped { color: var(--text-subtle); opacity: 0.7; }
+.step-pill.step-skipped .step-dot { background: var(--text-subtle); opacity: 0.55; }
+
+.step-pill.step-pending .step-dot { background: var(--border-strong); }
+
+.step-ticker-state {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.step-ticker-state.is-paused { color: var(--warning); }
+
+/* When the ticker is open, the page main needs an extra top offset. */
+.step-ticker.open ~ .app-workspace .page-main,
+body:has(.step-ticker.open) .app-workspace .page-main {
+  padding-top: 2.4rem;
+}
+
+html.sidebar-collapsed .step-ticker { left: var(--sidebar-collapsed); }
+
+@media (max-width: 700px) {
+  .step-ticker { left: 0; padding: 0.5rem 0.8rem; }
+  .step-label { display: none; }   /* dots only on mobile to save space */
+  .step-pill  { padding: 0.18rem 0.35rem; }
+}
+
+/* ─── Pipeline control buttons ──────────────────────── */
+.pipeline-ctl-cancel { color: var(--error); border-color: color-mix(in srgb, var(--error) 40%, var(--border)); }
+.pipeline-ctl-cancel:hover { background: color-mix(in srgb, var(--error) 14%, var(--panel-2)); }
+.pipeline-ctl.is-paused { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+
 .topbar-brand {
   display: flex;
   align-items: center;
@@ -507,13 +609,6 @@ html.sidebar-collapsed .sidebar-logout svg { font-size: 1rem; }
   font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-.topbar-title::before {
-  content: "";
-  width: 4px;
-  height: 16px;
-  border-radius: 1px;
-  background: var(--text-bright);
 }
 
 .topbar-spacer { flex: 1; }
@@ -873,9 +968,12 @@ html.sidebar-collapsed .page-footer {
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
-  animation: ticker-scroll 90s linear infinite;
+  /* No marquee auto-scroll — the ticker is now driven by live polling,
+     so we let new items prepend and let the user scroll horizontally. */
+  overflow-x: auto;
+  max-width: 100%;
+  scrollbar-width: thin;
 }
-.ticker:hover .ticker-row { animation-play-state: paused; }
 
 @keyframes ticker-scroll {
   from { transform: translateX(0); }
@@ -896,6 +994,19 @@ html.sidebar-collapsed .page-footer {
 .ticker-item:hover {
   background: var(--hover);
   color: var(--text-bright);
+}
+.ticker-item-empty {
+  color: var(--text-subtle);
+  pointer-events: none;
+  font-style: italic;
+}
+.ticker-item-fresh {
+  animation: ticker-fresh 5s ease forwards;
+}
+@keyframes ticker-fresh {
+  0%   { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  60%  { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  100% { background: transparent; }
 }
 
 .ticker-dot {
@@ -1112,17 +1223,20 @@ html.sidebar-collapsed .page-footer {
   background: var(--panel-3);
 }
 
+/* GitHub-style activity ramp — empty cells are dark grey; busier cells climb
+   through deep teal to vivid emerald so the "heat" of recent days is obvious
+   at a glance. */
 .hm-l0 { background: var(--panel-3); }
-.hm-l1 { background: #2c365a; }
-.hm-l2 { background: #4a577d; }
-.hm-l3 { background: #8893b0; }
-.hm-l4 { background: var(--text-bright); }
+.hm-l1 { background: #143e2a; }
+.hm-l2 { background: #16704a; }
+.hm-l3 { background: #22c55e; }
+.hm-l4 { background: #86efac; }
 
 [data-theme="light"] .hm-l0 { background: #eef1f7; }
-[data-theme="light"] .hm-l1 { background: #d4dae6; }
-[data-theme="light"] .hm-l2 { background: #98a3b9; }
-[data-theme="light"] .hm-l3 { background: #5b6580; }
-[data-theme="light"] .hm-l4 { background: var(--text-bright); }
+[data-theme="light"] .hm-l1 { background: #bbf7d0; }
+[data-theme="light"] .hm-l2 { background: #4ade80; }
+[data-theme="light"] .hm-l3 { background: #15803d; }
+[data-theme="light"] .hm-l4 { background: #064e3b; }
 
 .heatmap-legend {
   display: flex;
@@ -1251,7 +1365,8 @@ html.sidebar-collapsed .page-footer {
   padding: 1rem 1.1rem;
 }
 
-.panel-primary { min-height: 20rem; }
+/* Panel sizes itself to its content — no minimum so empty queues don't bloat */
+.panel-primary { min-height: 0; }
 
 .panel-head {
   display: flex;
@@ -1509,14 +1624,55 @@ html.sidebar-collapsed .page-footer {
   padding-top: 0.9rem;
   border-top: 1px solid var(--border);
 }
+.install-hint .code-block { margin-bottom: 0.5rem; }
 .install-hint code {
   display: block;
-  padding: 0.4rem 0.7rem;
-  margin-bottom: 0.4rem;
+  padding: 0.5rem 2.6rem 0.5rem 0.75rem;   /* room for the copy button */
   font-size: 0.78rem;
   background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   word-break: break-all;
+}
+
+/* ─── Copy-to-clipboard helper for operator command blocks ─── */
+.code-block {
+  position: relative;
+}
+.code-block-pre pre {
+  margin: 0.4rem 0 0;
+  padding: 0.6rem 2.8rem 0.6rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+}
+.code-copy-btn {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg) 60%, var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.code-copy-btn:hover  { color: var(--text-bright); border-color: var(--border-strong); }
+.code-copy-btn.is-copied {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
 }
 .install-hint-label {
   margin: 0.6rem 0 0.3rem;
@@ -1709,13 +1865,22 @@ html.sidebar-collapsed .page-footer {
 
 .intel-meta {
   display: flex;
-  justify-content: space-between;
-  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.8rem;
   color: var(--text-subtle);
   font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.10em;
+}
+.intel-meta > :first-child { margin-right: auto; }     /* source pushes left */
+.intel-published {
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
 }
 
 .intel-card h3 {
@@ -2657,3 +2822,72 @@ body:has(.login-card) {
   gap: 0.6rem;
   justify-content: flex-end;
 }
+
+/* ─── Reveal-secret modal ──────────────────────────── */
+.modal-panel.reveal-modal {
+  max-width: min(720px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.reveal-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+.reveal-modal-head h2 { margin: 0; }
+.reveal-warn {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  margin: 0 0 0.85rem !important;
+  color: var(--text-bright) !important;
+  font-size: 0.78rem !important;
+  line-height: 1.5;
+}
+.reveal-warn strong { color: var(--error); }
+.reveal-meta {
+  margin: 0 0 0.85rem !important;
+  font-size: 0.74rem !important;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  color: var(--text-muted);
+}
+.reveal-body { overflow: auto; flex: 1; min-height: 4rem; }
+.reveal-snippet {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text);
+}
+.reveal-line {
+  display: block;
+  padding: 0 0.3rem;
+}
+.reveal-line-secret {
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  color: var(--error);
+  font-weight: 600;
+  border-left: 3px solid var(--error);
+  margin-left: -3px;
+}
+.reveal-lineno {
+  display: inline-block;
+  width: 3.2rem;
+  color: var(--text-subtle);
+  text-align: right;
+  user-select: none;
+  margin-right: 0.85rem;
+}
+.reveal-line-secret .reveal-lineno { color: var(--error); }
+.reveal-text { white-space: pre; }

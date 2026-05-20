@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import config as cfg_module
-import notifier
+import dive.config as cfg_module
+import dive.notifier as notifier
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:

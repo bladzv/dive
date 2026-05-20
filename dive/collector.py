@@ -29,9 +29,9 @@ from email.utils import parsedate_to_datetime
 import feedparser
 import httpx
 
-import db
-import settings as settings_module
-from config import AppConfig
+from . import db
+from . import settings as settings_module
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 

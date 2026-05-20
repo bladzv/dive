@@ -23,8 +23,8 @@ from typing import Any
 
 from github import Github, GithubException, UnknownObjectException
 
-import db
-from config import AppConfig
+from . import db
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 

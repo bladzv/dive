@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import secrets_scanner as ss
+import dive.secrets_scanner as ss
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -24,7 +24,7 @@ import secrets_scanner as ss
 @pytest.fixture
 def in_memory_db():
     """Return an initialised in-memory SQLite connection."""
-    import db as db_module
+    import dive.db as db_module
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -37,7 +37,7 @@ def in_memory_db():
 
 
 def _make_config(token: str = "fake-token", username: str = "testuser"):
-    from config import AppConfig, DashboardConfig, GitHubConfig
+    from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     return AppConfig(
         github=GitHubConfig(token=token, username=username),
@@ -76,7 +76,7 @@ def test_run_gitleaks_returns_findings(tmp_path):
         result.returncode = 1  # gitleaks exits 1 when leaks found
         return result
 
-    with patch("secrets_scanner.subprocess.run", side_effect=fake_run):
+    with patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run):
         result = ss._run_gitleaks(str(tmp_path))
 
     assert len(result) == 1
@@ -92,7 +92,7 @@ def test_run_gitleaks_no_leaks(tmp_path):
         result.returncode = 0
         return result
 
-    with patch("secrets_scanner.subprocess.run", side_effect=fake_run):
+    with patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run):
         result = ss._run_gitleaks(str(tmp_path))
 
     assert result == []
@@ -105,7 +105,7 @@ def test_run_gitleaks_error_exit_code(tmp_path):
         result.stderr = b"fatal: not a git repository"
         return result
 
-    with patch("secrets_scanner.subprocess.run", side_effect=fake_run):
+    with patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run):
         result = ss._run_gitleaks(str(tmp_path))
 
     assert result == []
@@ -120,7 +120,7 @@ def test_run_gitleaks_empty_report(tmp_path):
         result.returncode = 0
         return result
 
-    with patch("secrets_scanner.subprocess.run", side_effect=fake_run):
+    with patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run):
         result = ss._run_gitleaks(str(tmp_path))
 
     assert result == []
@@ -137,8 +137,8 @@ def test_scan_repo_inserts_new_finding(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("secrets_scanner._clone", return_value=True),
-        patch("secrets_scanner._run_gitleaks", return_value=[finding]),
+        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
 
@@ -155,8 +155,8 @@ def test_scan_repo_deduplicates_same_fingerprint(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("secrets_scanner._clone", return_value=True),
-        patch("secrets_scanner._run_gitleaks", return_value=[finding]),
+        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         first = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
         second = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
@@ -173,8 +173,8 @@ def test_scan_repo_skips_false_positive_fingerprints(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("secrets_scanner._clone", return_value=True),
-        patch("secrets_scanner._run_gitleaks", return_value=[finding]),
+        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, fp_fingerprints)
 
@@ -188,8 +188,8 @@ def test_scan_repo_skips_finding_without_fingerprint(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("secrets_scanner._clone", return_value=True),
-        patch("secrets_scanner._run_gitleaks", return_value=[finding]),
+        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
 
@@ -201,7 +201,7 @@ def test_scan_repo_raises_on_clone_failure(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("secrets_scanner._clone", return_value=False),
+        patch("dive.secrets_scanner._clone", return_value=False),
         pytest.raises(RuntimeError, match="git clone failed"),
     ):
         ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
@@ -214,7 +214,7 @@ def test_scan_repo_raises_on_clone_failure(in_memory_db):
 
 def test_run_returns_missing_when_no_gitleaks(in_memory_db):
     config = _make_config()
-    with patch("secrets_scanner.shutil.which", return_value=None):
+    with patch("dive.secrets_scanner.shutil.which", return_value=None):
         stats = ss.run(in_memory_db, config)
 
     assert stats.gitleaks_missing is True
@@ -232,10 +232,10 @@ def test_run_returns_stats_on_success(in_memory_db):
     mock_gh_user.get_repos.return_value = [mock_repo]
 
     with (
-        patch("secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
-        patch("secrets_scanner.Github") as MockGithub,
-        patch("secrets_scanner._clone", return_value=True),
-        patch("secrets_scanner._run_gitleaks", return_value=[finding]),
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         MockGithub.return_value.get_user.return_value = mock_gh_user
         stats = ss.run(in_memory_db, config)
@@ -256,9 +256,9 @@ def test_run_records_failed_repo(in_memory_db):
     mock_gh_user.get_repos.return_value = [mock_repo]
 
     with (
-        patch("secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
-        patch("secrets_scanner.Github") as MockGithub,
-        patch("secrets_scanner._clone", side_effect=RuntimeError("git clone failed")),
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch("dive.secrets_scanner._clone", side_effect=RuntimeError("git clone failed")),
     ):
         MockGithub.return_value.get_user.return_value = mock_gh_user
         stats = ss.run(in_memory_db, config)
@@ -277,7 +277,7 @@ def test_get_scan_depth_default(in_memory_db):
 
 
 def test_get_scan_depth_from_settings(in_memory_db):
-    import db as db_module
+    import dive.db as db_module
 
     db_module.set_setting(in_memory_db, "secrets_scan_depth", "50")
     in_memory_db.commit()
@@ -285,7 +285,7 @@ def test_get_scan_depth_from_settings(in_memory_db):
 
 
 def test_get_scan_depth_invalid_falls_back(in_memory_db):
-    import db as db_module
+    import dive.db as db_module
 
     db_module.set_setting(in_memory_db, "secrets_scan_depth", "not-a-number")
     in_memory_db.commit()

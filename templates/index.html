@@ -52,55 +52,39 @@
         <span class="foot">actively exploited</span>
       </a>
 
-      <a class="exposure-pill is-secret" href="/secrets?state=new">
-        <span class="label">Secrets</span>
-        <span class="value">{{ secrets_summary.new }}</span>
-        <span class="foot">leaked credentials</span>
-      </a>
-
       <a class="exposure-pill is-resolved" href="/findings?state=resolved">
         <span class="label">Patchable</span>
         <span class="value">{{ summary.patchable or 0 }}</span>
         <span class="foot">upgrade available</span>
+      </a>
+
+      <a class="exposure-pill is-secret" href="/secrets?state=new">
+        <span class="label">Secrets</span>
+        <span class="value">{{ secrets_summary.new }}</span>
+        <span class="foot">leaked credentials</span>
       </a>
     </aside>
 
   </div>
 </section>
 
-{# ── Threat ticker ──────────────────────────────────── #}
-{% if news_items %}
-<section class="ticker" aria-label="Latest security signals">
+{# ── Live feed (truly live — polls /api/news/recent every 30s) ── #}
+<section class="ticker" aria-label="Live news feed" id="live-feed">
   <span class="ticker-tag">
     <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <circle cx="8" cy="8" r="3" fill="currentColor"/>
       <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.55"/>
     </svg>
-    Live feed
+    Live · last hour
   </span>
   <div class="ticker-track">
-    <div class="ticker-row">
-      {% for item in news_items[:12] %}
-        <a class="ticker-item" href="{{ item.url }}" target="_blank" rel="noopener" title="{{ item.title }}">
-          <span class="ticker-dot ticker-dot-{{ (item.severity or 'unknown') | lower }}"></span>
-          <span class="ticker-src">{{ item.source }}</span>
-          <span class="ticker-title">{{ item.title[:90] }}{% if item.title|length > 90 %}…{% endif %}</span>
-          <span class="ticker-time">{{ item.time_ago }}</span>
-        </a>
-      {% endfor %}
-      {# Duplicate row for seamless marquee #}
-      {% for item in news_items[:12] %}
-        <a class="ticker-item" href="{{ item.url }}" target="_blank" rel="noopener" title="{{ item.title }}" aria-hidden="true">
-          <span class="ticker-dot ticker-dot-{{ (item.severity or 'unknown') | lower }}"></span>
-          <span class="ticker-src">{{ item.source }}</span>
-          <span class="ticker-title">{{ item.title[:90] }}{% if item.title|length > 90 %}…{% endif %}</span>
-          <span class="ticker-time">{{ item.time_ago }}</span>
-        </a>
-      {% endfor %}
+    <div class="ticker-row" id="live-feed-row">
+      <a class="ticker-item ticker-item-empty">
+        <span class="ticker-src">Loading live signals…</span>
+      </a>
     </div>
   </div>
 </section>
-{% endif %}
 
 {# ── Three-column visualization grid ────────────────── #}
 <section class="viz-grid">
@@ -118,7 +102,9 @@
     </div>
 
     {% set repo_total = top_repos | sum(attribute='total') %}
-    {% set palette = ['#f1f4fb','#cbd5e1','#94a3b8','#64748b','#475569','#334155'] %}
+    {# Six perceptually distinct, theme-matched colours so adjacent slices and
+       legend rows are easy to tell apart against the dark panel. #}
+    {% set palette = ['#818cf8','#34d399','#fb923c','#60a5fa','#f472b6','#facc15'] %}
     {% if repo_total > 0 %}
     {% set C = 263.894 %}
     <div class="donut-wrap">
@@ -363,5 +349,74 @@ function toggleBookmark(itemId) {
   })
   .catch(() => showToast('Failed to toggle bookmark', 'error'));
 }
+
+/* ── Live news feed — polls /api/news/recent every 30s ─── */
+(function() {
+  const row = document.getElementById('live-feed-row');
+  if (!row) return;
+  const LOOKBACK_MIN = 60;
+  const POLL_MS = 30000;
+  const MAX_ITEMS = 30;
+  const seenIds = new Set();
+  let lastFetchedAt = null;
+
+  function escape(s) {
+    return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  function buildItem(it, fresh) {
+    const sev = (it.severity || 'unknown').toLowerCase();
+    const title = it.title.length > 90 ? it.title.slice(0, 90) + '…' : it.title;
+    const cls = 'ticker-item' + (fresh ? ' ticker-item-fresh' : '');
+    return `<a class="${cls}" href="${escape(it.url)}" target="_blank" rel="noopener" title="${escape(it.title)}">
+      <span class="ticker-dot ticker-dot-${escape(sev)}"></span>
+      <span class="ticker-src">${escape(it.source)}</span>
+      <span class="ticker-title">${escape(title)}</span>
+      <span class="ticker-time">${escape(it.time_ago || 'just now')}</span>
+    </a>`;
+  }
+
+  function pollLive() {
+    const params = new URLSearchParams({ max_age_minutes: LOOKBACK_MIN, limit: MAX_ITEMS });
+    if (lastFetchedAt) params.set('since', lastFetchedAt);
+    fetch('/api/news/recent?' + params.toString(), { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        const items = data.items || [];
+        const fresh = items.filter(it => !seenIds.has(it.id));
+        if (!fresh.length && lastFetchedAt) return;  // no new items since last poll
+
+        if (!lastFetchedAt) {
+          // First load: replace placeholder
+          if (!items.length) {
+            row.innerHTML = '<a class="ticker-item ticker-item-empty"><span class="ticker-src">No activity in the last hour</span></a>';
+            lastFetchedAt = data.server_now;
+            return;
+          }
+          items.forEach(it => seenIds.add(it.id));
+          row.innerHTML = items.map(it => buildItem(it, false)).join('');
+        } else {
+          // Subsequent loads: prepend new items with highlight
+          fresh.forEach(it => seenIds.add(it.id));
+          row.insertAdjacentHTML('afterbegin', fresh.map(it => buildItem(it, true)).join(''));
+          // Trim to MAX_ITEMS
+          while (row.children.length > MAX_ITEMS) row.removeChild(row.lastChild);
+          // Drop the "fresh" highlight after 5s
+          setTimeout(() => {
+            row.querySelectorAll('.ticker-item-fresh').forEach(el => el.classList.remove('ticker-item-fresh'));
+          }, 5000);
+        }
+        // Track newest fetched_at so the next call only asks for items newer than this.
+        const newest = items.reduce((max, it) =>
+          (!max || it.fetched_at > max) ? it.fetched_at : max, lastFetchedAt);
+        lastFetchedAt = newest || data.server_now;
+      })
+      .catch(() => {});
+  }
+
+  pollLive();
+  setInterval(pollLive, POLL_MS);
+})();
 </script>
 {% endblock %}

@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-import db
-import main
-from main import _require_auth, app
+import dive.db as db
+import dive.main as main
+from dive.main import _require_auth, app
 
 # ---------------------------------------------------------------------------
 # Fixtures

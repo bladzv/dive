@@ -20,10 +20,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
-import config as cfg_module
-import db
-import github_scanner as gs
-from github_scanner import (
+import dive.config as cfg_module
+import dive.db as db
+import dive.github_scanner as gs
+from dive.github_scanner import (
     _extract_fixed_version,
     _extract_severity,
     _make_http_client,

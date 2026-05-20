@@ -8,7 +8,7 @@ Preferences (schedule, model, RSS feeds, feature toggles) are stored in the
 SQLite settings table (db.py) and managed through the dashboard UI.
 
 Usage:
-    from config import load
+    from .config import load
     cfg = load()              # reads config.yaml in the working directory
     cfg = load("path/to/config.yaml")   # explicit path (tests, custom setups)
 """

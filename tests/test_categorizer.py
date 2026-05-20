@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import categorizer
-import db
-from categorizer import (
+import dive.categorizer as categorizer
+import dive.db as db
+from dive.categorizer import (
     VALID_CATEGORIES,
     VALID_SEVERITIES,
     _assign_cluster,
@@ -292,7 +292,7 @@ def test_run_splits_into_correct_batches(db_conn):
     config.ollama.host = "http://localhost:11434"
     config.ollama.model = "qwen2.5:3b"
 
-    with patch("categorizer._call_ollama", side_effect=fake_call_ollama):
+    with patch("dive.categorizer._call_ollama", side_effect=fake_call_ollama):
         stats = categorizer.run(db_conn, config)
 
     assert call_count == 2  # ceil(11 / 10) = 2
@@ -317,7 +317,7 @@ def test_run_falls_back_on_ollama_failure(db_conn):
     config.ollama.host = "http://localhost:11434"
     config.ollama.model = "qwen2.5:3b"
 
-    with patch("categorizer._call_ollama", return_value=None):
+    with patch("dive.categorizer._call_ollama", return_value=None):
         stats = categorizer.run(db_conn, config)
 
     assert stats.uncategorized == 1

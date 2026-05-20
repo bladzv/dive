@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import db as db_module
-import github_issue_creator as gic
-from github_issue_creator import (
+import dive.db as db_module
+import dive.github_issue_creator as gic
+from dive.github_issue_creator import (
     _build_issue_body,
     _issue_title,
     _severity_label,
@@ -37,7 +37,7 @@ def in_memory_db(tmp_path: Path):
 
 
 def _make_config(token: str = "fake-token", username: str = "testuser"):
-    from config import AppConfig, DashboardConfig, GitHubConfig
+    from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     return AppConfig(
         github=GitHubConfig(token=token, username=username),
@@ -213,7 +213,7 @@ def test_run_creates_issue(in_memory_db):
     mock_repo.get_issues.return_value = []
     mock_repo.create_issue.return_value = mock_issue
 
-    with patch("github_issue_creator.Github") as mock_gh_cls:
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
         mock_gh_cls.return_value.get_repo.return_value = mock_repo
         config = _make_config()
         stats = gic.run(in_memory_db, config)
@@ -249,7 +249,7 @@ def test_run_skips_duplicate_open_issue(in_memory_db):
     mock_repo = MagicMock()
     mock_repo.get_issues.return_value = [existing_issue]
 
-    with patch("github_issue_creator.Github") as mock_gh_cls:
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
         mock_gh_cls.return_value.get_repo.return_value = mock_repo
         stats = gic.run(in_memory_db, _make_config())
 
@@ -265,7 +265,7 @@ def test_run_skips_duplicate_open_issue(in_memory_db):
 
 
 def test_run_no_findings_returns_empty_stats(in_memory_db):
-    with patch("github_issue_creator.Github"):
+    with patch("dive.github_issue_creator.Github"):
         stats = gic.run(in_memory_db, _make_config())
     assert stats.issues_created == 0
     assert stats.issues_skipped == 0
@@ -291,7 +291,7 @@ def test_run_handles_github_exception(in_memory_db):
     mock_repo = MagicMock()
     mock_repo.get_issues.side_effect = GithubException(403, "Forbidden", None)
 
-    with patch("github_issue_creator.Github") as mock_gh_cls:
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
         mock_gh_cls.return_value.get_repo.return_value = mock_repo
         stats = gic.run(in_memory_db, _make_config())
 
@@ -315,7 +315,7 @@ def test_run_skips_already_issued_findings(in_memory_db):
         else in_memory_db.commit()
     )
 
-    with patch("github_issue_creator.Github") as mock_gh_cls:
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
         stats = gic.run(in_memory_db, _make_config())
 
     # get_repo should never be called — no eligible findings

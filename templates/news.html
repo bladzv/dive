@@ -53,7 +53,12 @@
     <div class="record-main">
       <div class="intel-meta">
         <span>{{ item.source }}</span>
-        <span>{{ item.time_ago }}</span>
+        <span title="Fetched into DIVE">{{ item.time_ago }}</span>
+        {% if item.published_human %}
+        <span class="intel-published" title="Source publish timestamp: {{ item.published_at }}">
+          Published {{ item.published_human }}
+        </span>
+        {% endif %}
       </div>
       <h3><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></h3>
       <div class="meta-line">

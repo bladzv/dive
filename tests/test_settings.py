@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import db
-import settings
+import dive.db as db
+import dive.settings as settings
 
 # ---------------------------------------------------------------------------
 # Fixtures

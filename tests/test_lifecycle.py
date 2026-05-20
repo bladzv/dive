@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import db
-import lifecycle
+import dive.db as db
+import dive.lifecycle as lifecycle
 
 # ---------------------------------------------------------------------------
 # Fixtures

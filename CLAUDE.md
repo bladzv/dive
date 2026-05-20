@@ -57,7 +57,7 @@ cp config.yaml.example config.yaml && chmod 600 config.yaml
 # Fill in github.token, github.username, dashboard.password
 
 # Run locally
-uvicorn main:app --reload --port 8000
+uvicorn dive.main:app --reload --port 8000
 
 # Lint and format
 ruff check .

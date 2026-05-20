@@ -1040,9 +1040,10 @@ def _make_osv_vuln_with_cvss(ghsa_id: str, cvss_vector: str, pkg_name: str, ecos
     }
 
 
-def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
-    """A Medium finding filtered by 'high' threshold must still appear in
-    finding_keys so auto_resolve_gone() does not mark it resolved."""
+def test_below_threshold_finding_is_stored_but_not_notified(db_conn):
+    """A finding below the notification threshold must still be stored so the
+    Vulnerabilities page shows the complete inventory. The threshold is a
+    notification-time gate only — it never suppresses storage."""
     from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     config = AppConfig(
@@ -1051,7 +1052,8 @@ def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
     )
     pkg = Package("astro", "4.0.0", "npm", "package.json", "user/repo")
     stats = ScannerStats()
-    # CVSS 6.1 → Medium; threshold is "high" → should be filtered from storage
+    # CVSS 6.1 → Medium; threshold is "high" → would previously have been
+    # dropped from storage. Now it must be stored regardless of threshold.
     vuln = _make_osv_vuln_with_cvss(
         "GHSA-test-med-0001",
         "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
@@ -1061,11 +1063,15 @@ def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
 
     _store_osv_finding(db_conn, config, pkg, vuln, set(), stats, severity_threshold="high")
 
-    # Below threshold — nothing stored in DB
+    # Row is stored despite being below the high threshold.
     count = db_conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
-    assert count == 0
+    assert count == 1
+    row = db_conn.execute("SELECT cvss_score, ghsa_id, repo_full_name FROM findings").fetchone()
+    assert row["ghsa_id"] == "GHSA-test-med-0001"
+    assert row["repo_full_name"] == "user/repo"
+    assert 4.0 <= row["cvss_score"] < 7.0  # medium band
 
-    # But the key IS recorded so lifecycle does not auto-resolve this finding
+    # Key still recorded so lifecycle does not auto-resolve this finding.
     expected_key = ("user/repo", "astro", "npm", "", "GHSA-test-med-0001")
     assert expected_key in stats.finding_keys
 

@@ -12,8 +12,7 @@ select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["collector", "categorizer", "github_scanner", "secrets_scanner",
-                      "notifier", "lifecycle", "db", "config", "settings"]
+known-first-party = ["dive"]
 
 [tool.black]
 line-length = 100

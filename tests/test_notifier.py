@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import notifier
-from notifier import (
+import dive.notifier as notifier
+from dive.notifier import (
     MAX_FINDINGS_PER_ALERT,
     _build_findings_text,
     _build_slack_blocks,
@@ -226,14 +226,14 @@ def test_send_findings_alert_no_channels_does_nothing():
 
 def test_send_findings_alert_empty_findings_does_nothing():
     cfg = _make_config(slack_url="https://hooks.slack.com/test")
-    with patch("notifier._send_slack") as mock_slack:
+    with patch("dive.notifier._send_slack") as mock_slack:
         send_findings_alert(cfg, [])
         mock_slack.assert_not_called()
 
 
 def test_send_findings_alert_calls_slack():
     cfg = _make_config(slack_url="https://hooks.slack.com/test")
-    with patch("notifier._send_slack") as mock_slack:
+    with patch("dive.notifier._send_slack") as mock_slack:
         send_findings_alert(cfg, [_row()])
         mock_slack.assert_called_once()
         args, kwargs = mock_slack.call_args
@@ -242,7 +242,7 @@ def test_send_findings_alert_calls_slack():
 
 def test_send_findings_alert_calls_discord():
     cfg = _make_config(discord_url="https://discord.com/api/webhooks/test")
-    with patch("notifier._send_discord") as mock_discord:
+    with patch("dive.notifier._send_discord") as mock_discord:
         send_findings_alert(cfg, [_row()])
         mock_discord.assert_called_once()
 
@@ -253,8 +253,8 @@ def test_send_findings_alert_calls_both_channels():
         discord_url="https://discord.com/api/webhooks/test",
     )
     with (
-        patch("notifier._send_slack") as mock_slack,
-        patch("notifier._send_discord") as mock_discord,
+        patch("dive.notifier._send_slack") as mock_slack,
+        patch("dive.notifier._send_discord") as mock_discord,
     ):
         send_findings_alert(cfg, [_row()])
         mock_slack.assert_called_once()
@@ -267,8 +267,8 @@ def test_send_findings_alert_slack_failure_does_not_block_discord():
         discord_url="https://discord.com/api/webhooks/test",
     )
     with (
-        patch("notifier._send_slack", side_effect=Exception("Slack down")),
-        patch("notifier._send_discord") as mock_discord,
+        patch("dive.notifier._send_slack", side_effect=Exception("Slack down")),
+        patch("dive.notifier._send_discord") as mock_discord,
     ):
         send_findings_alert(cfg, [_row()])
         mock_discord.assert_called_once()  # Discord still called despite Slack failure
@@ -281,7 +281,7 @@ def test_send_findings_alert_slack_failure_does_not_block_discord():
 
 def test_send_failure_alert_calls_slack():
     cfg = _make_config(slack_url="https://hooks.slack.com/test")
-    with patch("notifier._send_slack") as mock_slack:
+    with patch("dive.notifier._send_slack") as mock_slack:
         send_failure_alert(cfg, "Something broke")
         mock_slack.assert_called_once()
         _, kwargs = mock_slack.call_args

@@ -31,8 +31,8 @@ from typing import Any
 
 import httpx
 
-import db
-from config import AppConfig
+from . import db
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 

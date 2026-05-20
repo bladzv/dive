@@ -14,16 +14,16 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-import db
-from config import AppConfig, DashboardConfig, GitHubConfig
-from github_scanner import (
+import dive.db as db
+from dive.config import AppConfig, DashboardConfig, GitHubConfig
+from dive.github_scanner import (
+    _LATEST_VERSION_REGISTRIES,
     Package,
     ScannerStats,
     _cvss_to_severity_text,
     _extract_fixed_version,
     _extract_severity,
     _extract_version,
-    _LATEST_VERSION_REGISTRIES,
     _lookup_latest_maven,
     _lookup_latest_nuget,
     _lookup_latest_packagist,
@@ -907,7 +907,7 @@ def _make_full_vuln(vuln_id: str) -> dict:
 
 def test_query_and_store_batch_fetches_full_vuln_details(db_conn, tmp_path):
     """Batch results carry only {id, modified}; full details must be fetched."""
-    from config import AppConfig, DashboardConfig, GitHubConfig
+    from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     config = AppConfig(
         github=GitHubConfig(token="tok", username="u"),
@@ -951,7 +951,7 @@ def test_query_and_store_batch_fetches_full_vuln_details(db_conn, tmp_path):
 
 def test_query_and_store_batch_deduplicates_vuln_detail_requests(db_conn):
     """Same vuln in two packages → only one GET /v1/vulns/{id} call."""
-    from config import AppConfig, DashboardConfig, GitHubConfig
+    from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     config = AppConfig(
         github=GitHubConfig(token="tok", username="u"),
@@ -1043,7 +1043,7 @@ def _make_osv_vuln_with_cvss(ghsa_id: str, cvss_vector: str, pkg_name: str, ecos
 def test_below_threshold_finding_still_tracked_in_finding_keys(db_conn):
     """A Medium finding filtered by 'high' threshold must still appear in
     finding_keys so auto_resolve_gone() does not mark it resolved."""
-    from config import AppConfig, DashboardConfig, GitHubConfig
+    from dive.config import AppConfig, DashboardConfig, GitHubConfig
 
     config = AppConfig(
         github=GitHubConfig(token="tok", username="u"),
@@ -1093,9 +1093,7 @@ def _mock_client_response(json_body=None, raise_for_status_exc=None, status_code
 
 
 def test_lookup_latest_maven_happy_path():
-    client = _mock_client_response(
-        {"response": {"docs": [{"latestVersion": "3.2.1"}]}}
-    )
+    client = _mock_client_response({"response": {"docs": [{"latestVersion": "3.2.1"}]}})
     assert _lookup_latest_maven("org.example:widget", client) == "3.2.1"
 
 

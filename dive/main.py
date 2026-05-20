@@ -24,7 +24,7 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -40,18 +40,16 @@ from fastapi.templating import Jinja2Templates
 from filelock import FileLock, Timeout
 from itsdangerous import URLSafeTimedSerializer
 
-import config as cfg_module
-import db
-import github_issue_creator as gic
-import github_scanner as gs
-import lifecycle
-import notifier
-import secrets_scanner as ss
-import settings as st
+from . import config as cfg_module
+from . import db, lifecycle, notifier
+from . import github_issue_creator as gic
+from . import github_scanner as gs
+from . import secrets_scanner as ss
+from . import settings as st
 
 try:
-    import categorizer as categorizer_module
-    import collector as collector_module
+    from . import categorizer as categorizer_module
+    from . import collector as collector_module
 
     _COLLECTOR_AVAILABLE = True
 except ImportError:
@@ -64,7 +62,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).parent
+# BASE_DIR points to the project root (one level above this package directory)
+# so we can find static/ and templates/ regardless of how Python was invoked.
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
 # Process-level state (set during lifespan startup, read-only after that)
@@ -93,7 +93,35 @@ _pipeline_status: dict = {
     "last_completed": None,
     "last_status": "never_run",
     "last_error": None,
+    "current_step": None,  # key of the step currently executing, or None
+    "step_history": [],  # [{key, status}] in order, cleared at run start
+    "paused": False,  # True when a pause is in effect
 }
+
+# Canonical list of pipeline steps shown in the UI step ticker. The pipeline
+# in _run_pipeline() advances through these in order; if a step is gated by a
+# feature toggle and skipped, it is still listed with status "skipped" so the
+# ticker is always the same shape.
+PIPELINE_STEPS = [
+    {"key": "collect", "label": "Collect"},
+    {"key": "categorize", "label": "Categorize"},
+    {"key": "scan", "label": "Scan repos"},
+    {"key": "issues", "label": "Issues"},
+    {"key": "secrets", "label": "Scan secrets"},
+    {"key": "lifecycle", "label": "Reconcile"},
+    {"key": "notify", "label": "Notify"},
+]
+
+# Pipeline control — checked between steps for cancellation and pause. Pause
+# blocks the runner on _pipeline_pause_event; cancel makes _check_control()
+# return False so the runner exits cleanly at the next checkpoint.
+_pipeline_control: dict = {"cancel_requested": False, "pause_requested": False}
+_pipeline_pause_event = threading.Event()
+_pipeline_pause_event.set()  # default: not paused (event is set)
+
+# How long a pause is allowed to hold the runner before it self-resumes. Avoids
+# leaving the pipeline thread blocked forever if the operator forgets.
+_MAX_PAUSE_SECONDS = 1800  # 30 minutes
 
 # File lock path (prevents concurrent runs across processes / restarts)
 _LOCK_FILE = Path("data/.pipeline.lock")
@@ -144,6 +172,53 @@ def _run_weekly_digest() -> None:
         logger.error("Weekly digest failed: %s", exc, exc_info=True)
 
 
+class _PipelineCancelled(Exception):
+    """Raised internally when the operator cancels a running pipeline. Caught
+    in the _run_pipeline outer handler so the run logs a 'cancelled' status."""
+
+
+def _enter_step(key: str) -> bool:
+    """Mark `key` as the currently-running step, honour pause, and check cancel.
+
+    Returns True if the runner should proceed with the step, False if the
+    operator has requested cancellation. Blocks here (with a hard timeout) while
+    a pause is in effect so the pipeline halts cleanly at the next boundary.
+    """
+    # Honour pause first: wait until the event is set or until the timeout.
+    if not _pipeline_pause_event.is_set():
+        with _pipeline_lock:
+            _pipeline_status["paused"] = True
+        _pipeline_pause_event.wait(timeout=_MAX_PAUSE_SECONDS)
+        with _pipeline_lock:
+            _pipeline_status["paused"] = False
+
+    # Cancel takes priority over starting the next step.
+    if _pipeline_control["cancel_requested"]:
+        return False
+
+    with _pipeline_lock:
+        _pipeline_status["current_step"] = key
+    return True
+
+
+def _finish_step(key: str, status: str = "ok") -> None:
+    """Record a step's completion in step_history. status: ok | error | skipped."""
+    with _pipeline_lock:
+        _pipeline_status["step_history"].append({"key": key, "status": status})
+        _pipeline_status["current_step"] = None
+
+
+def _reset_pipeline_control() -> None:
+    """Clear cancel + pause flags. Called at the start of every run."""
+    _pipeline_control["cancel_requested"] = False
+    _pipeline_control["pause_requested"] = False
+    _pipeline_pause_event.set()
+    with _pipeline_lock:
+        _pipeline_status["current_step"] = None
+        _pipeline_status["step_history"] = []
+        _pipeline_status["paused"] = False
+
+
 def _run_pipeline() -> None:
     """Full pipeline: collect → categorize → scan → lifecycle → notify.
 
@@ -161,6 +236,7 @@ def _run_pipeline() -> None:
 
     run_id: int | None = None
     _pipeline_start_time = datetime.now(UTC)
+    _reset_pipeline_control()
     try:
         with _pipeline_lock:
             _pipeline_status["running"] = True
@@ -186,6 +262,8 @@ def _run_pipeline() -> None:
         # ------------------------------------------------------------------
         # Step 1 — Collect security news
         # ------------------------------------------------------------------
+        if not _enter_step("collect"):
+            raise _PipelineCancelled()
         if _COLLECTOR_AVAILABLE:
             try:
                 with db.get_conn() as conn:
@@ -196,13 +274,19 @@ def _run_pipeline() -> None:
                         items_collected,
                         len(stats.failed_sources),
                     )
+                _finish_step("collect")
             except Exception as exc:
                 logger.error("Collector failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Collector error: {exc}")
+                _finish_step("collect", "error")
+        else:
+            _finish_step("collect", "skipped")
 
         # ------------------------------------------------------------------
         # Step 2 — Categorize with Ollama
         # ------------------------------------------------------------------
+        if not _enter_step("categorize"):
+            raise _PipelineCancelled()
         if _COLLECTOR_AVAILABLE:
             try:
                 with db.get_conn() as conn:
@@ -215,13 +299,19 @@ def _run_pipeline() -> None:
                         items_categorized,
                         cat_stats.uncategorized,
                     )
+                _finish_step("categorize")
             except Exception as exc:
                 logger.error("Categorizer failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Categorizer error: {exc}")
+                _finish_step("categorize", "error")
+        else:
+            _finish_step("categorize", "skipped")
 
         # ------------------------------------------------------------------
         # Step 3 — GitHub scanner
         # ------------------------------------------------------------------
+        if not _enter_step("scan"):
+            raise _PipelineCancelled()
         current_finding_keys: set[tuple] = set()
         scanned_repos: set[str] = set()
         with db.get_conn() as conn:
@@ -243,15 +333,20 @@ def _run_pipeline() -> None:
                     )
                     if scan_stats.failed_repos:
                         logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
+                _finish_step("scan")
             except Exception as exc:
                 logger.error("Scanner failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Scanner error: {exc}")
+                _finish_step("scan", "error")
         else:
             logger.info("GitHub scanning disabled by feature toggle — skipping Step 3")
+            _finish_step("scan", "skipped")
 
         # ------------------------------------------------------------------
         # Step 3.5 — GitHub issue auto-creation
         # ------------------------------------------------------------------
+        if not _enter_step("issues"):
+            raise _PipelineCancelled()
         with db.get_conn() as conn:
             _issue_creation_on = st.is_feature_enabled(conn, "github_issue_creation")
         if _issue_creation_on:
@@ -267,20 +362,26 @@ def _run_pipeline() -> None:
                         )
                     if issue_stats.failed_repos:
                         logger.warning("Issue creation failed repos: %s", issue_stats.failed_repos)
+                _finish_step("issues")
             except Exception as exc:
                 logger.error("GitHub issue creation failed: %s", exc, exc_info=True)
+                _finish_step("issues", "error")
         else:
             logger.debug(
                 "GitHub issue auto-creation disabled by feature toggle — skipping Step 3.5"
             )
+            _finish_step("issues", "skipped")
 
         # ------------------------------------------------------------------
         # Step 4 — Secrets scanner (gitleaks)
         # ------------------------------------------------------------------
+        if not _enter_step("secrets"):
+            raise _PipelineCancelled()
         with db.get_conn() as conn:
             _secrets_scanning_on = st.is_feature_enabled(conn, "secrets_scanning")
         secrets_new_total = 0
         if _secrets_scanning_on:
+            secrets_status = "ok"
             try:
                 with db.get_conn() as conn:
                     sec_stats = ss.run(conn, _config, excluded_repos=_excluded_repos)
@@ -290,6 +391,7 @@ def _run_pipeline() -> None:
             except Exception as exc:
                 logger.error("Secrets scanner failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Secrets scanner error: {exc}")
+                secrets_status = "error"
 
             try:
                 with db.get_conn() as conn:
@@ -302,12 +404,16 @@ def _run_pipeline() -> None:
                         logger.info("Notifier: %d secrets alerted", len(unnotified_secrets))
             except Exception as exc:
                 logger.error("Secrets notifier failed: %s", exc, exc_info=True)
+            _finish_step("secrets", secrets_status)
         else:
             logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")
+            _finish_step("secrets", "skipped")
 
         # ------------------------------------------------------------------
         # Step 5 — Lifecycle reconciliation
         # ------------------------------------------------------------------
+        if not _enter_step("lifecycle"):
+            raise _PipelineCancelled()
         try:
             with db.get_conn() as conn:
                 reverted = lifecycle.recheck_resolved(conn, current_finding_keys)
@@ -316,12 +422,16 @@ def _run_pipeline() -> None:
                     logger.info("Lifecycle: %d resolved→new (regression)", reverted)
                 if resolved:
                     logger.info("Lifecycle: %d auto-resolved (no longer present)", resolved)
+            _finish_step("lifecycle")
         except Exception as exc:
             logger.error("Lifecycle reconciliation failed: %s", exc, exc_info=True)
+            _finish_step("lifecycle", "error")
 
         # ------------------------------------------------------------------
         # Step 6 — Notify findings (delta only, filtered by severity threshold)
         # ------------------------------------------------------------------
+        if not _enter_step("notify"):
+            raise _PipelineCancelled()
         try:
             with db.get_conn() as conn:
                 threshold = st.get_severity_threshold(conn)
@@ -339,8 +449,10 @@ def _run_pipeline() -> None:
                         threshold,
                         len(unnotified) - len(to_alert),
                     )
+            _finish_step("notify")
         except Exception as exc:
             logger.error("Notifier failed: %s", exc, exc_info=True)
+            _finish_step("notify", "error")
 
         # ------------------------------------------------------------------
         # Finish run log
@@ -378,6 +490,21 @@ def _run_pipeline() -> None:
 
         logger.info("Pipeline run completed successfully")
 
+    except _PipelineCancelled:
+        logger.info("Pipeline run cancelled by operator")
+        with _pipeline_lock:
+            _pipeline_status["running"] = False
+            _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
+            _pipeline_status["last_status"] = "cancelled"
+            _pipeline_status["current_step"] = None
+        try:
+            if run_id is not None:
+                with db.get_conn() as conn:
+                    db.finish_run(
+                        conn, run_id, status="cancelled", error_message="Cancelled by operator"
+                    )
+        except Exception:
+            pass
     except Exception as exc:
         logger.error("Pipeline run failed: %s", exc, exc_info=True)
         with _pipeline_lock:
@@ -385,6 +512,7 @@ def _run_pipeline() -> None:
             _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "error"
             _pipeline_status["last_error"] = str(exc)
+            _pipeline_status["current_step"] = None
         try:
             if run_id is not None:
                 with db.get_conn() as conn:
@@ -394,6 +522,7 @@ def _run_pipeline() -> None:
         if _config:
             notifier.send_failure_alert(_config, str(exc))
     finally:
+        _reset_pipeline_control()
         lock.release()
 
 
@@ -641,7 +770,29 @@ def _enrich_finding(row) -> dict:
 def _enrich_news(row) -> dict:
     d = dict(row)
     d["time_ago"] = _time_ago(d.get("fetched_at") or d.get("published_at"))
+    d["published_human"] = _format_published(d.get("published_at"))
     return d
+
+
+def _format_published(iso_str: str | None) -> str:
+    """Render the source-supplied publish timestamp as a short absolute label.
+
+    Returns "" if no timestamp is present so the template can decide whether to
+    render the line. The format intentionally drops seconds and includes the
+    year only when it differs from the current year to keep the row compact.
+    """
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return ""
+    now = datetime.now(UTC)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    if dt.year == now.year:
+        return dt.strftime("%d %b · %H:%M UTC")
+    return dt.strftime("%d %b %Y · %H:%M UTC")
 
 
 _MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-./]*(?::[a-zA-Z0-9_\-.]+)?$")
@@ -1185,6 +1336,9 @@ async def health() -> JSONResponse:
     """Health check — intentionally unauthenticated. Used by Docker HEALTHCHECK."""
     with _pipeline_lock:
         pipeline = dict(_pipeline_status)
+        # step_history is a list of dicts; copy defensively so the caller can't
+        # mutate our internal state via the JSON response.
+        pipeline["step_history"] = list(pipeline.get("step_history", []))
     next_run: str | None = None
     if _scheduler:
         job = _scheduler.get_job("pipeline")
@@ -1196,10 +1350,107 @@ async def health() -> JSONResponse:
             "status": "ok",
             "version": "0.1.0",
             "pipeline": pipeline,
+            "pipeline_steps": PIPELINE_STEPS,
             "next_run": next_run,
             "ollama_ok": ollama_ok,
         }
     )
+
+
+@app.get("/api/news/recent")
+async def get_news_recent(
+    _user: Annotated[str, Depends(_require_auth)],
+    since: str | None = None,
+    max_age_minutes: int = 60,
+    limit: int = 20,
+) -> JSONResponse:
+    """Return news items newer than `since` (ISO8601), capped at `limit`.
+
+    Used by the dashboard's live ticker which polls every 30s. The
+    `max_age_minutes` window keeps the ticker focused on truly recent items so
+    it stays distinct from the full /news page (which shows everything).
+    """
+    # Bounds on caller-controlled inputs.
+    if max_age_minutes < 1 or max_age_minutes > 1440:
+        max_age_minutes = 60
+    if limit < 1 or limit > 50:
+        limit = 20
+
+    # Compute effective cutoff: max(since, now - max_age_minutes).
+    cutoff = datetime.now(UTC) - timedelta(minutes=max_age_minutes)
+    if since:
+        try:
+            sdt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if sdt.tzinfo is None:
+                sdt = sdt.replace(tzinfo=UTC)
+            if sdt > cutoff:
+                cutoff = sdt
+        except (ValueError, TypeError):
+            pass
+
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title, source, published_at, fetched_at, summary, category,
+                   severity, url
+            FROM news_items
+            WHERE fetched_at > ?
+            ORDER BY fetched_at DESC
+            LIMIT ?
+            """,
+            (cutoff.isoformat(), int(limit)),
+        ).fetchall()
+
+    items = [_enrich_news(r) for r in rows]
+    server_now = datetime.now(UTC).isoformat()
+    return JSONResponse({"items": items, "server_now": server_now})
+
+
+@app.get("/api/nav-badges")
+async def get_nav_badges(
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Live nav badge counts (findings / secrets / recent news). Polled by the
+    sidebar so badge numbers update after Clear Data or other state changes
+    without requiring a full-page reload."""
+    return JSONResponse(_nav_badges())
+
+
+@app.post("/api/run/cancel")
+async def cancel_run(
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Request cancellation of a running pipeline. The current step finishes
+    naturally; cancellation is honoured at the next step boundary."""
+    with _pipeline_lock:
+        if not _pipeline_status["running"]:
+            raise HTTPException(status_code=409, detail="No pipeline is currently running")
+    _pipeline_control["cancel_requested"] = True
+    # Release any pause so the runner can observe the cancel flag and exit.
+    _pipeline_pause_event.set()
+    return JSONResponse({"status": "cancel_requested"})
+
+
+@app.post("/api/run/pause")
+async def pause_run(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Toggle pause for a running pipeline. Body: {"pause": true|false}."""
+    body = await request.json()
+    pause = bool(body.get("pause"))
+    with _pipeline_lock:
+        if not _pipeline_status["running"]:
+            raise HTTPException(status_code=409, detail="No pipeline is currently running")
+    if pause:
+        _pipeline_control["pause_requested"] = True
+        _pipeline_pause_event.clear()
+    else:
+        _pipeline_control["pause_requested"] = False
+        _pipeline_pause_event.set()
+    return JSONResponse({"status": "paused" if pause else "resumed"})
 
 
 @app.post("/api/run")
@@ -1380,6 +1631,123 @@ async def get_secrets_api(
     with db.get_conn() as conn:
         rows = db.get_secret_findings(conn, state=state, repo=repo, limit=min(limit, 500))
     return JSONResponse([dict(r) for r in rows])
+
+
+@app.get("/api/secrets/{finding_id}/snippet")
+async def get_secret_snippet(
+    finding_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+) -> JSONResponse:
+    """Fetch the ±2 lines of source around a leaked secret from GitHub.
+
+    The actual credential is *not* stored in the database (gitleaks is run with
+    --redact), so this endpoint reaches out to GitHub on demand. The response
+    is never cached and never persisted; once the modal closes the data is
+    gone. The reveal is logged so abuse leaves a trail.
+
+    Security notes:
+    - The repo path comes from the DB row, not from user input — no injection.
+    - We refuse to reveal anything for repos outside the configured GitHub
+      username so a hostile dashboard user can't probe arbitrary public repos.
+    - The endpoint is auth-gated; reading the snippet exposes the live secret
+      to anyone with dashboard access.
+    """
+    if _config is None or not _config.github.token:
+        raise HTTPException(status_code=503, detail="GitHub is not configured")
+
+    with db.get_conn() as conn:
+        row = db.get_secret_finding(conn, finding_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Secret finding not found")
+
+    repo_full = str(row["repo_full_name"] or "")
+    owner = repo_full.split("/", 1)[0] if "/" in repo_full else ""
+    if owner.lower() != _config.github.username.lower():
+        # Audit-defence: never fetch from a repo we don't own.
+        logger.warning(
+            "Snippet reveal blocked for finding %s — repo %s outside configured account",
+            finding_id,
+            repo_full,
+        )
+        raise HTTPException(status_code=403, detail="Repo is outside the configured account")
+
+    path = str(row["file_path"] or "")
+    commit = str(row["commit_sha"] or "")
+    line_number = int(row["line_number"] or 0)
+    if not path or not commit or line_number <= 0:
+        raise HTTPException(status_code=400, detail="Secret row is missing path/commit/line")
+
+    # Audit log: who revealed which secret. The dashboard user is HTTP-Basic so
+    # _user is the configured operator name; this is best-effort attribution.
+    logger.info(
+        "Snippet revealed for finding %s (%s @ %s line %d) by %s",
+        finding_id,
+        path,
+        commit[:8],
+        line_number,
+        _user,
+    )
+
+    import base64
+
+    import httpx
+
+    api_url = f"https://api.github.com/repos/{repo_full}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {_config.github.token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "dive/secret-snippet",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(api_url, params={"ref": commit}, headers=headers)
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="File not found at that commit")
+        resp.raise_for_status()
+        body = resp.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("GitHub contents fetch failed for %s: %s", path, exc)
+        raise HTTPException(status_code=502, detail="GitHub fetch failed")
+
+    if body.get("encoding") != "base64" or "content" not in body:
+        raise HTTPException(status_code=502, detail="Unsupported file response from GitHub")
+
+    try:
+        raw = base64.b64decode(body["content"])
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not decode file content") from None
+
+    # Reject binaries / oversized files so we don't ship megabytes back to the browser.
+    if len(raw) > 500_000:
+        raise HTTPException(status_code=413, detail="File too large to reveal")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="File is not UTF-8 text") from None
+
+    lines = text.splitlines()
+    if line_number > len(lines):
+        raise HTTPException(status_code=404, detail="Line number out of range for the file")
+
+    start = max(0, line_number - 3)
+    end = min(len(lines), line_number + 2)
+    snippet = [
+        {"n": i + 1, "text": lines[i], "is_secret": (i + 1) == line_number}
+        for i in range(start, end)
+    ]
+
+    return JSONResponse(
+        {
+            "file_path": path,
+            "line_number": line_number,
+            "commit_sha": commit,
+            "secret_type": row["secret_type"],
+            "lines": snippet,
+        }
+    )
 
 
 @app.post("/api/secrets/{finding_id}/false-positive")

@@ -160,9 +160,17 @@
     <div class="install-hint" id="install-hint" style="display:none">
       <p class="form-hint">To install this model, run one of:</p>
       <p class="install-hint-label">Docker</p>
-      <code id="install-cmd-docker"></code>
+      <div class="code-block">
+        <code id="install-cmd-docker"></code>
+        <button class="code-copy-btn" type="button"
+                onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+      </div>
       <p class="install-hint-label">Bare-metal / Mac</p>
-      <code id="install-cmd-bare"></code>
+      <div class="code-block">
+        <code id="install-cmd-bare"></code>
+        <button class="code-copy-btn" type="button"
+                onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+      </div>
     </div>
   </div>
 </section>
@@ -597,6 +605,8 @@ function clearData() {
       });
       document.getElementById('clear-days').value = '';
       if (types.includes('news')) loadFeeds();
+      // Update sidebar nav badges so finding/secret/news counts reflect the deletion.
+      if (window.refreshNavBadges) window.refreshNavBadges();
     })
     .catch(err => showToast(err.message, 'error'));
   });

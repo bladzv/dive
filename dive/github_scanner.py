@@ -45,9 +45,9 @@ try:
 except ImportError:
     _CVSS_AVAILABLE = False
 
-import db
-import settings as st
-from config import AppConfig
+from . import db
+from . import settings as st
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 

@@ -29,8 +29,8 @@ from pathlib import Path
 
 from github import Github, GithubException
 
-import db
-from config import AppConfig
+from . import db
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 

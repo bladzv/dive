@@ -11,7 +11,7 @@ Secrets (GitHub token, dashboard password, webhook URLs, SMTP credentials)
 remain in config.yaml and are never read or written here.
 
 Usage:
-    import settings
+    from . import settings
     feeds = settings.get_feeds(conn)           # list of enabled feed rows
     settings.add_feed(conn, "My Blog", url)
     settings.is_feature_enabled(conn, "github_scanning")  # bool
@@ -24,7 +24,7 @@ import logging
 import sqlite3
 from datetime import UTC, datetime
 
-import db
+from . import db
 
 logger = logging.getLogger(__name__)
 

@@ -21,9 +21,9 @@ from pathlib import Path
 # Ensure project root is on the path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import collector
-import config as cfg_module
-import db
+import dive.collector as collector
+import dive.config as cfg_module
+import dive.db as db
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:

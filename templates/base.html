@@ -140,11 +140,25 @@
       <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">
         <svg id="theme-icon"><use href="#i-sun"/></svg>
       </button>
+      <button class="btn btn-outline btn-sm pipeline-ctl" id="pause-btn"
+              onclick="togglePause()" style="display:none" title="Pause / resume pipeline">
+        <span id="pause-btn-label">Pause</span>
+      </button>
+      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel"
+              id="cancel-btn" onclick="cancelRun()" style="display:none" title="Cancel pipeline run">
+        Cancel
+      </button>
       <button class="btn btn-primary btn-sm btn-run" id="run-now-btn" onclick="triggerRun()">
         <svg><use href="#i-play"/></svg>Run pipeline
       </button>
     </div>
   </header>
+
+  <!-- ── Pipeline step ticker (visible only while running) ── -->
+  <div class="step-ticker" id="step-ticker" aria-hidden="true">
+    <ol class="step-ticker-list" id="step-ticker-list"></ol>
+    <span class="step-ticker-state" id="step-ticker-state"></span>
+  </div>
 
   <aside class="app-sidebar" id="site-nav">
     {% set _nb = nav_badges() %}
@@ -335,11 +349,80 @@ function updateStatusBadge(pipeline) {
   }
 }
 
+/* ── Sidebar nav-badge live refresh ──────────────────── */
+function refreshNavBadges() {
+  fetch('/api/nav-badges', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(b => {
+      if (!b) return;
+      _updateNavBadge('/findings', b.findings, 'nav-badge-warn');
+      _updateNavBadge('/secrets',  b.secrets,  'nav-badge-crit');
+      _updateNavBadge('/news',     b.news,     '');
+    })
+    .catch(() => {});
+}
+
+function _updateNavBadge(href, count, extraClass) {
+  const link = document.querySelector('.site-nav a[href="' + href + '"]');
+  if (!link) return;
+  let badge = link.querySelector('.nav-badge');
+  if (count && count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = ('nav-badge ' + extraClass).trim();
+      link.appendChild(badge);
+    }
+    badge.textContent = count;
+  } else if (badge) {
+    badge.remove();
+  }
+}
+
+// Expose so per-page handlers can refresh on demand (e.g. after Clear Data).
+window.refreshNavBadges = refreshNavBadges;
+
+/* ── Copy-to-clipboard helper for operator commands ──── */
+function copyCodeBlock(btn) {
+  // Find the sibling <code> / <pre> the button is decorating.
+  const block = btn.closest('.code-block')?.querySelector('code, pre');
+  if (!block) return;
+  const text = block.innerText || block.textContent || '';
+  if (!text.trim()) return;
+  const done = () => {
+    const orig = btn.innerText;
+    btn.innerText = 'Copied';
+    btn.classList.add('is-copied');
+    setTimeout(() => { btn.innerText = orig; btn.classList.remove('is-copied'); }, 1400);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, done) {
+  // For browsers without clipboard API or non-HTTPS contexts.
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch (_) {}
+  ta.remove();
+}
+
+window.copyCodeBlock = copyCodeBlock;
+
 function pollStatus() {
+  refreshNavBadges();
   fetch('/api/health')
     .then(r => r.json())
     .then(data => {
       updateStatusBadge(data.pipeline);
+      updatePipelineControls(data.pipeline);
+      updateStepTicker(data.pipeline_steps, data.pipeline);
 
       const nr = document.getElementById('next-run-text');
       if (nr) nr.textContent = data.next_run ? timeUntil(data.next_run) : 'unscheduled';
@@ -355,6 +438,84 @@ function pollStatus() {
       }
     })
     .catch(() => {});
+}
+
+/* ── Pipeline pause / cancel controls ────────────────── */
+function updatePipelineControls(pipeline) {
+  const pauseBtn = document.getElementById('pause-btn');
+  const cancelBtn = document.getElementById('cancel-btn');
+  const runBtn = document.getElementById('run-now-btn');
+  if (!pauseBtn || !cancelBtn || !runBtn) return;
+
+  if (pipeline.running) {
+    pauseBtn.style.display = '';
+    cancelBtn.style.display = '';
+    runBtn.style.display = 'none';
+    document.getElementById('pause-btn-label').textContent = pipeline.paused ? 'Resume' : 'Pause';
+    pauseBtn.classList.toggle('is-paused', !!pipeline.paused);
+  } else {
+    pauseBtn.style.display = 'none';
+    cancelBtn.style.display = 'none';
+    runBtn.style.display = '';
+  }
+}
+
+function togglePause() {
+  const label = document.getElementById('pause-btn-label').textContent;
+  const wantPause = label === 'Pause';
+  apiFetch('/api/run/pause', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pause: wantPause }),
+  })
+  .then(r => r.json())
+  .then(d => { showToast(wantPause ? 'Pipeline paused' : 'Pipeline resumed', 'info'); })
+  .catch(() => showToast('Pause request failed', 'error'));
+}
+
+function cancelRun() {
+  if (!confirm('Cancel the running pipeline at the next step boundary?')) return;
+  apiFetch('/api/run/cancel', { method: 'POST' })
+  .then(r => r.json())
+  .then(() => showToast('Cancellation requested', 'info'))
+  .catch(() => showToast('Cancel request failed', 'error'));
+}
+
+/* ── Pipeline step ticker ───────────────────────────── */
+function updateStepTicker(stepDefs, pipeline) {
+  const ticker = document.getElementById('step-ticker');
+  const list = document.getElementById('step-ticker-list');
+  const stateEl = document.getElementById('step-ticker-state');
+  if (!ticker || !list || !stateEl || !Array.isArray(stepDefs)) return;
+
+  if (!pipeline.running) {
+    ticker.classList.remove('open');
+    ticker.setAttribute('aria-hidden', 'true');
+    return;
+  }
+
+  ticker.classList.add('open');
+  ticker.setAttribute('aria-hidden', 'false');
+
+  const completed = {};
+  for (const h of (pipeline.step_history || [])) completed[h.key] = h.status;
+  const current = pipeline.current_step;
+
+  list.innerHTML = stepDefs.map(s => {
+    const status = completed[s.key];
+    let cls = 'pending';
+    if (status === 'ok')      cls = 'done';
+    else if (status === 'error')   cls = 'error';
+    else if (status === 'skipped') cls = 'skipped';
+    else if (current === s.key)    cls = 'running';
+    return `<li class="step-pill step-${cls}" title="${s.label} · ${status || (current === s.key ? 'running' : 'queued')}">
+      <span class="step-dot"></span>
+      <span class="step-label">${s.label}</span>
+    </li>`;
+  }).join('');
+
+  stateEl.textContent = pipeline.paused ? 'Paused' : (current ? 'Running' : 'Wrapping up…');
+  stateEl.className = 'step-ticker-state' + (pipeline.paused ? ' is-paused' : '');
 }
 
 let _pollTimer = setInterval(pollStatus, 5000);

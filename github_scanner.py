@@ -885,12 +885,83 @@ def _lookup_latest_rubygems(name: str, client: httpx.Client) -> str | None:
         return None
 
 
+def _lookup_latest_maven(name: str, client: httpx.Client) -> str | None:
+    """Maven uses 'group:artifact' coordinates. Query search.maven.org for the
+    latest release of the artifact."""
+    if ":" not in name:
+        return None
+    group_id, artifact_id = name.split(":", 1)
+    try:
+        r = client.get(
+            "https://search.maven.org/solrsearch/select",
+            params={
+                "q": f'g:"{group_id}" AND a:"{artifact_id}"',
+                "rows": "1",
+                "wt": "json",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        docs = (r.json().get("response") or {}).get("docs") or []
+        if not docs:
+            return None
+        return docs[0].get("latestVersion") or None
+    except Exception:
+        return None
+
+
+def _lookup_latest_nuget(name: str, client: httpx.Client) -> str | None:
+    """NuGet package IDs are case-insensitive but the registration index URL is
+    lowercase. Return the highest published version."""
+    lname = name.lower()
+    try:
+        r = client.get(
+            f"https://api.nuget.org/v3-flatcontainer/{lname}/index.json",
+            timeout=10,
+        )
+        r.raise_for_status()
+        versions = r.json().get("versions") or []
+        # Filter out prerelease tags (anything containing '-') first; fall back
+        # to the highest entry if every version is prerelease.
+        stable = [v for v in versions if "-" not in v]
+        candidates = stable or versions
+        return candidates[-1] if candidates else None
+    except Exception:
+        return None
+
+
+def _lookup_latest_packagist(name: str, client: httpx.Client) -> str | None:
+    """Composer/Packagist uses 'vendor/package' coordinates. The p2 endpoint
+    returns versions newest-first."""
+    if "/" not in name:
+        return None
+    try:
+        r = client.get(f"https://repo.packagist.org/p2/{name}.json", timeout=10)
+        r.raise_for_status()
+        packages = (r.json().get("packages") or {}).get(name) or []
+        for entry in packages:
+            v = entry.get("version") or ""
+            # Skip 'dev-*' branches and prereleases when a stable release exists
+            if not v or v.startswith("dev-"):
+                continue
+            return v
+        # Fall back to the first entry if only dev/prerelease available
+        if packages:
+            return packages[0].get("version") or None
+        return None
+    except Exception:
+        return None
+
+
 _LATEST_VERSION_REGISTRIES: dict[str, Any] = {
     "PyPI": _lookup_latest_pypi,
     "npm": _lookup_latest_npm,
     "crates.io": _lookup_latest_crates,
     "Go": _lookup_latest_go,
     "RubyGems": _lookup_latest_rubygems,
+    "Maven": _lookup_latest_maven,
+    "NuGet": _lookup_latest_nuget,
+    "Packagist": _lookup_latest_packagist,
 }
 
 
@@ -916,10 +987,11 @@ def _enrich_latest_versions(
 ) -> None:
     """Look up the latest published version for each (package, ecosystem) in queue.
 
-    For each, query OSV to see whether that version is clean. Updates findings
-    that have no fixed_version with the result so the UI can suggest an upgrade.
+    For each, query OSV to see whether that version is clean. Updates every
+    matching finding row so the UI can always show the current latest release
+    next to the affected and patched ranges.
     """
-    logger.info("Checking latest versions for %d package(s) with no known fix", len(queue))
+    logger.info("Checking latest versions for %d package(s)", len(queue))
     with httpx.Client(follow_redirects=True) as client:
         for package, ecosystem in queue:
             lookup_fn = _LATEST_VERSION_REGISTRIES.get(ecosystem)
@@ -1011,9 +1083,10 @@ def _store_osv_finding(
 
     is_new = db.upsert_finding(conn, finding)
 
-    # Queue for latest-version enrichment when OSV provides no fixed version
-    if not fixed_version:
-        stats._enrich_queue.add((pkg.name, pkg.ecosystem))
+    # Queue every (package, ecosystem) pair for latest-version enrichment so the
+    # UI can always show the current latest release alongside the affected/fixed
+    # ranges — not just when OSV omitted a fix.
+    stats._enrich_queue.add((pkg.name, pkg.ecosystem))
 
     if is_new:
         stats.findings_new += 1

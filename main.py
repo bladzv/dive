@@ -522,6 +522,7 @@ def _replace_query_param(url: Any, key: str, value: Any) -> str:
 
 
 templates.env.filters["replace_query_param"] = _replace_query_param
+templates.env.globals["nav_badges"] = lambda: _nav_badges()
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +741,97 @@ def _secrets_summary() -> dict:
         return {"new": 0, "false_positive": 0, "resolved": 0}
 
 
+def _nav_badges() -> dict:
+    """Counts shown next to sidebar nav items."""
+    try:
+        with db.get_conn() as conn:
+            findings_open = conn.execute(
+                "SELECT COUNT(*) AS c FROM findings WHERE state IN ('new','acknowledged')"
+            ).fetchone()["c"]
+            secrets_open = conn.execute(
+                "SELECT COUNT(*) AS c FROM secret_findings WHERE state = 'new'"
+            ).fetchone()["c"]
+            news_recent = conn.execute(
+                "SELECT COUNT(*) AS c FROM news_items "
+                "WHERE fetched_at >= datetime('now', '-1 day')"
+            ).fetchone()["c"]
+        return {
+            "findings": int(findings_open or 0),
+            "secrets": int(secrets_open or 0),
+            "news": int(news_recent or 0),
+        }
+    except Exception:
+        return {"findings": 0, "secrets": 0, "news": 0}
+
+
+def _dashboard_extras() -> dict:
+    """Top affected repos, top CVEs, and activity heatmap for the dashboard."""
+    out: dict = {"top_repos": [], "top_cves": [], "heatmap": [], "heatmap_max": 0}
+    try:
+        with db.get_conn() as conn:
+            # Top affected repos by open finding count, with severity breakdown
+            rows = conn.execute("""
+                SELECT
+                    repo_full_name AS repo,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END) AS crit,
+                    SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
+                    SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS med,
+                    SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low
+                FROM findings
+                WHERE state IN ('new','acknowledged')
+                GROUP BY repo_full_name
+                ORDER BY total DESC
+                LIMIT 6
+            """).fetchall()
+            out["top_repos"] = [
+                {
+                    "repo": r["repo"],
+                    "total": int(r["total"] or 0),
+                    "crit": int(r["crit"] or 0),
+                    "high": int(r["high"] or 0),
+                    "med": int(r["med"] or 0),
+                    "low": int(r["low"] or 0),
+                }
+                for r in rows
+            ]
+
+            # Top CVEs by priority score (or CVSS), open only
+            cve_rows = conn.execute("""
+                SELECT id, repo_full_name, package_name, cve_id, ghsa_id,
+                       cvss_score, priority_score, is_kev, patch_available,
+                       fixed_version, installed_version
+                FROM findings
+                WHERE state IN ('new','acknowledged')
+                ORDER BY COALESCE(priority_score, 0) DESC,
+                         COALESCE(cvss_score, 0) DESC
+                LIMIT 6
+            """).fetchall()
+            out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
+
+            # 12-week activity heatmap — news items per day
+            hm_rows = conn.execute("""
+                SELECT DATE(fetched_at) AS d, COUNT(*) AS c
+                FROM news_items
+                WHERE fetched_at >= datetime('now', '-84 days')
+                GROUP BY DATE(fetched_at)
+            """).fetchall()
+            counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
+
+            from datetime import date, timedelta
+
+            today = date.today()
+            days = []
+            for i in range(84):
+                d = today - timedelta(days=83 - i)
+                days.append({"d": d.isoformat(), "c": counts.get(d.isoformat(), 0)})
+            out["heatmap"] = days
+            out["heatmap_max"] = max((x["c"] for x in days), default=0)
+        return out
+    except Exception:
+        return out
+
+
 def _findings_summary() -> dict:
     """Return per-severity and per-state counts from the database."""
     try:
@@ -752,7 +844,9 @@ def _findings_summary() -> dict:
                     SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low,
                     SUM(CASE WHEN state = 'new'          THEN 1 ELSE 0 END)                 AS new,
                     SUM(CASE WHEN state = 'acknowledged'  THEN 1 ELSE 0 END)                AS acknowledged,
-                    SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved
+                    SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved,
+                    SUM(CASE WHEN is_kev = 1 AND state != 'resolved' THEN 1 ELSE 0 END)     AS kev,
+                    SUM(CASE WHEN patch_available = 1 AND state != 'resolved' THEN 1 ELSE 0 END) AS patchable
                 FROM findings
             """).fetchone()
         return {
@@ -763,6 +857,8 @@ def _findings_summary() -> dict:
             "new": int(row["new"] or 0),
             "acknowledged": int(row["acknowledged"] or 0),
             "resolved": int(row["resolved"] or 0),
+            "kev": int(row["kev"] or 0),
+            "patchable": int(row["patchable"] or 0),
         }
     except Exception:
         return {
@@ -773,6 +869,8 @@ def _findings_summary() -> dict:
             "new": 0,
             "acknowledged": 0,
             "resolved": 0,
+            "kev": 0,
+            "patchable": 0,
         }
 
 
@@ -843,6 +941,8 @@ async def dashboard(
         news_rows = db.get_recent_items(conn, hours=24, limit=15)
         bookmarked_ids = db.get_bookmarked_ids(conn)
 
+    extras = _dashboard_extras()
+
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -855,6 +955,10 @@ async def dashboard(
             "summary": _findings_summary(),
             "secrets_summary": _secrets_summary(),
             "bookmarked_ids": list(bookmarked_ids),
+            "top_repos": extras["top_repos"],
+            "top_cves": extras["top_cves"],
+            "heatmap": extras["heatmap"],
+            "heatmap_max": extras["heatmap_max"],
         },
     )
 

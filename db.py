@@ -632,7 +632,9 @@ def update_latest_version_for_package(
     latest_version: str,
     vuln_count: int,
 ) -> None:
-    """Set latest_version and latest_version_vuln_count on findings that have no fixed_version."""
+    """Set latest_version and latest_version_vuln_count on every finding row for
+    this (package, ecosystem). Used by github_scanner after each scan so the UI
+    can show the current upstream release alongside the patched range."""
     conn.execute(
         """
         UPDATE findings SET
@@ -640,7 +642,6 @@ def update_latest_version_for_package(
             latest_version_vuln_count = ?
         WHERE package_name = ?
           AND package_ecosystem = ?
-          AND (fixed_version IS NULL OR fixed_version = '')
         """,
         (latest_version, vuln_count, package_name, ecosystem),
     )

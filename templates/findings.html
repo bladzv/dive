@@ -1,17 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Findings — DIVE{% endblock %}
+{% block title %}Vulnerabilities — DIVE{% endblock %}
+{% block topbar_title %}Vulnerabilities{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="page-kicker">Vulnerabilities</span>
-    <h1>Dependency findings</h1>
-    <p class="heading-copy">Prioritize by exploitability, KEV signal, patch availability, and repository ownership.</p>
+    <p class="heading-copy">Prioritised by exploitability, KEV signal, patch availability, and repository ownership.</p>
   </div>
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} total</span>
-    <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">JSON</a>
-    <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">CSV</a>
+    <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">Export JSON</a>
+    <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
   </div>
 </section>
 
@@ -41,7 +40,7 @@
     <button class="btn btn-outline btn-sm" onclick="bulkAction('acknowledge')">Acknowledge</button>
     <button class="btn btn-success btn-sm" onclick="bulkAction('resolve')">Resolve</button>
     <button class="btn btn-outline btn-sm" onclick="bulkAction('reopen')">Reopen</button>
-    <button class="btn btn-outline btn-sm" onclick="toggleAll(false)" style="margin-left:0.25rem">✕ Clear</button>
+    <button class="btn btn-outline btn-sm" onclick="toggleAll(false)" style="margin-left:0.25rem">Clear</button>
   </div>
 </div>
 
@@ -60,10 +59,12 @@
           <th>Priority</th>
           <th>Repo</th>
           <th>Package</th>
-          <th>Version</th>
+          <th title="Version in the repository's manifest">Installed</th>
+          <th title="Vulnerable version range">Affected</th>
+          <th title="First release that includes the patch">Patched</th>
+          <th title="Latest release on the package registry">Latest</th>
           <th>CVE / GHSA</th>
           <th>Severity</th>
-          <th>Fix</th>
           <th>State</th>
           <th>Actions</th>
         </tr>
@@ -101,12 +102,52 @@
             <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
             {% endif %}
             {% if f.annotation %}
-            <br><span class="annotation-text" title="{{ f.annotation }}">📝 {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
+            <br><span class="annotation-text" title="{{ f.annotation }}">Note · {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
             {% endif %}
           </td>
 
           <!-- Installed version -->
-          <td style="font-size:0.82rem">{{ f.installed_version or '—' }}</td>
+          <td style="font-size:0.82rem">
+            {% if f.installed_version %}<code>{{ f.installed_version }}</code>
+            {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
+          </td>
+
+          <!-- Affected versions -->
+          <td style="font-size:0.78rem;max-width:180px"
+              title="{{ f.affected_versions or 'No affected range provided by advisory' }}">
+            {% if f.affected_versions %}
+            <code style="display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom">{{ f.affected_versions }}</code>
+            {% else %}
+            <span style="color:var(--text-dim)">—</span>
+            {% endif %}
+          </td>
+
+          <!-- Patched version -->
+          <td style="font-size:0.82rem">
+            {% if f.fixed_version %}
+              <code>{{ f.fixed_version }}</code>
+            {% else %}
+              <span style="color:var(--text-dim)" title="No patched version known yet">—</span>
+            {% endif %}
+          </td>
+
+          <!-- Latest version + vulnerability badge -->
+          <td style="font-size:0.82rem">
+            {% if f.latest_version %}
+              <code>{{ f.latest_version }}</code>
+              {% if f.latest_version_vuln_count is not none %}
+                {% if f.latest_version_vuln_count == 0 %}
+                <br><span style="font-size:0.7rem;color:var(--success);font-weight:600"
+                          title="Registry latest has no known OSV vulnerabilities">clean</span>
+                {% else %}
+                <br><span style="font-size:0.7rem;color:var(--high);font-weight:600"
+                          title="Latest release still has known vulnerabilities">{{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }}</span>
+                {% endif %}
+              {% endif %}
+            {% else %}
+              <span style="color:var(--text-dim)">—</span>
+            {% endif %}
+          </td>
 
           <!-- CVE / GHSA — show all available source links -->
           <td style="font-size:0.78rem" onclick="event.stopPropagation()">
@@ -135,22 +176,6 @@
             {% endif %}
           </td>
 
-          <!-- Fixed version + affected range + latest-version hint -->
-          <td style="font-size:0.82rem">
-            {% if f.fixed_version %}<code>{{ f.fixed_version }}</code>
-            {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
-            {% if f.affected_versions %}
-            <br><span style="font-size:0.7rem;color:var(--text-dim)" title="Affected version range">{{ f.affected_versions }}</span>
-            {% endif %}
-            {% if not f.fixed_version and f.latest_version is not none %}
-              {% if f.latest_version_vuln_count == 0 %}
-              <br><span style="font-size:0.7rem;color:var(--success)" title="Latest release has no known CVEs — consider upgrading">&#8593; {{ f.latest_version }} — no known CVEs</span>
-              {% else %}
-              <br><span style="font-size:0.7rem;color:var(--high)" title="Latest release still has known vulnerabilities">&#8593; {{ f.latest_version }} ({{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }})</span>
-              {% endif %}
-            {% endif %}
-          </td>
-
           <!-- State -->
           <td>
             <span class="badge
@@ -173,7 +198,7 @@
               {% endif %}
               <button class="btn btn-outline btn-sm"
                       onclick="openAnnotation({{ f.id }}, {{ f.annotation | tojson }})"
-                      title="Add/edit note">&#128221;</button>
+                      title="Add/edit note" aria-label="Add or edit note">Note</button>
             </div>
           </td>
 
@@ -186,7 +211,7 @@
 
 {% else %}
 <div class="card empty-state">
-  <div class="empty-icon">&#9989;</div>
+  <div class="empty-icon"><svg><use href="#i-shield"/></svg></div>
   <p>No findings match the current filter.</p>
 </div>
 {% endif %}

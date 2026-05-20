@@ -1,11 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Weekly Brief — DIVE{% endblock %}
+{% block title %}Weekly report — DIVE{% endblock %}
+{% block topbar_title %}Weekly report{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="page-kicker">Weekly Brief</span>
-    <h1>Weekly exposure summary</h1>
     {% if digest %}
     <p class="heading-copy">{{ digest.week_label }} · Generated {{ digest.generated_at[:16].replace('T', ' ') }} UTC</p>
     {% else %}
@@ -16,7 +15,7 @@
 
 {% if not digest %}
 <section class="panel empty-state">
-  <div class="empty-icon">•</div>
+  <div class="empty-icon"><svg><use href="#i-calendar"/></svg></div>
   <p>No weekly digest has been generated yet.</p>
 </section>
 {% else %}
@@ -42,8 +41,8 @@
   <div class="panel">
     <div class="panel-head">
       <div>
-        <span class="panel-kicker">Priority Review</span>
-        <h2>Top Active Findings</h2>
+        <span class="panel-kicker">Priority queue</span>
+        <h2>Top active findings</h2>
       </div>
     </div>
     {% if digest.top_findings %}
@@ -78,15 +77,15 @@
       </table>
     </div>
     {% else %}
-    <div class="empty-state compact"><div class="empty-icon">✓</div><p>No active findings this week.</p></div>
+    <div class="empty-state compact"><div class="empty-icon"><svg><use href="#i-shield"/></svg></div><p>No active findings this week.</p></div>
     {% endif %}
   </div>
 
   <aside class="panel">
     <div class="panel-head">
       <div>
-        <span class="panel-kicker">Repository Concentration</span>
-        <h2>Most Affected Repos</h2>
+        <span class="panel-kicker">Hot spots</span>
+        <h2>Most affected repos</h2>
       </div>
     </div>
     {% if digest.top_repos %}
@@ -99,7 +98,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="empty-state compact"><div class="empty-icon">✓</div><p>No affected repositories this week.</p></div>
+    <div class="empty-state compact"><div class="empty-icon"><svg><use href="#i-dashboard"/></svg></div><p>No affected repositories this week.</p></div>
     {% endif %}
   </aside>
 </section>

@@ -5,75 +5,193 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="run-token" content="{{ run_token }}">
   <title>{% block title %}DIVE{% endblock %}</title>
+  <link rel="preconnect" href="https://rsms.me/">
+  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
   <link rel="stylesheet" href="/static/style.css">
   <script>
-    /* Apply saved theme before first paint to avoid flash */
+    /* Apply saved theme + sidebar state before first paint */
     (function() {
       const t = localStorage.getItem('theme') || 'dark';
       document.documentElement.setAttribute('data-theme', t);
+      if (localStorage.getItem('sidebarCollapsed') === '1') {
+        document.documentElement.classList.add('sidebar-collapsed');
+      }
     })();
   </script>
 </head>
 <body class="page-{{ nav_active or 'default' }}">
 
+{# ── Reusable SVG icon symbols ───────────────────────── #}
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-dashboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7" height="9" rx="1.4"/><rect x="14" y="3" width="7" height="5" rx="1.4"/>
+      <rect x="14" y="12" width="7" height="9" rx="1.4"/><rect x="3" y="16" width="7" height="5" rx="1.4"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l8 3v6c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V6l8-3z"/>
+      <path d="M9.5 12.5l1.8 1.8 3.7-3.7"/>
+    </symbol>
+    <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L21 2"/><path d="M17 6l3 3"/><path d="M15 8l2 2"/>
+    </symbol>
+    <symbol id="i-rss" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1.5"/>
+    </symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/>
+    </symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/>
+      <path d="M8 3v4M16 3v4"/>
+    </symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 3h12v18l-6-4-6 4V3z"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+    </symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+    </symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+    </symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M8 5.5v13c0 .8.9 1.3 1.6.9l11-6.5a1 1 0 0 0 0-1.8l-11-6.5A1 1 0 0 0 8 5.5z"/>
+    </symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>
+    </symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h16M4 12h16M4 18h16"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 6l12 12M18 6L6 18"/>
+    </symbol>
+    <symbol id="i-panel-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2"/>
+      <path d="M9 4v16"/>
+      <path d="M15 10l-2 2 2 2"/>
+    </symbol>
+    <symbol id="i-panel-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 8l4 4-4 4M13 8l4 4-4 4"/>
+    </symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/>
+      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+    </symbol>
+  </defs>
+</svg>
+
 <div class="app-shell">
-  <aside class="app-sidebar" id="site-nav">
-    <div class="sidebar-head">
+  <header class="workspace-topbar">
+    <div class="topbar-brand">
+      <button class="mobile-menu-btn" id="nav-toggle" aria-label="Open navigation" onclick="toggleNav()">
+        <svg width="18" height="18"><use href="#i-menu"/></svg>
+      </button>
       <a class="brand" href="/" aria-label="DIVE dashboard">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none">
+            <path d="M3 18 Q9 8 16 18 T29 18" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+            <path d="M3 24 Q9 14 16 24 T29 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none" opacity="0.5"/>
+            <circle cx="16" cy="11" r="2" fill="currentColor"/>
+          </svg>
+        </span>
         <span class="brand-copy">
           <strong>DIVE</strong>
-          <small>Dependency Intelligence for Vulnerability Exposure</small>
+          <small>Dependency Intelligence</small>
         </span>
       </a>
-      <div class="sidebar-head-actions">
-        <button class="btn-theme sidebar-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
-        <button class="nav-toggle nav-close" aria-label="Close navigation" onclick="toggleNav()">×</button>
-      </div>
+      <button class="sidebar-collapse-btn" id="sidebar-collapse-btn"
+              aria-label="Collapse sidebar" title="Collapse sidebar" onclick="toggleSidebar()">
+        <svg id="sidebar-collapse-icon" width="16" height="16"><use href="#i-panel-collapse"/></svg>
+      </button>
     </div>
 
-    <button class="btn btn-primary sidebar-run" id="run-now-btn" onclick="triggerRun()" aria-label="Run Now">RUN</button>
+    <div class="topbar-title">{% block topbar_title %}{{ self.title()|replace(' — DIVE','') }}{% endblock %}</div>
+    <div class="topbar-spacer"></div>
 
-    <div class="sidebar-model">
-      <div class="sidebar-field-row model-row">
-        <span class="sidebar-field-label">Model:</span>
-        <span class="model-chip" id="model-chip">{{ current_model }}</span>
-      </div>
+    <span class="topbar-meta" title="Pipeline status">
+      <span class="status-dot idle" id="status-dot"></span>
+      <span class="topbar-meta-label">Last run</span>
+      <strong id="status-text">—</strong>
+    </span>
+
+    <span class="topbar-meta optional" title="Scheduled next run">
+      <svg><use href="#i-clock"/></svg>
+      <span class="topbar-meta-label">Next</span>
+      <strong id="next-run-text">—</strong>
+    </span>
+
+    <span class="topbar-meta optional" title="Active Ollama model">
+      <span class="ollama-dot" id="ollama-dot"></span>
+      <svg><use href="#i-cpu"/></svg>
+      <strong id="model-chip">{{ current_model }}</strong>
+    </span>
+
+    <span class="topbar-divider"></span>
+
+    <div class="topbar-actions">
+      <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">
+        <svg id="theme-icon"><use href="#i-sun"/></svg>
+      </button>
+      <button class="btn btn-primary btn-sm btn-run" id="run-now-btn" onclick="triggerRun()">
+        <svg><use href="#i-play"/></svg>Run pipeline
+      </button>
     </div>
+  </header>
 
-    <div class="sidebar-status" aria-live="polite">
-      <div class="sidebar-field-row">
-        <span class="sidebar-field-label">Last run:</span>
-        <span class="status-text" id="status-text"></span>
-      </div>
-      <div class="sidebar-field-row">
-        <span class="sidebar-field-label">Next Auto-scan in:</span>
-        <span class="next-run-text" id="next-run-text"></span>
-      </div>
-    </div>
-
+  <aside class="app-sidebar" id="site-nav">
+    {% set _nb = nav_badges() %}
     <nav class="site-nav" aria-label="Primary">
-      <div class="nav-group-label">Operations</div>
-      <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">Command Center</a>
-      <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">Vulnerabilities</a>
-      <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">Secrets</a>
-      <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">Intelligence</a>
+      <div class="nav-group-label">Monitoring</div>
+      <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">
+        <svg><use href="#i-dashboard"/></svg>Dashboard
+      </a>
+      <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">
+        <svg><use href="#i-shield"/></svg>Vulnerabilities
+        {% if _nb.findings %}<span class="nav-badge nav-badge-warn">{{ _nb.findings }}</span>{% endif %}
+      </a>
+      <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">
+        <svg><use href="#i-key"/></svg>Secrets
+        {% if _nb.secrets %}<span class="nav-badge nav-badge-crit">{{ _nb.secrets }}</span>{% endif %}
+      </a>
+      <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">
+        <svg><use href="#i-rss"/></svg>News
+        {% if _nb.news %}<span class="nav-badge">{{ _nb.news }}</span>{% endif %}
+      </a>
 
-      <div class="nav-group-label">Reporting</div>
-      <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">Telemetry</a>
-      <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">Weekly Brief</a>
-      <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">Workspace</a>
+      <div class="nav-group-label">Reports</div>
+      <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">
+        <svg><use href="#i-chart"/></svg>History
+      </a>
+      <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">
+        <svg><use href="#i-calendar"/></svg>Weekly report
+      </a>
+      <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">
+        <svg><use href="#i-bookmark"/></svg>Bookmarks
+      </a>
 
       <div class="nav-group-label">System</div>
-      <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">Configuration</a>
+      <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">
+        <svg><use href="#i-settings"/></svg>Settings
+      </a>
     </nav>
 
     <div class="sidebar-foot">
-      <a href="/logout" class="sidebar-logout" title="Log out">Log out</a>
+      <a href="/logout" class="sidebar-logout" title="Log out"
+         onclick="confirmSignOut(event)">
+        <svg><use href="#i-logout"/></svg>Sign out
+      </a>
     </div>
   </aside>
 
   <div class="mobile-scrim" onclick="toggleNav()" aria-hidden="true"></div>
-  <button class="mobile-menu-btn" id="nav-toggle" aria-label="Toggle navigation" onclick="toggleNav()">☰</button>
 
   <section class="app-workspace">
     <main class="page-main">
@@ -81,18 +199,44 @@
     </main>
 
     <footer class="page-footer">
-      DIVE · Security operations dashboard
+      DIVE · Dependency Intelligence for Vulnerability Exposure
     </footer>
   </section>
 </div>
 
 <div id="toast"></div>
 
-<script>
+<div class="modal-backdrop" id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title">
+  <div class="modal-panel">
+    <h2 id="logout-modal-title">Sign out?</h2>
+    <p>You'll need to enter your credentials again to access DIVE.</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('logout-modal').classList.remove('open')">Cancel</button>
+      <button class="btn btn-danger" onclick="window.location='/logout'">Sign out</button>
+    </div>
+  </div>
+</div>
+
+<script id="dive-base-js">
+/* ── Sign-out confirmation ───────────────────────────── */
+function confirmSignOut(event) {
+  event.preventDefault();
+  document.getElementById('logout-modal').classList.add('open');
+}
+
+document.getElementById('logout-modal').addEventListener('click', function(e) {
+  if (e.target === this) this.classList.remove('open');
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') document.getElementById('logout-modal').classList.remove('open');
+});
+
 /* ── Theme ───────────────────────────────────────────── */
 function _applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
-  document.getElementById('theme-btn').textContent = t === 'dark' ? '☀' : '☾';
+  const icon = document.getElementById('theme-icon');
+  if (icon) icon.innerHTML = '<use href="#' + (t === 'dark' ? 'i-sun' : 'i-moon') + '"/>';
 }
 
 function toggleTheme() {
@@ -102,7 +246,6 @@ function toggleTheme() {
   _applyTheme(next);
 }
 
-// Apply correct icon on load (theme was already set before paint)
 _applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
 
 /* ── Mobile nav ─────────────────────────────────────── */
@@ -111,10 +254,29 @@ function toggleNav() {
   document.body.classList.toggle('nav-open');
 }
 
+/* ── Sidebar drawer collapse ───────────────────────── */
+function _applySidebarIcon() {
+  const collapsed = document.documentElement.classList.contains('sidebar-collapsed');
+  const icon = document.getElementById('sidebar-collapse-icon');
+  if (icon) icon.innerHTML = '<use href="#' + (collapsed ? 'i-panel-expand' : 'i-panel-collapse') + '"/>';
+  const btn = document.getElementById('sidebar-collapse-btn');
+  if (btn) {
+    btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+    btn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  }
+}
+function toggleSidebar() {
+  const root = document.documentElement;
+  const next = !root.classList.contains('sidebar-collapsed');
+  root.classList.toggle('sidebar-collapsed', next);
+  localStorage.setItem('sidebarCollapsed', next ? '1' : '0');
+  _applySidebarIcon();
+}
+_applySidebarIcon();
+
 /* ── Shared helpers ──────────────────────────────────── */
 const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
 
-/* apiFetch — like fetch() but auto-injects X-Run-Token on mutations */
 function apiFetch(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const headers = Object.assign({}, options.headers);
@@ -136,16 +298,16 @@ function timeAgo(iso) {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
   if (diff < 60)    return 'just now';
   if (diff < 3600)  return Math.floor(diff / 60)   + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600)  + 'h ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
   return Math.floor(diff / 86400) + 'd ago';
 }
 
 function timeUntil(iso) {
   const diff = (new Date(iso).getTime() - Date.now()) / 1000;
   if (diff <= 0)     return 'soon';
-  if (diff < 3600)   return 'in ' + Math.ceil(diff / 60)   + 'm';
-  if (diff < 86400)  return 'in ' + Math.floor(diff / 3600) + 'h';
-  return 'in ' + Math.floor(diff / 86400) + 'd';
+  if (diff < 3600)   return Math.ceil(diff / 60)   + 'm';
+  if (diff < 86400)  return Math.floor(diff / 3600) + 'h';
+  return Math.floor(diff / 86400) + 'd';
 }
 
 /* ── Pipeline status polling ─────────────────────────── */
@@ -153,16 +315,14 @@ function updateStatusBadge(pipeline) {
   const dot  = document.getElementById('status-dot');
   const text = document.getElementById('status-text');
   const btn  = document.getElementById('run-now-btn');
-  if (dot) dot.style.display = '';
 
   if (pipeline.running) {
     if (dot) dot.className = 'status-dot running';
-    text.textContent = 'Running';
+    text.textContent = 'Running…';
     btn.disabled = true;
   } else if (pipeline.last_status === 'success') {
     if (dot) dot.className = 'status-dot success';
-    const ago = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
-    text.textContent = ago;
+    text.textContent = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
     btn.disabled = false;
   } else if (pipeline.last_status === 'error') {
     if (dot) dot.className = 'status-dot error';
@@ -170,7 +330,7 @@ function updateStatusBadge(pipeline) {
     btn.disabled = false;
   } else {
     if (dot) dot.className = 'status-dot idle';
-    text.textContent = 'Never run';
+    text.textContent = 'Never';
     btn.disabled = false;
   }
 }
@@ -182,7 +342,7 @@ function pollStatus() {
       updateStatusBadge(data.pipeline);
 
       const nr = document.getElementById('next-run-text');
-      nr.textContent = data.next_run ? timeUntil(data.next_run) : 'Not scheduled';
+      if (nr) nr.textContent = data.next_run ? timeUntil(data.next_run) : 'unscheduled';
 
       const od = document.getElementById('ollama-dot');
       if (!od) return;
@@ -199,6 +359,92 @@ function pollStatus() {
 
 let _pollTimer = setInterval(pollStatus, 5000);
 pollStatus();
+
+/* ── Pjax router ─────────────────────────────────────── */
+(function() {
+  let busy = false;
+
+  function canIntercept(a) {
+    const href = a.getAttribute('href');
+    if (!href || href === '#' || href.startsWith('javascript:')) return false;
+    if (a.target === '_blank' || a.hasAttribute('download')) return false;
+    try { if (new URL(href).origin !== location.origin) return false; } catch (_) {}
+    const path = href.split('?')[0];
+    if (['/logout', '/login'].includes(path)) return false;
+    if (path.startsWith('/api/') || path.startsWith('/static/')) return false;
+    return true;
+  }
+
+  function runPageScripts(doc) {
+    document.querySelectorAll('script[data-pjax]').forEach(s => s.remove());
+    const fence = doc.getElementById('page-scripts-fence');
+    if (!fence) return;
+    const scripts = [];
+    let el = fence.nextElementSibling;
+    while (el) { if (el.tagName === 'SCRIPT') scripts.push(el); el = el.nextElementSibling; }
+    scripts.reduce((p, orig) => p.then(() => new Promise(done => {
+      const s = document.createElement('script');
+      s.setAttribute('data-pjax', '');
+      if (orig.src) {
+        if (document.querySelector('script[src="' + orig.src + '"]')) { done(); return; }
+        s.src = orig.src; s.onload = done; s.onerror = done;
+        document.body.appendChild(s);
+      } else {
+        s.textContent = orig.textContent;
+        document.body.appendChild(s);
+        done();
+      }
+    })), Promise.resolve());
+  }
+
+  async function navigate(url) {
+    if (busy) return;
+    busy = true;
+    try {
+      const res = await fetch(url, { credentials: 'same-origin' });
+      if (!res.ok) { location.href = url; return; }
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      const nm = doc.querySelector('.page-main');
+      const cm = document.querySelector('.page-main');
+      if (!nm || !cm) { location.href = url; return; }
+      cm.innerHTML = nm.innerHTML;
+
+      const nt = doc.querySelector('.topbar-title');
+      const ct = document.querySelector('.topbar-title');
+      if (nt && ct) ct.textContent = nt.textContent;
+
+      document.title = doc.title;
+
+      const oldPc = [...document.body.classList].find(c => c.startsWith('page-'));
+      const newPc = [...doc.body.classList].find(c => c.startsWith('page-'));
+      if (oldPc) document.body.classList.remove(oldPc);
+      if (newPc) document.body.classList.add(newPc);
+
+      const pathname = new URL(url, location.origin).pathname;
+      document.querySelectorAll('.site-nav a').forEach(a => {
+        const ap = new URL(a.href, location.origin).pathname;
+        a.classList.toggle('active', ap === pathname);
+      });
+
+      history.pushState({ url }, doc.title, url);
+      runPageScripts(doc);
+      window.scrollTo(0, 0);
+    } catch (_) { location.href = url; }
+    finally { busy = false; }
+  }
+
+  document.addEventListener('click', function(e) {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest('a[href]');
+    if (!a || !canIntercept(a)) return;
+    e.preventDefault();
+    navigate(a.getAttribute('href'));
+  });
+
+  window.addEventListener('popstate', function() { navigate(location.href); });
+})();
 
 /* ── Run Now ─────────────────────────────────────────── */
 function triggerRun() {
@@ -234,6 +480,7 @@ function triggerRun() {
 }
 </script>
 
+<script id="page-scripts-fence"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

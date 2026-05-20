@@ -1,12 +1,11 @@
 {% extends "base.html" %}
-{% block title %}Workspace — DIVE{% endblock %}
+{% block title %}Bookmarks — DIVE{% endblock %}
+{% block topbar_title %}Bookmarks{% endblock %}
 
 {% block content %}
 <section class="page-heading">
   <div>
-    <span class="page-kicker">Workspace</span>
-    <h1>Saved intelligence and analyst notes</h1>
-    <p class="heading-copy">A personal queue for bookmarked news and annotated vulnerability records.</p>
+    <p class="heading-copy">Bookmarked news articles and annotated vulnerability records.</p>
   </div>
 </section>
 
@@ -14,7 +13,7 @@
   <div class="panel">
     <div class="panel-head">
       <div>
-        <span class="panel-kicker">Saved Intelligence</span>
+        <span class="panel-kicker">Saved news</span>
         <h2>Bookmarks</h2>
       </div>
       {% if bookmarks %}
@@ -51,7 +50,7 @@
     </div>
     {% else %}
     <div class="empty-state compact">
-      <div class="empty-icon">•</div>
+      <div class="empty-icon"><svg><use href="#i-bookmark"/></svg></div>
       <p>No bookmarked intelligence yet.</p>
     </div>
     {% endif %}
@@ -60,8 +59,8 @@
   <aside class="panel">
     <div class="panel-head">
       <div>
-        <span class="panel-kicker">Finding Context</span>
-        <h2>Annotated Findings</h2>
+        <span class="panel-kicker">Annotated</span>
+        <h2>Findings with notes</h2>
       </div>
       {% if annotated %}
       <div class="panel-actions">
@@ -93,7 +92,7 @@
     </div>
     {% else %}
     <div class="empty-state compact">
-      <div class="empty-icon">•</div>
+      <div class="empty-icon"><svg><use href="#i-shield"/></svg></div>
       <p>No annotated findings yet.</p>
     </div>
     {% endif %}

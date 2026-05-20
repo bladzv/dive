@@ -23,7 +23,7 @@ The app is available at `http://localhost:8000`. All subsequent steps assume you
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 # Requires a running Ollama instance and a filled-in config.yaml
-uvicorn main:app --reload --port 8000
+uvicorn dive.main:app --reload --port 8000
 ```
 
 ## Running tests

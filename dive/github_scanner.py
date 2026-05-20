@@ -1047,10 +1047,8 @@ def _store_osv_finding(
     is_kev = bool(cve_id and cve_id.upper() in kev_cves)
     priority = _priority_score(cvss_score, is_kev, patch_available)
 
-    # Always record the key before the threshold check. "Below threshold" means
-    # "don't store or alert", not "the vulnerability disappeared". Without this,
-    # auto_resolve_gone() would see the repo as scanned but the key absent and
-    # incorrectly mark the finding resolved.
+    # Record every finding key so lifecycle.auto_resolve_gone() never treats a
+    # still-present vulnerability as resolved.
     stats.finding_keys.add(
         (
             pkg.repo_full_name,
@@ -1061,9 +1059,13 @@ def _store_osv_finding(
         )
     )
 
-    allowed = _SEVERITY_ALLOW.get(severity_threshold, _SEVERITY_ALLOW["high"])
-    if severity_text not in allowed:
-        return
+    # NOTE: the severity threshold is a NOTIFICATION-time gate (applied in
+    # main.py::_apply_severity_threshold). It does NOT gate storage — every
+    # finding the scanner discovers is persisted so the operator can see the
+    # full inventory on the Vulnerabilities page regardless of how loud they
+    # want their alert channels. severity_threshold is kept as a parameter
+    # for backward-compatible callers but is no longer used here.
+    _ = severity_threshold  # intentionally unused; kept on the signature
 
     finding = {
         "repo_full_name": pkg.repo_full_name,

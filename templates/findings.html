@@ -76,7 +76,7 @@
         {% for f in findings %}
         <tr id="row-{{ f.id }}"
             class="clickable-row" style="cursor:pointer"
-            onclick="openBestSource({{ f.cve_id | tojson }}, {{ f.ghsa_id | tojson }})"
+            onclick="if (!event.target.closest('a,button')) openBestSource({{ f.cve_id | tojson }}, {{ f.ghsa_id | tojson }})"
             title="Open vulnerability page">
 
           <!-- Checkbox -->

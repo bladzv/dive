@@ -239,27 +239,29 @@
     </div>
 
     {% if recent_findings %}
-    <div class="exposure-list">
-      {% for f in recent_findings %}
-      <article class="exposure-item">
-        <div class="exposure-score {{ 'is-critical' if f.priority_score and f.priority_score >= 60 else ('is-high' if f.priority_score and f.priority_score >= 40 else '') }}">
-          {{ '%d' % f.priority_score if f.priority_score else '—' }}
-        </div>
-        <div class="exposure-body">
-          <div class="exposure-title">
+    <table class="triage-table">
+      <tbody>
+        {% for f in recent_findings %}
+        <tr onclick="window.location='/findings?state=new'" style="cursor:pointer">
+          <td class="triage-score {{ 'is-critical' if f.priority_score and f.priority_score >= 60 else ('is-high' if f.priority_score and f.priority_score >= 40 else 'is-low') }}">
+            {{ '%d' % f.priority_score if f.priority_score else '—' }}
+          </td>
+          <td class="triage-pkg">
             <strong>{{ f.package_name }}</strong>
-            <span>{{ f.repo_full_name }}</span>
-          </div>
-          <div class="meta-line">
+            <span>{{ f.repo_full_name.split('/')[-1] if '/' in f.repo_full_name else f.repo_full_name }}</span>
+          </td>
+          <td class="triage-badges">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
             {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
-            <span>{{ f.cve_id or f.ghsa_id or 'No advisory ID' }}</span>
-            {% if f.fixed_version %}<span>Fix {{ f.fixed_version }}</span>{% endif %}
-          </div>
-        </div>
-      </article>
-      {% endfor %}
-    </div>
+          </td>
+          <td class="triage-advisory">{{ f.cve_id or f.ghsa_id or '—' }}</td>
+          <td class="triage-fix">
+            {% if f.fixed_version %}<code>{{ f.fixed_version }}</code>{% else %}<span style="color:var(--text-subtle)">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     {% else %}
     <div class="empty-state compact">
       <div class="empty-icon"><svg><use href="#i-shield"/></svg></div>

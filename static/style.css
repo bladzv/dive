@@ -237,101 +237,149 @@ html.sidebar-collapsed .app-sidebar {
   border-bottom: 1px solid var(--border);
 }
 
-/* ─── Pipeline step ticker ──────────────────────────── */
-.step-ticker {
-  position: fixed;
-  top: var(--topbar);
-  left: var(--sidebar);
-  right: 0;
-  z-index: 95;
-  display: none;
-  align-items: center;
-  gap: 0.85rem;
-  padding: 0.55rem 1.1rem;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  font-size: 0.78rem;
-  transition: left 0.12s ease;
-}
-.step-ticker.open { display: flex; }
-
-.step-ticker-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem 0.65rem;
-  flex: 1;
-  min-width: 0;
-}
-.step-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.2rem 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  background: var(--panel-2);
-  white-space: nowrap;
-}
-.step-dot {
-  width: 7px; height: 7px;
-  border-radius: 999px;
-  background: var(--text-subtle);
-  flex: 0 0 auto;
-}
-.step-label { font-weight: 500; font-size: 0.72rem; letter-spacing: 0.02em; }
-
-.step-pill.step-done  { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
-.step-pill.step-done  .step-dot { background: var(--success); }
-
-.step-pill.step-running {
-  color: var(--text-bright);
-  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-.step-pill.step-running .step-dot {
-  background: var(--accent);
-  animation: step-pulse 1.4s ease-in-out infinite;
-}
+/* ─── Pipeline drawer ───────────────────────────────── */
 @keyframes step-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
-  50%      { transform: scale(1.6); opacity: 0.6; }
+  50%      { transform: scale(1.5); opacity: 0.55; }
 }
 
-.step-pill.step-error  { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
-.step-pill.step-error  .step-dot { background: var(--error); }
+.pipeline-drawer {
+  position: fixed;
+  top: var(--topbar);
+  right: -340px;
+  width: 320px;
+  height: calc(100dvh - var(--topbar));
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  transition: right 0.22s ease;
+  overflow: hidden;
+}
+.pipeline-drawer.open { right: 0; }
 
-.step-pill.step-skipped { color: var(--text-subtle); opacity: 0.7; }
-.step-pill.step-skipped .step-dot { background: var(--text-subtle); opacity: 0.55; }
-
-.step-pill.step-pending .step-dot { background: var(--border-strong); }
-
-.step-ticker-state {
-  font-size: 0.74rem;
+.drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.drawer-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0;
+  flex: 1;
+  color: var(--text-bright);
+}
+.drawer-state {
+  font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+.drawer-state.is-running { color: var(--accent); }
+.drawer-state.is-paused  { color: var(--warning); }
+.drawer-state.is-done    { color: var(--success); }
+.drawer-state.is-error   { color: var(--error); }
+.drawer-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 0.2rem;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+.drawer-close:hover { color: var(--text); background: var(--hover); }
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.3rem 0;
+}
+.drawer-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.drawer-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.55rem 0.9rem;
+}
+.drawer-step-icon {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  flex: 0 0 14px;
+  margin-top: 2px;
+  border: 2px solid var(--border-strong);
+  background: var(--panel-2);
+}
+.drawer-step.step-done .drawer-step-icon    { background: var(--success); border-color: var(--success); }
+.drawer-step.step-error .drawer-step-icon   { background: var(--error);   border-color: var(--error); }
+.drawer-step.step-skipped .drawer-step-icon { opacity: 0.35; }
+.drawer-step.step-running .drawer-step-icon {
+  background: var(--accent);
+  border-color: var(--accent);
+  animation: step-pulse 1.4s ease-in-out infinite;
+}
+.drawer-step-info { flex: 1; min-width: 0; }
+.drawer-step-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.drawer-step.step-running .drawer-step-label { color: var(--text-bright); }
+.drawer-step.step-done    .drawer-step-label { color: var(--success); }
+.drawer-step.step-error   .drawer-step-label { color: var(--error); }
+.drawer-step-sub {
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+  margin-top: 0.15rem;
+}
+.drawer-progress-wrap {
+  margin-top: 0.3rem;
+  height: 3px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.drawer-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+.drawer-summary {
+  border-top: 1px solid var(--border);
+  padding: 0.65rem 0.9rem;
+  font-size: 0.79rem;
   flex: 0 0 auto;
 }
-.step-ticker-state.is-paused { color: var(--warning); }
-
-/* When the ticker is open, the page main needs an extra top offset. */
-.step-ticker.open ~ .app-workspace .page-main,
-body:has(.step-ticker.open) .app-workspace .page-main {
-  padding-top: 2.4rem;
+.drawer-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.18rem 0;
+  color: var(--text-muted);
 }
+.drawer-summary-val { color: var(--text); font-weight: 600; }
 
-html.sidebar-collapsed .step-ticker { left: var(--sidebar-collapsed); }
+.topbar-meta.pipeline-status-chip { cursor: pointer; }
+.topbar-meta.pipeline-status-chip:hover { background: var(--hover); border-radius: var(--radius-sm); }
 
 @media (max-width: 700px) {
-  .step-ticker { left: 0; padding: 0.5rem 0.8rem; }
-  .step-label { display: none; }   /* dots only on mobile to save space */
-  .step-pill  { padding: 0.18rem 0.35rem; }
+  .pipeline-drawer { width: 100%; right: -105%; }
 }
 
 /* ─── Pipeline control buttons ──────────────────────── */
@@ -1208,19 +1256,19 @@ html.sidebar-collapsed .page-footer {
 
 .heatmap-grid {
   display: grid;
-  grid-template-rows: repeat(7, 16px);
+  grid-template-rows: repeat(7, 1fr);
   grid-auto-flow: column;
-  grid-auto-columns: 16px;
-  gap: 4px;
-  width: max-content;
-  max-width: 100%;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  width: 100%;
+  aspect-ratio: 12 / 7;
 }
 
 .hm-cell {
-  width: 16px;
-  height: 16px;
   border-radius: 3px;
   background: var(--panel-3);
+  aspect-ratio: 1;
+  min-height: 0;
 }
 
 /* GitHub-style activity ramp — empty cells are dark grey; busier cells climb
@@ -1413,7 +1461,7 @@ html.sidebar-collapsed .page-footer {
 .ops-grid,
 .grid-2 {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(0, 2.15fr) minmax(0, 1.05fr);
   gap: 1rem;
   margin-bottom: 1rem;
 }
@@ -1831,6 +1879,64 @@ html.sidebar-collapsed .page-footer {
   min-width: 0;
 }
 
+/* ─── Dashboard triage compact table ───────────────── */
+.triage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.triage-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.triage-table tbody tr:last-child { border-bottom: none; }
+.triage-table tbody tr:hover { background: var(--hover); }
+.triage-table td {
+  padding: 0.45rem 0.5rem;
+  vertical-align: middle;
+}
+.triage-score {
+  font-size: 0.78rem;
+  font-weight: 700;
+  width: 2.4rem;
+  text-align: center;
+  color: var(--text-dim);
+}
+.triage-score.is-critical { color: var(--critical); }
+.triage-score.is-high     { color: var(--high); }
+.triage-pkg {
+  min-width: 0;
+}
+.triage-pkg strong {
+  display: block;
+  color: var(--text-bright);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18ch;
+}
+.triage-pkg span {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 18ch;
+}
+.triage-badges { white-space: nowrap; }
+.triage-advisory {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
+}
+.triage-fix code {
+  font-size: 0.72rem;
+  color: var(--success);
+}
+
 .meta-line {
   display: flex;
   align-items: center;
@@ -2168,6 +2274,10 @@ input[type="checkbox"] {
    (max-width: 340px) on specificity instead of resorting to !important. */
 #interval-select       { max-width: 220px; }   /* "Custom…" etc. */
 #severity-select       { max-width: 260px; }   /* "High and above (default)" */
+
+/* News filter bar — narrower controls so the bar stays compact */
+.filter-bar select                { max-width: 200px; }
+.filter-bar .search-inline input  { max-width: 200px; }
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }

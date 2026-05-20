@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,11 +78,18 @@ class CategorizerStats:
 # ---------------------------------------------------------------------------
 
 
-def run(conn: sqlite3.Connection, config: AppConfig) -> CategorizerStats:
+def run(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> CategorizerStats:
     """Categorize all pending news items and write results to the database.
 
     Processes items in batches of BATCH_SIZE. Never raises — individual batch
     failures fall back to Uncategorized/Unknown.
+
+    on_progress(done, total) is called after each batch so callers can track
+    real-time progress (e.g. to update the pipeline drawer).
     """
     stats = CategorizerStats()
     items = db.get_uncategorized_items(conn, limit=500)
@@ -90,16 +98,22 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> CategorizerStats:
         logger.info("No uncategorized items — nothing to do")
         return stats
 
+    total = len(items)
     # Prefer the model set via the Settings UI over the config.yaml default.
     active_model = db.get_setting(conn, "active_model") or config.ollama.model
     logger.info(
-        "Categorizing %d items in batches of %d (model: %s)", len(items), BATCH_SIZE, active_model
+        "Categorizing %d items in batches of %d (model: %s)", total, BATCH_SIZE, active_model
     )
 
+    if on_progress:
+        on_progress(0, total)
+
     with _make_client() as client:
-        for batch_start in range(0, len(items), BATCH_SIZE):
+        for batch_start in range(0, total, BATCH_SIZE):
             batch = items[batch_start : batch_start + BATCH_SIZE]
             _process_batch(conn, client, config, batch, stats, active_model)
+            if on_progress:
+                on_progress(min(batch_start + len(batch), total), total)
 
     stats.total_processed = stats.categorized + stats.uncategorized
 

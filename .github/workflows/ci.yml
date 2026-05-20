@@ -30,7 +30,14 @@ jobs:
         run: black --check .
 
       - name: Dependency vulnerability audit — pip-audit
-        run: pip-audit -r requirements.txt
+        # PYSEC-2025-183 (CVE-2025-45768) is a disputed "weak encryption"
+        # report against pyjwt. Upstream rejects it because key length is
+        # the application's responsibility, not the library's. DIVE only
+        # pulls pyjwt in transitively via PyGithub and never generates JWTs
+        # itself (we authenticate to GitHub with personal access tokens),
+        # so the disputed code path is unreachable. Revisit if the
+        # advisory status changes or pyjwt ships a real fix.
+        run: pip-audit -r requirements.txt --ignore-vuln PYSEC-2025-183
 
       - name: Unit tests — pytest
         run: pytest tests/ -v --ignore=tests/integration

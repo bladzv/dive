@@ -1140,10 +1140,15 @@ def get_news_items_paginated(
     severity: str | None = None,
     source: str | None = None,
     search: str | None = None,
+    sort: str = "published_desc",
     limit: int = 25,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
-    """Return paginated news items with optional filters."""
+    """Return paginated news items with optional filters.
+
+    sort: "published_desc" (default) | "published_asc"
+    Items with no published_at fall back to fetched_at for ordering.
+    """
     clauses: list[str] = []
     params: list[Any] = []
     if category:
@@ -1160,13 +1165,14 @@ def get_news_items_paginated(
         s = f"%{search}%"
         params.extend([s, s])
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    order = "ASC" if sort == "published_asc" else "DESC"
     params.extend([limit, offset])
     return conn.execute(
         f"""
         SELECT id, title, source, published_at, fetched_at,
                summary, category, severity, affected_products, tags, cluster_id, url
         FROM news_items {where}
-        ORDER BY fetched_at DESC
+        ORDER BY COALESCE(published_at, fetched_at) {order}
         LIMIT ? OFFSET ?
         """,
         params,

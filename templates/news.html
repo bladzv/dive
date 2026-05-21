@@ -36,6 +36,11 @@
     {% endfor %}
   </select>
 
+  <select onchange="applyFilter('sort', this.value)">
+    <option value="published_desc" {{ 'selected' if sort == 'published_desc' else '' }}>Newest first</option>
+    <option value="published_asc"  {{ 'selected' if sort == 'published_asc'  else '' }}>Oldest first</option>
+  </select>
+
   <form id="search-form" onsubmit="applySearch(event)" class="search-inline">
     <input type="text" id="search-input" placeholder="Search title or summary" value="{{ search_filter or '' }}">
     <button type="submit" class="btn btn-outline btn-sm">Search</button>
@@ -53,11 +58,10 @@
     <div class="record-main">
       <div class="intel-meta">
         <span>{{ item.source }}</span>
-        <span title="Fetched into DIVE">{{ item.time_ago }}</span>
         {% if item.published_human %}
-        <span class="intel-published" title="Source publish timestamp: {{ item.published_at }}">
-          Published {{ item.published_human }}
-        </span>
+        <span class="intel-published" title="Source publish timestamp: {{ item.published_at }}">{{ item.published_human }}</span>
+        {% else %}
+        <span class="intel-published" title="Fetched {{ item.time_ago }}">{{ item.time_ago }}</span>
         {% endif %}
       </div>
       <h3><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a></h3>

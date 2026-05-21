@@ -116,7 +116,8 @@
     <div class="topbar-title">{% block topbar_title %}{{ self.title()|replace(' — DIVE','') }}{% endblock %}</div>
     <div class="topbar-spacer"></div>
 
-    <span class="topbar-meta" title="Pipeline status">
+    <span class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
+          onclick="openPipelineDrawer()">
       <span class="status-dot idle" id="status-dot"></span>
       <span class="topbar-meta-label">Last run</span>
       <strong id="status-text">—</strong>
@@ -154,11 +155,20 @@
     </div>
   </header>
 
-  <!-- ── Pipeline step ticker (visible only while running) ── -->
-  <div class="step-ticker" id="step-ticker" aria-hidden="true">
-    <ol class="step-ticker-list" id="step-ticker-list"></ol>
-    <span class="step-ticker-state" id="step-ticker-state"></span>
-  </div>
+  <!-- ── Pipeline progress drawer ── -->
+  <aside class="pipeline-drawer" id="pipeline-drawer" aria-hidden="true" aria-label="Pipeline progress">
+    <div class="drawer-header">
+      <h3 class="drawer-title">Pipeline</h3>
+      <span class="drawer-state" id="drawer-state"></span>
+      <button class="drawer-close" onclick="closePipelineDrawer()" aria-label="Close drawer">
+        <svg width="16" height="16"><use href="#i-close"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <ol class="drawer-steps" id="drawer-steps"></ol>
+    </div>
+    <div class="drawer-summary" id="drawer-summary" style="display:none"></div>
+  </aside>
 
   <aside class="app-sidebar" id="site-nav">
     {% set _nb = nav_badges() %}
@@ -422,7 +432,7 @@ function pollStatus() {
     .then(data => {
       updateStatusBadge(data.pipeline);
       updatePipelineControls(data.pipeline);
-      updateStepTicker(data.pipeline_steps, data.pipeline);
+      updatePipelineDrawer(data.pipeline_steps, data.pipeline);
 
       const nr = document.getElementById('next-run-text');
       if (nr) nr.textContent = data.next_run ? timeUntil(data.next_run) : 'unscheduled';
@@ -481,41 +491,101 @@ function cancelRun() {
   .catch(() => showToast('Cancel request failed', 'error'));
 }
 
-/* ── Pipeline step ticker ───────────────────────────── */
-function updateStepTicker(stepDefs, pipeline) {
-  const ticker = document.getElementById('step-ticker');
-  const list = document.getElementById('step-ticker-list');
-  const stateEl = document.getElementById('step-ticker-state');
-  if (!ticker || !list || !stateEl || !Array.isArray(stepDefs)) return;
+/* ── Pipeline drawer ─────────────────────────────────── */
+function openPipelineDrawer() {
+  const drawer = document.getElementById('pipeline-drawer');
+  if (!drawer) return;
+  drawer.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+}
 
-  if (!pipeline.running) {
-    ticker.classList.remove('open');
-    ticker.setAttribute('aria-hidden', 'true');
-    return;
+function closePipelineDrawer() {
+  const drawer = document.getElementById('pipeline-drawer');
+  if (!drawer) return;
+  drawer.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+
+document.addEventListener('click', function(e) {
+  const drawer = document.getElementById('pipeline-drawer');
+  if (drawer && drawer.classList.contains('open') && !drawer.contains(e.target)) {
+    const chip = e.target.closest('.pipeline-status-chip');
+    if (!chip) closePipelineDrawer();
   }
+});
 
-  ticker.classList.add('open');
-  ticker.setAttribute('aria-hidden', 'false');
+function updatePipelineDrawer(stepDefs, pipeline) {
+  if (!Array.isArray(stepDefs)) return;
 
+  const stateEl   = document.getElementById('drawer-state');
+  const stepsList = document.getElementById('drawer-steps');
+  const summaryEl = document.getElementById('drawer-summary');
+  if (!stateEl || !stepsList || !summaryEl) return;
+
+  if (pipeline.running) openPipelineDrawer();
+
+  // State label
+  let stateText = '', stateCls = '';
+  if (pipeline.running && pipeline.paused) { stateText = 'Paused';    stateCls = 'is-paused'; }
+  else if (pipeline.running)               { stateText = 'Running';   stateCls = 'is-running'; }
+  else if (pipeline.last_status === 'success') { stateText = 'Completed'; stateCls = 'is-done'; }
+  else if (pipeline.last_status === 'error')   { stateText = 'Failed';    stateCls = 'is-error'; }
+  stateEl.textContent = stateText;
+  stateEl.className = 'drawer-state ' + stateCls;
+
+  const progress  = pipeline.step_progress || {};
   const completed = {};
   for (const h of (pipeline.step_history || [])) completed[h.key] = h.status;
   const current = pipeline.current_step;
 
-  list.innerHTML = stepDefs.map(s => {
+  stepsList.innerHTML = stepDefs.map(s => {
     const status = completed[s.key];
-    let cls = 'pending';
-    if (status === 'ok')      cls = 'done';
-    else if (status === 'error')   cls = 'error';
-    else if (status === 'skipped') cls = 'skipped';
-    else if (current === s.key)    cls = 'running';
-    return `<li class="step-pill step-${cls}" title="${s.label} · ${status || (current === s.key ? 'running' : 'queued')}">
-      <span class="step-dot"></span>
-      <span class="step-label">${s.label}</span>
+    let cls = 'step-pending';
+    if (status === 'ok')           cls = 'step-done';
+    else if (status === 'error')   cls = 'step-error';
+    else if (status === 'skipped') cls = 'step-skipped';
+    else if (current === s.key)    cls = 'step-running';
+
+    const prog = progress[s.key];
+    let subHtml = '';
+    if (prog && prog.total > 0) {
+      const pct = Math.round((prog.done / prog.total) * 100);
+      subHtml = `<div class="drawer-step-sub">${prog.done} / ${prog.total}</div>
+        <div class="drawer-progress-wrap">
+          <div class="drawer-progress-bar" style="width:${pct}%"></div>
+        </div>`;
+    } else if (cls === 'step-running') {
+      subHtml = `<div class="drawer-step-sub">Working…</div>`;
+    }
+
+    return `<li class="drawer-step ${cls}">
+      <div class="drawer-step-icon"></div>
+      <div class="drawer-step-info">
+        <div class="drawer-step-label">${s.label}</div>
+        ${subHtml}
+      </div>
     </li>`;
   }).join('');
 
-  stateEl.textContent = pipeline.paused ? 'Paused' : (current ? 'Running' : 'Wrapping up…');
-  stateEl.className = 'step-ticker-state' + (pipeline.paused ? ' is-paused' : '');
+  // Summary panel — visible after run completes
+  if (!pipeline.running && pipeline.last_status) {
+    const categorizeProg = progress['categorize'] || {};
+    const scanProg       = progress['scan']       || {};
+    let rows = '';
+    if (pipeline.last_completed) {
+      rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${timeAgo(pipeline.last_completed)}</span></div>`;
+    }
+    if (categorizeProg.total > 0) {
+      rows += `<div class="drawer-summary-row"><span>Items categorized</span><span class="drawer-summary-val">${categorizeProg.done} / ${categorizeProg.total}</span></div>`;
+    }
+    if (scanProg.total > 0) {
+      rows += `<div class="drawer-summary-row"><span>Repos scanned</span><span class="drawer-summary-val">${scanProg.done} / ${scanProg.total}</span></div>`;
+    }
+    summaryEl.style.display = rows ? '' : 'none';
+    summaryEl.innerHTML = rows;
+  } else {
+    summaryEl.style.display = 'none';
+  }
 }
 
 let _pollTimer = setInterval(pollStatus, 5000);
@@ -620,6 +690,7 @@ function triggerRun() {
   .then(data => {
     if (data.status === 'started') {
       showToast('Pipeline started', 'success');
+      openPipelineDrawer();
       clearInterval(_pollTimer);
       _pollTimer = setInterval(pollStatus, 2000);
       setTimeout(() => {

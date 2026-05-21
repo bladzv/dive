@@ -30,6 +30,7 @@ import re
 import sqlite3
 import tomllib
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -134,8 +135,13 @@ def run(
     conn: sqlite3.Connection,
     config: AppConfig,
     excluded_repos: list[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> ScannerStats:
-    """Scan all repos and store vulnerability findings. Never raises."""
+    """Scan all repos and store vulnerability findings. Never raises.
+
+    on_progress(done, total_repos) is called after each repo so callers can
+    track real-time progress (e.g. to update the pipeline drawer).
+    """
     stats = ScannerStats()
     kev_cves = db.get_kev_cve_ids(conn)
     severity_threshold = st.get_severity_threshold(conn)
@@ -161,7 +167,10 @@ def run(
         logger.error("Failed to list repositories: %s", exc)
         return stats
 
-    logger.info("Scanning %d repositories", len(repos))
+    total_repos = len(repos)
+    logger.info("Scanning %d repositories", total_repos)
+    if on_progress:
+        on_progress(0, total_repos)
 
     for repo in repos:
         if repo.full_name in _excluded:
@@ -199,6 +208,8 @@ def run(
             stats.failed_repos.append(repo.full_name)
         except Exception as exc:
             logger.exception("Unexpected error scanning %s: %s", repo.full_name, exc)
+        if on_progress:
+            on_progress(stats.repos_scanned, total_repos)
             stats.failed_repos.append(repo.full_name)
 
     # Record rate limit at end

@@ -96,6 +96,7 @@ _pipeline_status: dict = {
     "current_step": None,  # key of the step currently executing, or None
     "step_history": [],  # [{key, status}] in order, cleared at run start
     "paused": False,  # True when a pause is in effect
+    "step_progress": {},  # {step_key: {"done": int, "total": int}}
 }
 
 # Canonical list of pipeline steps shown in the UI step ticker. The pipeline
@@ -189,6 +190,11 @@ def _enter_step(key: str) -> bool:
         with _pipeline_lock:
             _pipeline_status["paused"] = True
         _pipeline_pause_event.wait(timeout=_MAX_PAUSE_SECONDS)
+        # If we timed out (event still not set), force-clear the pause so
+        # subsequent steps don't each wait another full timeout cycle.
+        if not _pipeline_pause_event.is_set():
+            _pipeline_pause_event.set()
+            _pipeline_control["pause_requested"] = False
         with _pipeline_lock:
             _pipeline_status["paused"] = False
 
@@ -208,8 +214,14 @@ def _finish_step(key: str, status: str = "ok") -> None:
         _pipeline_status["current_step"] = None
 
 
+def _set_step_progress(key: str, done: int, total: int) -> None:
+    """Update per-step progress counters. Called from pipeline step callbacks."""
+    with _pipeline_lock:
+        _pipeline_status["step_progress"][key] = {"done": done, "total": total}
+
+
 def _reset_pipeline_control() -> None:
-    """Clear cancel + pause flags. Called at the start of every run."""
+    """Clear cancel + pause flags and progress counters. Called at run start."""
     _pipeline_control["cancel_requested"] = False
     _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
@@ -217,6 +229,7 @@ def _reset_pipeline_control() -> None:
         _pipeline_status["current_step"] = None
         _pipeline_status["step_history"] = []
         _pipeline_status["paused"] = False
+        _pipeline_status["step_progress"] = {}
 
 
 def _run_pipeline() -> None:
@@ -290,7 +303,11 @@ def _run_pipeline() -> None:
         if _COLLECTOR_AVAILABLE:
             try:
                 with db.get_conn() as conn:
-                    cat_stats = categorizer_module.run(conn, _config)
+                    cat_stats = categorizer_module.run(
+                        conn,
+                        _config,
+                        on_progress=lambda d, t: _set_step_progress("categorize", d, t),
+                    )
                     items_categorized = cat_stats.categorized
                     if cat_stats.uncategorized_rate > 0.2:
                         logger.warning("Categorizer: >20%% of items fell back to Uncategorized")
@@ -320,7 +337,12 @@ def _run_pipeline() -> None:
         if _github_scanning_on:
             try:
                 with db.get_conn() as conn:
-                    scan_stats = gs.run(conn, _config, excluded_repos=_excluded_repos)
+                    scan_stats = gs.run(
+                        conn,
+                        _config,
+                        excluded_repos=_excluded_repos,
+                        on_progress=lambda d, t: _set_step_progress("scan", d, t),
+                    )
                     findings_new_total = scan_stats.findings_new
                     current_finding_keys = scan_stats.finding_keys
                     scanned_repos = scan_stats.scanned_repos
@@ -1280,10 +1302,13 @@ async def news_page(
     severity: str | None = None,
     source: str | None = None,
     search: str | None = None,
+    sort: str = "published_desc",
     page: int = 1,
     per_page: int = 25,
 ) -> HTMLResponse:
     """All news items with category/severity/source/search filters and pagination."""
+    if sort not in ("published_desc", "published_asc"):
+        sort = "published_desc"
     with db.get_conn() as conn:
         total = db.get_news_items_count(
             conn, category=category, severity=severity, source=source, search=search
@@ -1295,6 +1320,7 @@ async def news_page(
             severity=severity,
             source=source,
             search=search,
+            sort=sort,
             limit=pg["per_page"],
             offset=pg["offset"],
         )
@@ -1321,6 +1347,7 @@ async def news_page(
             "severity_filter": severity,
             "source_filter": source,
             "search_filter": search,
+            "sort": sort,
             "pagination": pg,
         },
     )
@@ -1336,9 +1363,9 @@ async def health() -> JSONResponse:
     """Health check — intentionally unauthenticated. Used by Docker HEALTHCHECK."""
     with _pipeline_lock:
         pipeline = dict(_pipeline_status)
-        # step_history is a list of dicts; copy defensively so the caller can't
-        # mutate our internal state via the JSON response.
+        # Copy mutable nested structures so callers can't mutate internal state.
         pipeline["step_history"] = list(pipeline.get("step_history", []))
+        pipeline["step_progress"] = dict(pipeline.get("step_progress", {}))
     next_run: str | None = None
     if _scheduler:
         job = _scheduler.get_job("pipeline")
@@ -1400,6 +1427,20 @@ async def get_news_recent(
             """,
             (cutoff.isoformat(), int(limit)),
         ).fetchall()
+
+        # On the initial load (no `since`) fall back to the most recent items
+        # so the ticker is never empty when news exists but is older than the window.
+        if not rows and not since:
+            rows = conn.execute(
+                """
+                SELECT id, title, source, published_at, fetched_at, summary, category,
+                       severity, url
+                FROM news_items
+                ORDER BY fetched_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
 
     items = [_enrich_news(r) for r in rows]
     server_now = datetime.now(UTC).isoformat()

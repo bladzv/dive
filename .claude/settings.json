@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff_out=$(python3 -m ruff check . 2>&1); ruff_exit=$?; black_out=$(python3 -m black --check . 2>&1); black_exit=$?; if [ \"$ruff_exit\" -ne 0 ] || [ \"$black_exit\" -ne 0 ]; then jq -n --arg r \"$ruff_out\" --arg b \"$black_out\" '{\"decision\":\"block\",\"reason\":(\"Fix before finishing:\\nruff:\\n\"+$r+\"\\nblack:\\n\"+$b)}'; fi",
+            "timeout": 30,
+            "statusMessage": "Checking ruff + black..."
+          }
+        ]
+      }
+    ]
+  }
+}

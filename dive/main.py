@@ -1015,13 +1015,23 @@ def _dashboard_extras() -> dict:
                     else:
                         c = counts.get(d.isoformat(), 0)
                         ratio = c / max_count
-                        lvl = 0 if c == 0 else (1 if ratio < 0.25 else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4)))
-                        days.append({
-                            "d": d.isoformat(),
-                            "c": c,
-                            "level": lvl,
-                            "label": _cal.month_abbr[d.month] + " " + str(d.day),
-                        })
+                        lvl = (
+                            0
+                            if c == 0
+                            else (
+                                1
+                                if ratio < 0.25
+                                else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4))
+                            )
+                        )
+                        days.append(
+                            {
+                                "d": d.isoformat(),
+                                "c": c,
+                                "level": lvl,
+                                "label": _cal.month_abbr[d.month] + " " + str(d.day),
+                            }
+                        )
                 month_label = None
                 first = next((x for x in days if x is not None), None)
                 if first:

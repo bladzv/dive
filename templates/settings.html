@@ -18,6 +18,15 @@
 
   <div class="settings-grid-2col">
 
+    <!-- ── Feature Toggles ───────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Feature toggles</div>
+      <p class="card-desc">Enable or disable individual pipeline steps and channels.</p>
+      <div id="toggles-list" class="toggle-list">
+        <p class="form-hint">Loading…</p>
+      </div>
+    </div>
+
     <!-- ── Pipeline Schedule ──────────────────────────── -->
     <div class="card">
       <div class="card-title">Pipeline schedule</div>
@@ -36,23 +45,11 @@
         </div>
         <p class="form-hint">How often the pipeline collects news and scans repositories.</p>
       </div>
-      <div class="card-actions">
-        <button class="btn btn-primary btn-sm" onclick="saveInterval()">Save schedule</button>
-      </div>
     </div>
 
-    <!-- ── Feature Toggles ───────────────────────────── -->
-    <div class="card">
-      <div class="card-title">Feature toggles</div>
-      <p class="card-desc">Enable or disable individual pipeline steps and channels.</p>
-      <div id="toggles-list" class="toggle-list">
-        <p class="form-hint">Loading…</p>
-      </div>
-      <div class="card-actions">
-        <button class="btn btn-primary btn-sm" onclick="saveToggles()">Save toggles</button>
-      </div>
-    </div>
-
+  </div>
+  <div class="settings-section-actions">
+    <button class="btn btn-primary btn-sm" onclick="savePipelineSection()">Save pipeline settings</button>
   </div>
 </section>
 
@@ -94,9 +91,6 @@
         <p class="form-hint">Number of recent commits to scan for secrets per repository (default 30).</p>
       </div>
 
-      <div class="card-actions">
-        <button class="btn btn-primary btn-sm" onclick="saveScannerSettings()">Save scanner settings</button>
-      </div>
     </div>
 
     <!-- ── Keyword Watchlist ─────────────────────────── -->
@@ -117,6 +111,9 @@
       </div>
     </div>
 
+  </div>
+  <div class="settings-section-actions">
+    <button class="btn btn-primary btn-sm" onclick="saveScannerSettings()">Save scanner settings</button>
   </div>
 </section>
 
@@ -140,38 +137,57 @@
     <div class="inline-add-row inline-add-row-wide">
       <input type="text" id="new-feed-name" placeholder="Name">
       <input type="text" id="new-feed-url"  placeholder="https://example.com/feed.xml">
-      <button class="btn btn-primary btn-sm" onclick="addFeed()">Add</button>
+      <button class="btn btn-primary btn-sm" onclick="addFeed(this)">Add</button>
     </div>
     <p class="form-hint">URL is validated as a reachable RSS/Atom feed before saving.</p>
   </div>
 </section>
 
-<!-- ══ Section: AI model ═══════════════════════════════ -->
+<!-- ══ Section: AI ═════════════════════════════════════ -->
 <section class="settings-section">
   <header class="settings-section-head">
-    <h2>AI model</h2>
-    <p>Ollama model used to categorise news items. Active: <code id="active-model-label">{{ current_model }}</code></p>
+    <h2>AI</h2>
+    <p>Ollama model and categorization settings. Active model: <code id="active-model-label">{{ current_model }}</code></p>
   </header>
 
-  <div class="card">
-    <div id="model-grid" class="model-grid">
-      <p class="form-hint">Loading available models…</p>
-    </div>
-    <div class="install-hint" id="install-hint" style="display:none">
-      <p class="form-hint">To install this model, run one of:</p>
-      <p class="install-hint-label">Docker</p>
-      <div class="code-block">
-        <code id="install-cmd-docker"></code>
-        <button class="code-copy-btn" type="button"
-                onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+  <div class="settings-grid-2col" style="grid-template-columns: 2fr 1fr">
+
+    <!-- ── Ollama model ───────────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Ollama model</div>
+      <div id="model-grid" class="model-grid">
+        <p class="form-hint">Loading available models…</p>
       </div>
-      <p class="install-hint-label">Bare-metal / Mac</p>
-      <div class="code-block">
-        <code id="install-cmd-bare"></code>
-        <button class="code-copy-btn" type="button"
-                onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+      <div class="install-hint" id="install-hint" style="display:none">
+        <p class="form-hint">To install this model, run one of:</p>
+        <p class="install-hint-label">Docker</p>
+        <div class="code-block">
+          <code id="install-cmd-docker"></code>
+          <button class="code-copy-btn" type="button"
+                  onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+        </div>
+        <p class="install-hint-label">Bare-metal / Mac</p>
+        <div class="code-block">
+          <code id="install-cmd-bare"></code>
+          <button class="code-copy-btn" type="button"
+                  onclick="copyCodeBlock(this)" title="Copy command">Copy</button>
+        </div>
       </div>
     </div>
+
+    <!-- ── Categorization ─────────────────────────────── -->
+    <div class="card">
+      <div class="card-title">Categorization</div>
+      <div class="form-group">
+        <label class="form-label" for="categorize-batch-size">Batch size</label>
+        <input type="number" id="categorize-batch-size" min="1" max="20" step="1" class="form-input-narrow">
+        <p class="form-hint">News items sent to Ollama per request (1–20, default 10). Smaller batches give richer context and recover better from failures.</p>
+      </div>
+    </div>
+
+  </div>
+  <div class="settings-section-actions">
+    <button class="btn btn-primary btn-sm" onclick="saveCategorizeSettings()">Save AI settings</button>
   </div>
 </section>
 
@@ -251,32 +267,12 @@ function handleIntervalChange(val) {
   row.classList.toggle('open', val === 'custom');
 }
 
-// Show custom input if current_interval is not a preset
 (function() {
   const sel = document.getElementById('interval-select');
   if (sel.value === 'custom') {
     document.getElementById('custom-interval-row').classList.add('open');
   }
 })();
-
-function saveInterval() {
-  const sel = document.getElementById('interval-select');
-  let hours;
-  if (sel.value === 'custom') {
-    hours = parseFloat(document.getElementById('custom-hours').value);
-    if (!hours || hours < 1) { showToast('Enter a valid number of hours (≥ 1)', 'error'); return; }
-  } else {
-    hours = parseFloat(sel.value);
-  }
-  apiFetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ run_interval_hours: hours })
-  })
-  .then(r => r.json())
-  .then(() => showToast('Schedule saved', 'success'))
-  .catch(() => showToast('Failed to save schedule', 'error'));
-}
 
 /* ── Feature Toggles ───────────────────────────────── */
 let _toggleState = {};
@@ -302,15 +298,30 @@ function loadToggles() {
     });
 }
 
-function saveToggles() {
-  apiFetch('/api/config/toggles', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(_toggleState)
-  })
-  .then(r => r.json())
-  .then(() => showToast('Toggles saved', 'success'))
-  .catch(() => showToast('Failed to save toggles', 'error'));
+/* ── Pipeline section save (schedule + toggles) ────── */
+function savePipelineSection() {
+  const sel = document.getElementById('interval-select');
+  let hours;
+  if (sel.value === 'custom') {
+    hours = parseFloat(document.getElementById('custom-hours').value);
+    if (!hours || hours < 1) { showToast('Enter a valid number of hours (≥ 1)', 'error'); return; }
+  } else {
+    hours = parseFloat(sel.value);
+  }
+  Promise.all([
+    apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_interval_hours: hours }),
+    }).then(r => r.json()),
+    apiFetch('/api/config/toggles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_toggleState),
+    }).then(r => r.json()),
+  ])
+  .then(() => showToast('Pipeline settings saved', 'success'))
+  .catch(() => showToast('Failed to save pipeline settings', 'error'));
 }
 
 /* ── RSS Feeds ─────────────────────────────────────── */
@@ -384,12 +395,11 @@ function deleteFeed(id) {
   });
 }
 
-function addFeed() {
+function addFeed(btn) {
   const name = document.getElementById('new-feed-name').value.trim();
   const url  = document.getElementById('new-feed-url').value.trim();
   if (!name || !url) { showToast('Name and URL are required', 'error'); return; }
 
-  const btn = event.target;
   btn.disabled = true;
   btn.textContent = 'Validating…';
 
@@ -474,6 +484,7 @@ function loadScannerSettings() {
       document.getElementById('severity-select').value = data.severity_threshold || 'high';
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
       document.getElementById('secrets-scan-depth').value = data.secrets_scan_depth ?? 30;
+      document.getElementById('categorize-batch-size').value = data.categorize_batch_size ?? 10;
     })
     .catch(() => {});
 }
@@ -491,6 +502,18 @@ function saveScannerSettings() {
   .then(r => r.json())
   .then(() => showToast('Scanner settings saved', 'success'))
   .catch(() => showToast('Failed to save scanner settings', 'error'));
+}
+
+function saveCategorizeSettings() {
+  const batchSize = parseInt(document.getElementById('categorize-batch-size').value, 10);
+  apiFetch('/api/config/scanner', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ categorize_batch_size: batchSize })
+  })
+  .then(r => r.json())
+  .then(() => showToast('Categorization settings saved', 'success'))
+  .catch(() => showToast('Failed to save categorization settings', 'error'));
 }
 
 /* ── Ollama Model ──────────────────────────────────── */

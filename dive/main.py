@@ -301,7 +301,9 @@ def _run_pipeline() -> None:
         # ------------------------------------------------------------------
         if not _enter_step("categorize"):
             raise _PipelineCancelled()
-        if _COLLECTOR_AVAILABLE:
+        with db.get_conn() as conn:
+            _llm_categorizer_on = st.is_feature_enabled(conn, "llm_categorizer")
+        if _COLLECTOR_AVAILABLE and _llm_categorizer_on:
             try:
                 with db.get_conn() as conn:
                     cat_stats = categorizer_module.run(
@@ -2048,7 +2050,7 @@ async def update_toggles(
 async def get_scanner_settings(
     _user: Annotated[str, Depends(_require_auth)],
 ) -> JSONResponse:
-    """Return scanner settings: severity threshold, excluded repos, and secrets scan depth."""
+    """Return scanner settings: severity threshold, excluded repos, secrets scan depth, and categorizer batch size."""
     with db.get_conn() as conn:
         raw_depth = db.get_setting(conn, "secrets_scan_depth", str(ss.DEFAULT_SCAN_DEPTH))
         try:
@@ -2061,6 +2063,7 @@ async def get_scanner_settings(
                 "excluded_repos": st.get_excluded_repos(conn),
                 "severity_levels": st.SEVERITY_LEVELS,
                 "secrets_scan_depth": scan_depth,
+                "categorize_batch_size": st.get_categorize_batch_size(conn),
             }
         )
 
@@ -2094,6 +2097,11 @@ async def update_scanner_settings(
                     status_code=400, detail="secrets_scan_depth must be a positive integer"
                 )
             db.set_setting(conn, "secrets_scan_depth", str(depth))
+        if "categorize_batch_size" in body:
+            try:
+                st.set_categorize_batch_size(conn, int(body["categorize_batch_size"]))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse({"status": "updated"})
 
 

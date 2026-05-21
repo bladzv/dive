@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 
 from . import db
+from . import settings as st
 from .config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-BATCH_SIZE = 10
+DEFAULT_BATCH_SIZE = 10
 MAX_RETRIES = 2
 HTTP_TIMEOUT = 120.0  # Ollama on Pi 4 can be slow — 2 min budget per batch
 UNCATEGORIZED_WARNING_THRESHOLD = 0.20  # warn if >20% of items fall back
@@ -99,18 +100,18 @@ def run(
         return stats
 
     total = len(items)
-    # Prefer the model set via the Settings UI over the config.yaml default.
     active_model = db.get_setting(conn, "active_model") or config.ollama.model
+    batch_size = st.get_categorize_batch_size(conn)
     logger.info(
-        "Categorizing %d items in batches of %d (model: %s)", total, BATCH_SIZE, active_model
+        "Categorizing %d items in batches of %d (model: %s)", total, batch_size, active_model
     )
 
     if on_progress:
         on_progress(0, total)
 
     with _make_client() as client:
-        for batch_start in range(0, total, BATCH_SIZE):
-            batch = items[batch_start : batch_start + BATCH_SIZE]
+        for batch_start in range(0, total, batch_size):
+            batch = items[batch_start : batch_start + batch_size]
             _process_batch(conn, client, config, batch, stats, active_model)
             if on_progress:
                 on_progress(min(batch_start + len(batch), total), total)
@@ -146,7 +147,7 @@ def _process_batch(
     stats: CategorizerStats,
     model: str,
 ) -> None:
-    results: list[dict] | None = None
+    results_by_id: dict[int, dict] | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         raw_response = _call_ollama(client, config, batch, model)
@@ -154,13 +155,25 @@ def _process_batch(
             logger.warning("Ollama call failed (attempt %d/%d)", attempt, MAX_RETRIES)
             continue
 
-        results = _parse_response(raw_response, expected_count=len(batch))
-        if results is not None:
+        parsed = _parse_response(raw_response, expected_count=len(batch))
+        if parsed is not None:
+            results_by_id = _index_by_id(parsed)
             break
         logger.warning("Response failed validation (attempt %d/%d)", attempt, MAX_RETRIES)
 
+    # If the whole batch failed and has multiple items, retry each one individually.
+    # A single malformed item often causes the model to skip or corrupt the rest.
+    if results_by_id is None and len(batch) > 1:
+        logger.info("Batch of %d failed; retrying items individually", len(batch))
+        for item in batch:
+            _process_batch(conn, client, config, [item], stats, model)
+        return
+
     for i, row in enumerate(batch):
-        r = _normalize_result(results[i]) if results and i < len(results) else None
+        item_id = i + 1  # prompt IDs are 1-indexed
+        r = results_by_id.get(item_id) if results_by_id else None
+        if r:
+            r = _normalize_result(r)
         if r and _is_valid(r):
             cluster_id = _assign_cluster(row["title"], row["content"] or "")
             db.update_item_categorization(
@@ -175,7 +188,6 @@ def _process_batch(
             )
             stats.categorized += 1
         else:
-            # Fallback: store item as Uncategorized so it still appears in the feed
             cluster_id = _assign_cluster(row["title"], row["content"] or "")
             db.update_item_categorization(
                 conn,
@@ -244,11 +256,16 @@ def _call_ollama(
 
 
 def _build_prompt(batch: list[sqlite3.Row]) -> str:
-    """Build the classification prompt for a batch of items."""
+    """Build the classification prompt for a batch of items.
+
+    Content budget scales inversely with batch size so smaller batches
+    automatically get richer context per item (up to 1000 chars).
+    """
+    content_chars = max(300, min(1000, 5000 // len(batch)))
     items_block = ""
     for i, row in enumerate(batch, start=1):
         title = _sanitize_field(row["title"], 200)
-        content = _sanitize_field(row["content"] or "", 500)
+        content = _sanitize_field(row["content"] or "", content_chars)
         items_block += f'<item id="{i}">\nTitle: {title}\nContent: {content}\n</item>\n\n'
 
     return f"""You are a security news classifier. Classify each item below.
@@ -258,12 +275,15 @@ No explanation, no markdown, no code fences — only the JSON array.
 
 Each object must have exactly these fields:
 {{
+  "id": integer matching the item's id attribute,
   "category": one of ["Vulnerability","Breach","Malware","Patch","Research","Tool","Policy","Other"],
   "severity": one of ["Critical","High","Medium","Low","Info"],
   "affected_products": array of strings (product or vendor names, max 5, empty array if none),
   "summary": string (one sentence describing the item, max 160 characters),
   "tags": array of strings (relevant keywords, max 5, empty array if none)
 }}
+
+If an item's content is very short or missing, classify based on the title alone.
 
 Items:
 
@@ -324,6 +344,15 @@ def _parse_response(raw: str, expected_count: int) -> list[dict] | None:
         )
 
     return parsed
+
+
+def _index_by_id(results: list[dict]) -> dict[int, dict]:
+    """Map results by their 'id' field. Falls back to positional if id is absent."""
+    indexed: dict[int, dict] = {}
+    for i, r in enumerate(results, start=1):
+        key = r.get("id")
+        indexed[key if isinstance(key, int) and key > 0 else i] = r
+    return indexed
 
 
 def _is_valid(item: Any) -> bool:

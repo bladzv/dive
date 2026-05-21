@@ -145,8 +145,13 @@
               id="cancel-btn" onclick="cancelRun()" style="display:none" title="Cancel pipeline run">
         Cancel
       </button>
+      <button class="btn-pipeline-mobile" id="pipeline-status-mobile"
+              onclick="openPipelineDrawer()" title="View pipeline progress" aria-label="View pipeline progress">
+        <span class="status-dot idle" id="status-dot-mobile"></span>
+        Pipeline
+      </button>
       <button class="btn btn-primary btn-sm btn-run" id="run-now-btn" onclick="triggerRun()">
-        <svg><use href="#i-play"/></svg>Run pipeline
+        <svg><use href="#i-play"/></svg>RUN
       </button>
     </div>
   </header>
@@ -274,6 +279,12 @@ function toggleNav() {
   document.body.classList.toggle('nav-open');
 }
 
+document.getElementById('site-nav').addEventListener('click', function(e) {
+  if (e.target.closest('a[href]') && document.body.classList.contains('nav-open')) {
+    toggleNav();
+  }
+});
+
 /* ── Sidebar drawer collapse ───────────────────────── */
 function _applySidebarIcon() {
   const collapsed = document.documentElement.classList.contains('sidebar-collapsed');
@@ -333,24 +344,30 @@ function timeUntil(iso) {
 
 /* ── Pipeline status polling ─────────────────────────── */
 function updateStatusBadge(pipeline) {
-  const dot  = document.getElementById('status-dot');
-  const text = document.getElementById('status-text');
-  const btn  = document.getElementById('run-now-btn');
+  const dot    = document.getElementById('status-dot');
+  const dotMob = document.getElementById('status-dot-mobile');
+  const text   = document.getElementById('status-text');
+  const btn    = document.getElementById('run-now-btn');
+
+  function setDot(cls) {
+    if (dot)    dot.className    = 'status-dot ' + cls;
+    if (dotMob) dotMob.className = 'status-dot ' + cls;
+  }
 
   if (pipeline.running) {
-    if (dot) dot.className = 'status-dot running';
+    setDot('running');
     text.textContent = 'Running…';
     btn.disabled = true;
   } else if (pipeline.last_status === 'success') {
-    if (dot) dot.className = 'status-dot success';
+    setDot('success');
     text.textContent = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
     btn.disabled = false;
   } else if (pipeline.last_status === 'error') {
-    if (dot) dot.className = 'status-dot error';
+    setDot('error');
     text.textContent = 'Failed';
     btn.disabled = false;
   } else {
-    if (dot) dot.className = 'status-dot idle';
+    setDot('idle');
     text.textContent = 'Never';
     btn.disabled = false;
   }
@@ -501,6 +518,7 @@ function closePipelineDrawer() {
   if (!drawer) return;
   drawer.classList.remove('open');
   drawer.setAttribute('aria-hidden', 'true');
+  _drawerUserClosed = true;
 }
 
 document.addEventListener('click', function(e) {
@@ -519,7 +537,26 @@ function updatePipelineDrawer(stepDefs, pipeline) {
   const summaryEl = document.getElementById('drawer-summary');
   if (!stateEl || !stepsList || !summaryEl) return;
 
-  if (pipeline.running) openPipelineDrawer();
+  const wasRunning = _prevPipelineRunning;
+  const isRunning  = !!pipeline.running;
+  _prevPipelineRunning = isRunning;
+
+  if (wasRunning === null) {
+    // First poll after page load — open only if already running and not dismissed
+    if (isRunning && !_drawerUserClosed) openPipelineDrawer();
+  } else if (!wasRunning && isRunning) {
+    // Transition: idle → running (new run just started)
+    _drawerUserClosed = false;
+    openPipelineDrawer();
+  } else if (wasRunning && !isRunning) {
+    // Transition: running → finished — always surface the summary
+    _drawerUserClosed = false;
+    openPipelineDrawer();
+  } else if (isRunning && !_drawerUserClosed) {
+    // Still running and user hasn't dismissed — keep open
+    openPipelineDrawer();
+  }
+  // idle → idle, or user dismissed: do nothing
 
   // State label
   let stateText = '', stateCls = '';
@@ -584,6 +621,9 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     summaryEl.style.display = 'none';
   }
 }
+
+let _drawerUserClosed   = false;  // set when user explicitly closes the drawer
+let _prevPipelineRunning = null;   // null = first poll, then true/false
 
 let _pollTimer = setInterval(pollStatus, 5000);
 pollStatus();

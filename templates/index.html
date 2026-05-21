@@ -176,7 +176,7 @@
   <div class="panel viz-panel">
     <div class="panel-head">
       <div>
-        <span class="panel-kicker">Last 12 weeks</span>
+        <span class="panel-kicker">Last 3 months</span>
         <h2>Signal activity</h2>
       </div>
       <div class="panel-actions">
@@ -184,14 +184,36 @@
       </div>
     </div>
 
-    {% set hmmax = heatmap_max if heatmap_max > 0 else 1 %}
-    <div class="heatmap" role="img" aria-label="Daily collection activity for the last 12 weeks">
-      <div class="heatmap-grid">
-        {% for d in heatmap %}
-          {% set ratio = (d.c / hmmax) %}
-          {% set level = 0 if d.c == 0 else (1 if ratio < 0.25 else (2 if ratio < 0.5 else (3 if ratio < 0.8 else 4))) %}
-          <span class="hm-cell hm-l{{ level }}" title="{{ d.d }} · {{ d.c }} items"></span>
-        {% endfor %}
+    <div class="hm-github" role="img" aria-label="Daily collection activity for the last 3 months">
+      <div class="hm-top-row">
+        <div class="hm-dow-spacer"></div>
+        <div class="hm-month-row">
+          {% for week in heatmap_weeks %}
+            <div class="hm-month-cell">{{ week.month_label or '' }}</div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="hm-body-row">
+        <div class="hm-dow-labels">
+          <span>Sun</span>
+          <span>Mon</span>
+          <span>Tue</span>
+          <span>Wed</span>
+          <span>Thu</span>
+          <span>Fri</span>
+          <span>Sat</span>
+        </div>
+        <div class="hm-grid">
+          {% for week in heatmap_weeks %}
+            {% for day in week.days %}
+              {% if day %}
+                <span class="hm-cell hm-l{{ day.level }}" title="{{ day.label }} · {{ day.c }} items"></span>
+              {% else %}
+                <span class="hm-cell hm-empty"></span>
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+        </div>
       </div>
       <div class="heatmap-legend">
         <span class="hm-legend-label">Less</span>

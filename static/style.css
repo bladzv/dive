@@ -1188,33 +1188,83 @@ html.sidebar-collapsed .page-footer {
   gap: 0.3rem;
 }
 
-/* ─── Activity heatmap (monochrome) ────────────────── */
-.heatmap {
+/* ─── Activity heatmap (GitHub-style) ────────────────── */
+.hm-github {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 4px;
 }
 
-.heatmap-grid {
+.hm-top-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.hm-dow-spacer {
+  width: 26px;
+  flex-shrink: 0;
+}
+
+.hm-month-row {
+  flex: 1;
+  display: flex;
+  gap: 3px;
+}
+
+.hm-month-cell {
+  flex: 1;
+  font-size: 0.65rem;
+  color: var(--text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  line-height: 1;
+  padding-bottom: 2px;
+}
+
+.hm-body-row {
+  display: flex;
+  gap: 6px;
+}
+
+.hm-dow-labels {
+  width: 26px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hm-dow-labels span {
+  flex: 1;
+  font-size: 0.6rem;
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 2px;
+  line-height: 1;
+}
+
+.hm-grid {
+  flex: 1;
   display: grid;
   grid-template-rows: repeat(7, 1fr);
   grid-auto-flow: column;
   grid-auto-columns: 1fr;
   gap: 3px;
-  width: 100%;
-  aspect-ratio: 12 / 7;
+  aspect-ratio: 13 / 7;
 }
 
 .hm-cell {
-  border-radius: 3px;
+  border-radius: 2px;
   background: var(--panel-3);
-  aspect-ratio: 1;
   min-height: 0;
+  min-width: 0;
 }
 
-/* GitHub-style activity ramp — empty cells are dark grey; busier cells climb
-   through deep teal to vivid emerald so the "heat" of recent days is obvious
-   at a glance. */
+.hm-empty { background: transparent !important; }
+
 .hm-l0 { background: var(--panel-3); }
 .hm-l1 { background: #143e2a; }
 .hm-l2 { background: #16704a; }
@@ -1238,6 +1288,7 @@ html.sidebar-collapsed .page-footer {
 .heatmap-legend .hm-cell {
   width: 11px;
   height: 11px;
+  flex-shrink: 0;
 }
 
 .hm-legend-label { margin: 0 4px; }
@@ -1990,16 +2041,6 @@ html.sidebar-collapsed .page-footer {
 .bm-btn.inline { position: static; flex: 0 0 auto; }
 
 /* ─── Bulk action bar ──────────────────────────────── */
-.bulk-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.6rem 0.85rem;
-  margin-bottom: 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel-2);
-}
 
 /* ─── Severity text helpers ────────────────────────── */
 .text-critical { color: var(--critical); font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -2127,6 +2168,31 @@ html.sidebar-collapsed .page-footer {
 
 .btn-run { gap: 0.45rem; }
 .btn-run svg { width: 12px; height: 12px; }
+
+/* Mobile pipeline status button — hidden on desktop, shown on small screens */
+.btn-pipeline-mobile {
+  display: none;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-pipeline-mobile:hover {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+}
+@media (max-width: 900px) {
+  .btn-pipeline-mobile { display: inline-flex; }
+}
 
 /* Hamburger is mobile-only — must come after .btn base rules to win */
 @media (min-width: 901px) { .mobile-menu-btn { display: none; } }
@@ -2712,6 +2778,14 @@ body:has(.login-card) {
   .filter-bar input,
   #search-form input { max-width: none !important; }
 
+  #bulk-inline {
+    flex: 0 0 100%;
+    justify-content: flex-end;
+    margin-left: 0 !important;
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border);
+  }
+
   .metric-grid,
   .grid-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
@@ -2719,92 +2793,29 @@ body:has(.login-card) {
 
   .exposure-item, .news-item { flex-direction: column; }
 
-  .table-wrap { overflow: visible; }
-  table { min-width: 0; }
-  thead { display: none; }
-  tbody, tr, td { display: block; width: 100%; }
+  /* ── Tables: horizontal scroll replaces stacked cards ── */
+  table { min-width: 0; font-size: 0.75rem; }
+  tbody td { padding: 0.4rem 0.55rem; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-  tbody tr {
-    margin-bottom: 0.7rem;
-    padding: 0.4rem 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--panel-2);
-  }
+  /* Findings: drop affected-range (6) and latest-version (8) to trim width */
+  .page-findings thead th:nth-child(6),
+  .page-findings tbody  td:nth-child(6),
+  .page-findings thead th:nth-child(8),
+  .page-findings tbody  td:nth-child(8) { display: none; }
 
-  tbody td {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.5rem 0.75rem !important;
-    border-bottom: 1px solid var(--border);
-    overflow-wrap: anywhere;
-    white-space: normal !important;
-    max-width: none !important;
-  }
-  tbody td:last-child { border-bottom: 0; }
+  /* Secrets: drop line (5) and commit (6) columns */
+  .page-secrets thead th:nth-child(5),
+  .page-secrets tbody  td:nth-child(5),
+  .page-secrets thead th:nth-child(6),
+  .page-secrets tbody  td:nth-child(6) { display: none; }
 
-  tbody td::before {
-    content: attr(data-label);
-    min-width: 7rem;
-    color: var(--text-subtle);
-    font-size: 0.66rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  tbody td:not([data-label])::before {
-    content: "";
-    display: none;
-  }
+  /* Dashboard triage: drop advisory + fix, keep score / package / severity */
+  .triage-table .triage-advisory,
+  .triage-table .triage-fix { display: none; }
 
-  .page-dashboard tbody td:nth-child(1)::before { content: "Repo"; display: block; }
-  .page-dashboard tbody td:nth-child(2)::before { content: "Package"; display: block; }
-  .page-dashboard tbody td:nth-child(3)::before { content: "Severity"; display: block; }
-  .page-dashboard tbody td:nth-child(4)::before { content: "ID"; display: block; }
-
-  .page-findings tbody td:nth-child(1)::before  { content: "Select"; display: block; }
-  .page-findings tbody td:nth-child(2)::before  { content: "Priority"; display: block; }
-  .page-findings tbody td:nth-child(3)::before  { content: "Repo"; display: block; }
-  .page-findings tbody td:nth-child(4)::before  { content: "Package"; display: block; }
-  .page-findings tbody td:nth-child(5)::before  { content: "Installed"; display: block; }
-  .page-findings tbody td:nth-child(6)::before  { content: "Affected"; display: block; }
-  .page-findings tbody td:nth-child(7)::before  { content: "Patched"; display: block; }
-  .page-findings tbody td:nth-child(8)::before  { content: "Latest"; display: block; }
-  .page-findings tbody td:nth-child(9)::before  { content: "Advisory"; display: block; }
-  .page-findings tbody td:nth-child(10)::before { content: "Severity"; display: block; }
-  .page-findings tbody td:nth-child(11)::before { content: "State"; display: block; }
-  .page-findings tbody td:nth-child(12)::before { content: "Actions"; display: block; }
-
-  .page-secrets tbody td:nth-child(1)::before { content: "Select"; display: block; }
-  .page-secrets tbody td:nth-child(2)::before { content: "Repo"; display: block; }
-  .page-secrets tbody td:nth-child(3)::before { content: "Type"; display: block; }
-  .page-secrets tbody td:nth-child(4)::before { content: "File"; display: block; }
-  .page-secrets tbody td:nth-child(5)::before { content: "Line"; display: block; }
-  .page-secrets tbody td:nth-child(6)::before { content: "Commit"; display: block; }
-  .page-secrets tbody td:nth-child(7)::before { content: "First Seen"; display: block; }
-  .page-secrets tbody td:nth-child(8)::before { content: "State"; display: block; }
-  .page-secrets tbody td:nth-child(9)::before { content: "Actions"; display: block; }
-
-  .page-weekly tbody td:nth-child(1)::before,
-  .page-personal tbody td:nth-child(1)::before { content: "Repo"; display: block; }
-  .page-weekly tbody td:nth-child(2)::before { content: "ID"; display: block; }
-  .page-weekly tbody td:nth-child(3)::before,
-  .page-personal tbody td:nth-child(2)::before { content: "Package"; display: block; }
-  .page-weekly tbody td:nth-child(4)::before { content: "CVSS"; display: block; }
-  .page-weekly tbody td:nth-child(5)::before { content: "Flags"; display: block; }
-  .page-weekly tbody td:nth-child(6)::before,
-  .page-personal tbody td:nth-child(5)::before { content: "State"; display: block; }
-  .page-personal tbody td:nth-child(3)::before { content: "Advisory"; display: block; }
-  .page-personal tbody td:nth-child(4)::before { content: "Severity"; display: block; }
-  .page-personal tbody td:nth-child(6)::before { content: "Note"; display: block; }
-
-  /* Settings RSS feeds table — bypass the stacked-label pattern (which would
-     give every feed five tall rows). Use a compact grid: name + URL on the
-     left, enabled toggle and actions on the right; hide Last Fetched + Items
-     since they're not critical on a narrow screen. */
-  .page-settings tbody td::before { content: none !important; display: none !important; }
+  /* Settings RSS feeds table — compact grid; hide URL, Last Fetched, Items */
+  .page-settings thead { display: none; }
   .page-settings tbody td:nth-child(2),
   .page-settings tbody td:nth-child(3) { display: none !important; }
   .page-settings tbody tr {

@@ -153,16 +153,22 @@
           </td>
 
           <!-- CVE / GHSA — show all available source links -->
-          <td style="font-size:0.78rem" onclick="event.stopPropagation()">
+          <td onclick="event.stopPropagation()">
             {% if f.cve_id or f.ghsa_id %}
-            <div style="display:flex;flex-direction:column;gap:0.2rem">
+            <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:flex-start">
               {% if f.cve_id %}
               <a href="https://nvd.nist.gov/vuln/detail/{{ f.cve_id }}" target="_blank" rel="noopener"
-                 style="color:var(--accent)" title="NVD">{{ f.cve_id }}</a>
+                 class="source-badge" title="View on NVD">
+                <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M9.5 9.5H2.5v-7h4V1h-4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6.5h-1v3z" fill="currentColor"/><path d="M7.5 1v1h1.793L5.146 6.146l.708.708L10 2.707V4.5h1V1H7.5z" fill="currentColor"/></svg>
+                NVD
+              </a>
               {% endif %}
               {% if f.ghsa_id %}
               <a href="https://github.com/advisories/{{ f.ghsa_id }}" target="_blank" rel="noopener"
-                 style="color:var(--accent)" title="GitHub Advisory">{{ f.ghsa_id }}</a>
+                 class="source-badge" title="View on GitHub Advisory">
+                <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M9.5 9.5H2.5v-7h4V1h-4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6.5h-1v3z" fill="currentColor"/><path d="M7.5 1v1h1.793L5.146 6.146l.708.708L10 2.707V4.5h1V1H7.5z" fill="currentColor"/></svg>
+                GHSA
+              </a>
               {% endif %}
             </div>
             {% else %}

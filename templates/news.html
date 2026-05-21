@@ -41,7 +41,7 @@
     <option value="published_asc"  {{ 'selected' if sort == 'published_asc'  else '' }}>Oldest first</option>
   </select>
 
-  <form id="search-form" onsubmit="applySearch(event)" class="search-inline">
+  <form id="search-form" onsubmit="applySearch(event)" class="search-inline news-search-form">
     <input type="text" id="search-input" placeholder="Search title or summary" value="{{ search_filter or '' }}">
     <button type="submit" class="btn btn-outline btn-sm">Search</button>
   </form>

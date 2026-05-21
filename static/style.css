@@ -26,6 +26,10 @@
   --text-bright: #f1f4fb;
   --text-on-accent: #0b0f1a;
 
+  /* Brand mark colour (logo square + collapse button) */
+  --brand-mark:       #6366f1;
+  --brand-mark-hover: #818cf8;
+
   /* Accent (used sparingly — links, active states) */
   --accent:        #cbd5e1;
   --accent-soft:   rgba(203, 213, 225, 0.08);
@@ -69,7 +73,7 @@
 
   /* Layout */
   --sidebar:          232px;
-  --sidebar-collapsed: 64px;
+  --sidebar-collapsed: 78px;
   --topbar:            56px;
   --row-h:             36px;
 }
@@ -197,14 +201,15 @@ code {
   padding: 0.7rem 0.8rem 0.85rem;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
-  transition: width 0.12s ease, padding 0.12s ease;
+  transition: width 0.3s ease-in-out, padding 0.3s ease-in-out;
   overflow: hidden;
   will-change: width;
 }
 
 html.sidebar-collapsed .app-sidebar {
-  padding-left: 0.55rem;
-  padding-right: 0.55rem;
+  padding-left: 0;
+  padding-right: 0;
+  align-items: center;
 }
 
 .app-workspace {
@@ -215,7 +220,7 @@ html.sidebar-collapsed .app-sidebar {
   display: flex;
   flex-direction: column;
   position: relative;
-  transition: margin-left 0.12s ease;
+  transition: margin-left 0.3s ease-in-out;
   will-change: margin-left;
 }
 
@@ -396,19 +401,21 @@ html.sidebar-collapsed .app-sidebar {
   height: 100%;
   padding: 0 0.65rem 0 0.95rem;
   border-right: 1px solid var(--border);
-  transition: width 0.12s ease, padding 0.12s ease;
-  overflow: hidden;
+  transition: width 0.3s ease-in-out, padding 0.3s ease-in-out;
+  overflow: visible;
+  position: relative;
 }
 
 html.sidebar-collapsed .topbar-brand {
-  padding: 0 6px;
-  gap: 0;
-  justify-content: space-between;
+  padding: 0;
+  gap: 6px;
+  justify-content: center;
 }
 
 /* Collapsed: show only the brand-mark (brand-copy is hidden via its own rule below) */
 html.sidebar-collapsed .brand {
   gap: 0;
+  flex: 0 0 auto;
 }
 
 .brand {
@@ -421,20 +428,18 @@ html.sidebar-collapsed .brand {
 .brand:hover { color: var(--text-bright); }
 
 .brand-mark {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  border-radius: 7px;
-  background: var(--text-bright);
-  color: var(--bg);
-}
-
-.brand-mark svg {
-  width: 20px;
-  height: 20px;
-  color: var(--bg);
+  border-radius: 8px;
+  background: var(--brand-mark);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  margin-top: 5px;
 }
 
 .brand-copy {
@@ -455,41 +460,40 @@ html.sidebar-collapsed .brand {
 
 html.sidebar-collapsed .brand-copy { display: none; }
 
-/* Sidebar collapse / expand button */
+/* Sidebar collapse / expand button — floating accent circle on sidebar edge */
 .sidebar-collapse-btn {
+  position: absolute;
+  right: -13px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 101;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  flex: 0 0 auto;
-  transition: color 0.12s, background 0.12s, border-color 0.12s;
-}
-.sidebar-collapse-btn:hover {
-  color: var(--text-bright);
-  background: var(--hover);
-  border-color: var(--border);
-}
-.sidebar-collapse-btn svg { width: 16px; height: 16px; }
-
-html.sidebar-collapsed .brand-mark {
   width: 26px;
   height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--brand-mark);
+  color: #fff;
+  cursor: pointer;
+  flex: 0 0 auto;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.45);
+  transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
-html.sidebar-collapsed .brand-mark svg {
-  width: 16px;
-  height: 16px;
+.sidebar-collapse-btn:hover {
+  background: var(--brand-mark-hover);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.6);
+  transform: translateY(-50%) scale(1.1);
 }
-html.sidebar-collapsed .sidebar-collapse-btn {
-  width: 24px;
-  height: 24px;
-  margin: 0;
+.sidebar-collapse-btn svg { width: 13px; height: 13px; }
+
+html.sidebar-collapsed .brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 0.68rem;
 }
 
 .sidebar-run,
@@ -514,48 +518,77 @@ html.sidebar-collapsed .sidebar-collapse-btn {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin: 0.9rem 0.55rem 0.3rem;
+  max-height: 30px;
+  overflow: hidden;
+  opacity: 1;
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease-in-out,
+              margin-top 0.3s ease-in-out, margin-bottom 0.3s ease-in-out;
 }
 .nav-group-label:first-child { margin-top: 0.1rem; }
+
+html.sidebar-collapsed .nav-group-label {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+}
 
 .site-nav a {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.42rem 0.6rem;
+  padding: 0.45rem 0.6rem;
   border-radius: var(--radius);
   color: var(--text-muted);
   font-size: 0.84rem;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease,
+              padding-left 0.3s ease-in-out;
+}
+
+/* Label spans — fade + shrink instead of display:none */
+.site-nav a > span:not(.nav-badge) {
+  overflow: hidden;
+  max-width: 180px;
+  opacity: 1;
+  margin-left: 0.65rem;
+  white-space: nowrap;
+  transition: max-width 0.3s ease-in-out, opacity 0.2s ease-in-out,
+              margin-left 0.3s ease-in-out;
 }
 
 html.sidebar-collapsed .site-nav a {
-  padding: 0.5rem;
-  justify-content: center;
+  padding-left: calc((var(--sidebar-collapsed) - 18px) / 2);
+  padding-right: 0.5rem;
 }
-html.sidebar-collapsed .site-nav a > span,
-html.sidebar-collapsed .nav-badge,
-html.sidebar-collapsed .nav-group-label {
-  display: none;
+html.sidebar-collapsed .site-nav a > span:not(.nav-badge) {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
 }
-/* In collapsed mode, hide all direct text content of nav links except SVG */
-html.sidebar-collapsed .site-nav a {
-  font-size: 0;
-}
-html.sidebar-collapsed .site-nav a svg { font-size: 1rem; }
+html.sidebar-collapsed .nav-badge { display: none; }
 
+.sidebar-logout > span {
+  overflow: hidden;
+  max-width: 120px;
+  opacity: 1;
+  white-space: nowrap;
+  transition: max-width 0.3s ease-in-out, opacity 0.2s ease-in-out;
+}
 html.sidebar-collapsed .sidebar-logout {
+  justify-content: center;
   padding: 0.35rem;
-  font-size: 0;
 }
-html.sidebar-collapsed .sidebar-logout svg { font-size: 1rem; }
+html.sidebar-collapsed .sidebar-logout > span {
+  max-width: 0;
+  opacity: 0;
+}
 
 .site-nav a svg {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
   flex: 0 0 auto;
   color: var(--text-subtle);
 }
@@ -657,6 +690,7 @@ html.sidebar-collapsed .sidebar-logout svg { font-size: 1rem; }
   font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: -0.005em;
+  margin-left: 18px;
 }
 
 .topbar-spacer { flex: 1; }
@@ -736,7 +770,7 @@ html.sidebar-collapsed .sidebar-logout svg { font-size: 1rem; }
   font-size: 0.72rem;
   font-weight: 500;
   letter-spacing: 0.04em;
-  transition: left 0.12s ease;
+  transition: left 0.3s ease-in-out;
   will-change: left;
 }
 
@@ -958,124 +992,34 @@ html.sidebar-collapsed .page-footer {
 .exposure-pill.is-secret .value   { color: var(--text-bright); }
 .exposure-pill.is-resolved .value { color: var(--success); }
 
-/* ─── Threat ticker ────────────────────────────────── */
-.ticker {
-  position: relative;
-  display: flex;
-  align-items: stretch;
-  margin-bottom: 1rem;
+/* ─── Vuln source icon badges (findings page) ──────── */
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem 0.45rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  overflow: hidden;
-}
-
-.ticker::before,
-.ticker::after {
-  content: "";
-  position: absolute;
-  top: 0; bottom: 0;
-  width: 60px;
-  z-index: 2;
-  pointer-events: none;
-}
-.ticker::before {
-  left: 152px;
-  background: linear-gradient(90deg, var(--panel), transparent);
-}
-.ticker::after {
-  right: 0;
-  background: linear-gradient(270deg, var(--panel), transparent);
-}
-
-.ticker-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex: 0 0 152px;
-  padding: 0 1rem;
-  border-right: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   font-size: 0.7rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  z-index: 3;
-}
-.ticker-tag svg { width: 13px; height: 13px; }
-
-.ticker-track {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  position: relative;
-}
-
-.ticker-row {
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-  will-change: transform;
-}
-.ticker-row:hover { animation-play-state: paused; }
-
-@keyframes ticker-scroll {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-50%); }
-}
-
-.ticker-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55rem;
-  padding: 0.6rem 1.1rem 0.6rem 0.85rem;
-  color: var(--text);
-  font-size: 0.82rem;
-  border-right: 1px solid var(--border);
+  letter-spacing: 0.04em;
   text-decoration: none;
-  transition: background 0.12s, color 0.12s;
+  color: var(--text-muted);
+  background: var(--panel-2);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
 }
-.ticker-item:hover {
-  background: var(--hover);
-  color: var(--text-bright);
+.source-badge:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.ticker-item-empty {
-  color: var(--text-subtle);
-  pointer-events: none;
-  font-style: italic;
-}
-.ticker-item-fresh {
-  animation: ticker-fresh 5s ease forwards;
-}
-@keyframes ticker-fresh {
-  0%   { background: color-mix(in srgb, var(--accent) 35%, transparent); }
-  60%  { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-  100% { background: transparent; }
-}
-
-.ticker-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--text-subtle);
+.source-badge svg {
+  width: 10px;
+  height: 10px;
   flex: 0 0 auto;
+  opacity: 0.7;
 }
-.ticker-dot-critical { background: var(--critical); }
-.ticker-dot-high     { background: var(--high); }
-.ticker-dot-medium   { background: var(--medium); }
-.ticker-dot-low      { background: var(--low); }
-
-.ticker-src {
-  color: var(--text-subtle);
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.ticker-title { color: var(--text-bright); font-weight: 500; }
-.ticker-time { color: var(--text-subtle); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
 
 /* ─── Three-column viz grid ────────────────────────── */
 .viz-grid {
@@ -2282,6 +2226,7 @@ input[type="checkbox"] {
 /* News filter bar — narrower controls so the bar stays compact */
 .filter-bar select                { max-width: 200px; }
 .filter-bar .search-inline input  { max-width: 400px; }
+.filter-bar .news-search-form input { max-width: 680px; width: 680px; }
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }

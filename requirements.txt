@@ -21,18 +21,16 @@ PyGithub>=2.3.0
 PyYAML>=6.0
 
 # Multipart form support (required by FastAPI for file uploads and forms)
-# Minimum 0.0.20 — earlier versions vulnerable to header injection and ReDoS
-# (GHSA-59g5-xgcq-4qw3, GHSA-mj87-hwqh-73pj, GHSA-pp6c-gr5w-3c5g, GHSA-wp53-j4wj-2cfg)
-python-multipart>=0.0.20
+# Minimum 0.0.27 — fixes CVE-2026-40347 (5.3), CVE-2026-42561 (7.5), CVE-2026-24486 (8.6)
+python-multipart>=0.0.27
 
 # File-based lock for concurrent run protection
-# Minimum 3.16.0 — earlier versions had known advisories (GHSA-qmgc-5h2g-mvrw, GHSA-w853-jp5j-5j7f)
-filelock>=3.16.0
+# Minimum 3.20.3 — fixes CVE-2026-22701 (5.3), CVE-2025-68146 (6.3)
+filelock>=3.20.3
 
 # Jinja2 templating for the web dashboard
-# Minimum 3.1.5 — earlier versions vulnerable to sandbox bypass and XSS
-# (GHSA-h5c8-rqwp-cp95, GHSA-q2x7-8rv6-6q7h, GHSA-cpwx-vrp4-4pq7, GHSA-gmj6-6f8f-6699, GHSA-h75v-3vvj-5mfj)
-jinja2>=3.1.5
+# Minimum 3.1.6 — fixes CVE-2025-27516 (5.4) sandbox bypass
+jinja2>=3.1.6
 
 # CVSS vector scoring — accurate base-score calculation for OSV severity data
 cvss>=3.0

@@ -95,13 +95,7 @@
         <svg width="18" height="18"><use href="#i-menu"/></svg>
       </button>
       <a class="brand" href="/" aria-label="DIVE dashboard">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" fill="none">
-            <path d="M3 18 Q9 8 16 18 T29 18" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" fill="none"/>
-            <path d="M3 24 Q9 14 16 24 T29 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none" opacity="0.5"/>
-            <circle cx="16" cy="11" r="2" fill="currentColor"/>
-          </svg>
-        </span>
+        <span class="brand-mark" aria-hidden="true">DV</span>
         <span class="brand-copy">
           <strong>DIVE</strong>
           <small>Dependency Intelligence</small>
@@ -109,7 +103,9 @@
       </a>
       <button class="sidebar-collapse-btn" id="sidebar-collapse-btn"
               aria-label="Collapse sidebar" title="Collapse sidebar" onclick="toggleSidebar()">
-        <svg id="sidebar-collapse-icon" width="16" height="16"><use href="#i-panel-collapse"/></svg>
+        <svg id="sidebar-collapse-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="12" height="12">
+          <path id="sidebar-collapse-path" d="M 10 3 L 5 8 L 10 13"/>
+        </svg>
       </button>
     </div>
 
@@ -175,42 +171,42 @@
     <nav class="site-nav" aria-label="Primary">
       <div class="nav-group-label">Monitoring</div>
       <a href="/"         class="{{ 'active' if nav_active == 'dashboard' else '' }}">
-        <svg><use href="#i-dashboard"/></svg>Dashboard
+        <svg><use href="#i-dashboard"/></svg><span>Dashboard</span>
       </a>
       <a href="/findings" class="{{ 'active' if nav_active == 'findings'  else '' }}">
-        <svg><use href="#i-shield"/></svg>Vulnerabilities
+        <svg><use href="#i-shield"/></svg><span>Vulnerabilities</span>
         {% if _nb.findings %}<span class="nav-badge nav-badge-warn">{{ _nb.findings }}</span>{% endif %}
       </a>
       <a href="/secrets"  class="{{ 'active' if nav_active == 'secrets'   else '' }}">
-        <svg><use href="#i-key"/></svg>Secrets
+        <svg><use href="#i-key"/></svg><span>Secrets</span>
         {% if _nb.secrets %}<span class="nav-badge nav-badge-crit">{{ _nb.secrets }}</span>{% endif %}
       </a>
       <a href="/news"     class="{{ 'active' if nav_active == 'news'      else '' }}">
-        <svg><use href="#i-rss"/></svg>News
+        <svg><use href="#i-rss"/></svg><span>News</span>
         {% if _nb.news %}<span class="nav-badge">{{ _nb.news }}</span>{% endif %}
       </a>
 
       <div class="nav-group-label">Reports</div>
       <a href="/history"  class="{{ 'active' if nav_active == 'history'   else '' }}">
-        <svg><use href="#i-chart"/></svg>History
+        <svg><use href="#i-chart"/></svg><span>History</span>
       </a>
       <a href="/weekly"   class="{{ 'active' if nav_active == 'weekly'    else '' }}">
-        <svg><use href="#i-calendar"/></svg>Weekly report
+        <svg><use href="#i-calendar"/></svg><span>Weekly report</span>
       </a>
       <a href="/personal" class="{{ 'active' if nav_active == 'personal'  else '' }}">
-        <svg><use href="#i-bookmark"/></svg>Bookmarks
+        <svg><use href="#i-bookmark"/></svg><span>Bookmarks</span>
       </a>
 
       <div class="nav-group-label">System</div>
       <a href="/settings" class="{{ 'active' if nav_active == 'settings'  else '' }}">
-        <svg><use href="#i-settings"/></svg>Settings
+        <svg><use href="#i-settings"/></svg><span>Settings</span>
       </a>
     </nav>
 
     <div class="sidebar-foot">
       <a href="/logout" class="sidebar-logout" title="Log out"
          onclick="confirmSignOut(event)">
-        <svg><use href="#i-logout"/></svg>Sign out
+        <svg><use href="#i-logout"/></svg><span>Sign out</span>
       </a>
     </div>
   </aside>
@@ -281,8 +277,9 @@ function toggleNav() {
 /* ── Sidebar drawer collapse ───────────────────────── */
 function _applySidebarIcon() {
   const collapsed = document.documentElement.classList.contains('sidebar-collapsed');
-  const icon = document.getElementById('sidebar-collapse-icon');
-  if (icon) icon.innerHTML = '<use href="#' + (collapsed ? 'i-panel-expand' : 'i-panel-collapse') + '"/>';
+  const path = document.getElementById('sidebar-collapse-path');
+  // > when collapsed (click to expand), < when expanded (click to collapse)
+  if (path) path.setAttribute('d', collapsed ? 'M 6 3 L 11 8 L 6 13' : 'M 10 3 L 5 8 L 10 13');
   const btn = document.getElementById('sidebar-collapse-btn');
   if (btn) {
     btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');

@@ -36,7 +36,8 @@ FEATURE_TOGGLES: dict[str, dict] = {
     "github_scanning": {"label": "GitHub repository scanning", "default": True},
     "secrets_scanning": {"label": "Secrets scanning", "default": True},
     "github_issue_creation": {"label": "GitHub issue auto-creation", "default": False},
-    "weekly_digest": {"label": "Weekly digest", "default": True},
+    "notify_pipeline_run": {"label": "Notify on each pipeline run (summary)", "default": True},
+    "weekly_digest": {"label": "Notify on weekly pipeline run (digest)", "default": True},
 }
 
 # ---------------------------------------------------------------------------

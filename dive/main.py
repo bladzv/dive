@@ -499,14 +499,17 @@ def _run_pipeline() -> None:
         duration = (datetime.now(UTC) - _pipeline_start_time).total_seconds()
         if _config:
             try:
-                notifier.send_pipeline_summary_alert(
-                    _config,
-                    items_collected=items_collected,
-                    items_categorized=items_categorized,
-                    findings_new=findings_new_total,
-                    secrets_new=secrets_new_total,
-                    duration_secs=duration,
-                )
+                with db.get_conn() as conn:
+                    _notify_run = st.is_feature_enabled(conn, "notify_pipeline_run")
+                if _notify_run:
+                    notifier.send_pipeline_summary_alert(
+                        _config,
+                        items_collected=items_collected,
+                        items_categorized=items_categorized,
+                        findings_new=findings_new_total,
+                        secrets_new=secrets_new_total,
+                        duration_secs=duration,
+                    )
             except Exception as exc:
                 logger.warning("Pipeline summary alert failed: %s", exc)
 

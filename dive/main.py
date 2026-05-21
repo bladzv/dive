@@ -16,6 +16,7 @@ FastAPI application with:
 from __future__ import annotations
 
 import asyncio
+import calendar as _cal
 import csv
 import io
 import json
@@ -24,7 +25,7 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -993,9 +994,6 @@ def _dashboard_extras() -> dict:
                 GROUP BY DATE(fetched_at)
             """).fetchall()
             counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
-
-            from datetime import date, timedelta
-            import calendar as _cal
 
             today = date.today()
             max_count = max(counts.values(), default=1) or 1

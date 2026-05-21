@@ -228,9 +228,9 @@ def test_enter_step_timeout_self_resumes_subsequent_steps():
     # After the timeout the event must have been re-set so subsequent steps
     # don't block.
     assert result1 is True
-    assert main._pipeline_pause_event.is_set(), (
-        "event should be set after timeout so subsequent steps don't re-pause"
-    )
+    assert (
+        main._pipeline_pause_event.is_set()
+    ), "event should be set after timeout so subsequent steps don't re-pause"
     assert main._pipeline_control["pause_requested"] is False
 
     # Second step must return immediately without blocking

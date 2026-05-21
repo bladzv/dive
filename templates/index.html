@@ -308,7 +308,7 @@
 
   {% if news_items %}
   <div class="intel-grid">
-    {% for item in news_items[:6] %}
+    {% for item in news_items[:10] %}
     <article class="intel-card" id="ni-{{ item.id }}">
       <div class="intel-meta">
         <span>{{ item.source }}</span>
@@ -361,8 +361,9 @@ function toggleBookmark(itemId) {
   const MAX_ITEMS = 30;
   const seenIds = new Set();
   let lastFetchedAt = null;
+  let allItems = [];
 
-  function escape(s) {
+  function esc(s) {
     return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   }
 
@@ -370,12 +371,30 @@ function toggleBookmark(itemId) {
     const sev = (it.severity || 'unknown').toLowerCase();
     const title = it.title.length > 90 ? it.title.slice(0, 90) + '…' : it.title;
     const cls = 'ticker-item' + (fresh ? ' ticker-item-fresh' : '');
-    return `<a class="${cls}" href="${escape(it.url)}" target="_blank" rel="noopener" title="${escape(it.title)}">
-      <span class="ticker-dot ticker-dot-${escape(sev)}"></span>
-      <span class="ticker-src">${escape(it.source)}</span>
-      <span class="ticker-title">${escape(title)}</span>
-      <span class="ticker-time">${escape(it.time_ago || 'just now')}</span>
+    return `<a class="${cls}" href="${esc(it.url)}" target="_blank" rel="noopener" title="${esc(it.title)}">
+      <span class="ticker-dot ticker-dot-${esc(sev)}"></span>
+      <span class="ticker-src">${esc(it.source)}</span>
+      <span class="ticker-title">${esc(title)}</span>
+      <span class="ticker-time">${esc(it.time_ago || 'just now')}</span>
     </a>`;
+  }
+
+  function renderTicker(freshIds) {
+    if (!allItems.length) {
+      row.innerHTML = '<a class="ticker-item ticker-item-empty"><span class="ticker-src">No activity in the last hour</span></a>';
+      row.style.animation = '';
+      return;
+    }
+    // Duplicate content so translateX(-50%) loops seamlessly back to start.
+    const html = allItems.map(it => buildItem(it, freshIds && freshIds.has(it.id))).join('');
+    row.innerHTML = html + html;
+    const dur = Math.max(5, allItems.length * 0.8);
+    row.style.animation = `ticker-scroll ${dur}s linear infinite`;
+    if (freshIds && freshIds.size) {
+      setTimeout(() => {
+        row.querySelectorAll('.ticker-item-fresh').forEach(el => el.classList.remove('ticker-item-fresh'));
+      }, 5000);
+    }
   }
 
   function pollLive() {
@@ -387,29 +406,20 @@ function toggleBookmark(itemId) {
         if (!data) return;
         const items = data.items || [];
         const fresh = items.filter(it => !seenIds.has(it.id));
-        if (!fresh.length && lastFetchedAt) return;  // no new items since last poll
+        if (!fresh.length && lastFetchedAt) return;
+
+        const freshIds = new Set(fresh.map(it => it.id));
 
         if (!lastFetchedAt) {
-          // First load: replace placeholder
-          if (!items.length) {
-            row.innerHTML = '<a class="ticker-item ticker-item-empty"><span class="ticker-src">No activity in the last hour</span></a>';
-            lastFetchedAt = data.server_now;
-            return;
-          }
+          allItems = items;
           items.forEach(it => seenIds.add(it.id));
-          row.innerHTML = items.map(it => buildItem(it, false)).join('');
         } else {
-          // Subsequent loads: prepend new items with highlight
-          fresh.forEach(it => seenIds.add(it.id));
-          row.insertAdjacentHTML('afterbegin', fresh.map(it => buildItem(it, true)).join(''));
-          // Trim to MAX_ITEMS
-          while (row.children.length > MAX_ITEMS) row.removeChild(row.lastChild);
-          // Drop the "fresh" highlight after 5s
-          setTimeout(() => {
-            row.querySelectorAll('.ticker-item-fresh').forEach(el => el.classList.remove('ticker-item-fresh'));
-          }, 5000);
+          fresh.forEach(it => { seenIds.add(it.id); allItems.unshift(it); });
+          if (allItems.length > MAX_ITEMS) allItems = allItems.slice(0, MAX_ITEMS);
         }
-        // Track newest fetched_at so the next call only asks for items newer than this.
+
+        renderTicker(freshIds);
+
         const newest = items.reduce((max, it) =>
           (!max || it.fetched_at > max) ? it.fetched_at : max, lastFetchedAt);
         lastFetchedAt = newest || data.server_now;

@@ -506,6 +506,14 @@ function closePipelineDrawer() {
   drawer.setAttribute('aria-hidden', 'true');
 }
 
+document.addEventListener('click', function(e) {
+  const drawer = document.getElementById('pipeline-drawer');
+  if (drawer && drawer.classList.contains('open') && !drawer.contains(e.target)) {
+    const chip = e.target.closest('.pipeline-status-chip');
+    if (!chip) closePipelineDrawer();
+  }
+});
+
 function updatePipelineDrawer(stepDefs, pipeline) {
   if (!Array.isArray(stepDefs)) return;
 
@@ -517,7 +525,7 @@ function updatePipelineDrawer(stepDefs, pipeline) {
   if (pipeline.running) openPipelineDrawer();
 
   // State label
-  let stateText = '—', stateCls = '';
+  let stateText = '', stateCls = '';
   if (pipeline.running && pipeline.paused) { stateText = 'Paused';    stateCls = 'is-paused'; }
   else if (pipeline.running)               { stateText = 'Running';   stateCls = 'is-running'; }
   else if (pipeline.last_status === 'success') { stateText = 'Completed'; stateCls = 'is-done'; }

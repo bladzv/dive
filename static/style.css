@@ -1016,12 +1016,9 @@ html.sidebar-collapsed .page-footer {
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
-  /* No marquee auto-scroll — the ticker is now driven by live polling,
-     so we let new items prepend and let the user scroll horizontally. */
-  overflow-x: auto;
-  max-width: 100%;
-  scrollbar-width: thin;
+  will-change: transform;
 }
+.ticker-row:hover { animation-play-state: paused; }
 
 @keyframes ticker-scroll {
   from { transform: translateX(0); }
@@ -1458,7 +1455,14 @@ html.sidebar-collapsed .page-footer {
 }
 
 /* Grids */
-.ops-grid,
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1.05fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.ops-grid > :first-child { grid-column: 1 / 3; }
+
 .grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 2.15fr) minmax(0, 1.05fr);
@@ -2277,7 +2281,7 @@ input[type="checkbox"] {
 
 /* News filter bar — narrower controls so the bar stays compact */
 .filter-bar select                { max-width: 200px; }
-.filter-bar .search-inline input  { max-width: 200px; }
+.filter-bar .search-inline input  { max-width: 400px; }
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }

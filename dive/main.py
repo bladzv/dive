@@ -1428,6 +1428,20 @@ async def get_news_recent(
             (cutoff.isoformat(), int(limit)),
         ).fetchall()
 
+        # On the initial load (no `since`) fall back to the most recent items
+        # so the ticker is never empty when news exists but is older than the window.
+        if not rows and not since:
+            rows = conn.execute(
+                """
+                SELECT id, title, source, published_at, fetched_at, summary, category,
+                       severity, url
+                FROM news_items
+                ORDER BY fetched_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+
     items = [_enrich_news(r) for r in rows]
     server_now = datetime.now(UTC).isoformat()
     return JSONResponse({"items": items, "server_now": server_now})

@@ -1103,8 +1103,7 @@ def _store_osv_finding(
 
     if is_new:
         stats.findings_new += 1
-        # Generate AI next steps for new high-severity findings
-        if severity_text in _HIGH_SEVERITY:
+        if severity_text in _HIGH_SEVERITY and st.is_feature_enabled(conn, "llm_ai_next_steps"):
             _generate_next_steps_for_finding(conn, config, finding, vuln)
     else:
         stats.findings_updated += 1

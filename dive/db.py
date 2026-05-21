@@ -189,6 +189,10 @@ def init(path: Path | None = None) -> None:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add columns introduced in later milestones. Each ALTER is idempotent."""
+    news_existing = {row[1] for row in conn.execute("PRAGMA table_info(news_items)").fetchall()}
+    if "categorize_attempts" not in news_existing:
+        conn.execute("ALTER TABLE news_items ADD COLUMN categorize_attempts INT NOT NULL DEFAULT 0")
+
     existing = {row[1] for row in conn.execute("PRAGMA table_info(findings)").fetchall()}
     # M3 columns
     if "manifest_path" not in existing:
@@ -310,18 +314,22 @@ def insert_news_item(conn: sqlite3.Connection, item: dict) -> bool:
     return True
 
 
+MAX_CATEGORIZE_ATTEMPTS = 3
+
+
 def get_uncategorized_items(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
     """Return news items that have not yet been categorized, or that previously
-    fell back to 'Uncategorized' so they can be retried when the model improves."""
+    fell back to 'Uncategorized' and have not yet exhausted retry attempts."""
     return conn.execute(
         """
         SELECT id, title, content, source, url
         FROM news_items
-        WHERE category IS NULL OR category = 'Uncategorized'
+        WHERE (category IS NULL OR category = 'Uncategorized')
+          AND categorize_attempts < ?
         ORDER BY fetched_at DESC
         LIMIT ?
         """,
-        (limit,),
+        (MAX_CATEGORIZE_ATTEMPTS, limit),
     ).fetchall()
 
 
@@ -336,24 +344,49 @@ def update_item_categorization(
     tags: list[str],
     cluster_id: str | None,
 ) -> None:
-    """Write categorization results back to a news item."""
-    conn.execute(
-        """
-        UPDATE news_items
-        SET summary = ?, category = ?, severity = ?,
-            affected_products = ?, tags = ?, cluster_id = ?
-        WHERE id = ?
-        """,
-        (
-            summary,
-            category,
-            severity,
-            _json_dumps(affected_products),
-            _json_dumps(tags),
-            cluster_id,
-            item_id,
-        ),
-    )
+    """Write categorization results back to a news item.
+
+    Increments categorize_attempts only on fallback ('Uncategorized') so that
+    successfully-categorized items are never retried and failed items stop being
+    retried after MAX_CATEGORIZE_ATTEMPTS runs.
+    """
+    if category == "Uncategorized":
+        conn.execute(
+            """
+            UPDATE news_items
+            SET summary = ?, category = ?, severity = ?,
+                affected_products = ?, tags = ?, cluster_id = ?,
+                categorize_attempts = categorize_attempts + 1
+            WHERE id = ?
+            """,
+            (
+                summary,
+                category,
+                severity,
+                _json_dumps(affected_products),
+                _json_dumps(tags),
+                cluster_id,
+                item_id,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE news_items
+            SET summary = ?, category = ?, severity = ?,
+                affected_products = ?, tags = ?, cluster_id = ?
+            WHERE id = ?
+            """,
+            (
+                summary,
+                category,
+                severity,
+                _json_dumps(affected_products),
+                _json_dumps(tags),
+                cluster_id,
+                item_id,
+            ),
+        )
 
 
 def get_recent_items(

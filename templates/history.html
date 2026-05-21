@@ -24,7 +24,7 @@
   <!-- ── News trend ─────────────────────────────────── -->
   <div class="card">
     <div class="card-title">News Items Collected</div>
-    <div style="position:relative;height:220px">
+    <div id="news-chart-wrap" style="position:relative;height:220px">
       <canvas id="news-chart"></canvas>
     </div>
   </div>
@@ -32,7 +32,7 @@
   <!-- ── Findings trend ────────────────────────────── -->
   <div class="card">
     <div class="card-title">New Findings per Day</div>
-    <div style="position:relative;height:220px">
+    <div id="findings-chart-wrap" style="position:relative;height:220px">
       <canvas id="findings-chart"></canvas>
     </div>
   </div>
@@ -251,23 +251,53 @@ function renderRuns(rows) {
 }
 
 /* ── Loader ─────────────────────────────────────────── */
+function _apiFetch(url) {
+  return fetch(url, { credentials: 'same-origin' })
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+}
+
+function _panelError(id, msg) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML =
+    `<p style="color:var(--error);font-size:0.84rem;margin:0.5rem 0">${msg}</p>`;
+}
+
 function loadAll() {
   const days = getDays();
-  Promise.all([
-    fetch(`/api/history/news-trend?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
-    fetch(`/api/history/findings-trend?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
-    fetch('/api/history/sources', { credentials: 'same-origin' }).then(r => r.json()),
-    fetch('/api/history/runs', { credentials: 'same-origin' }).then(r => r.json()),
-    fetch(`/api/history/feed-analytics?days=${days}`, { credentials: 'same-origin' }).then(r => r.json()),
-  ]).then(([news, findings, sources, runs, feedAnalytics]) => {
-    renderNewsChart(news);
-    renderFindingsChart(findings);
-    renderSources(sources);
-    renderRuns(runs);
-    renderFeedChart(feedAnalytics);
-  }).catch(err => {
-    console.error('History load failed', err);
-  });
+
+  const tasks = [
+    { key: 'news',          url: `/api/history/news-trend?days=${days}` },
+    { key: 'findings',      url: `/api/history/findings-trend?days=${days}` },
+    { key: 'sources',       url: '/api/history/sources' },
+    { key: 'runs',          url: '/api/history/runs' },
+    { key: 'feedAnalytics', url: `/api/history/feed-analytics?days=${days}` },
+  ];
+
+  Promise.allSettled(tasks.map(t => _apiFetch(t.url)))
+    .then(results => {
+      const get = i => results[i].status === 'fulfilled' ? results[i].value : null;
+
+      const news         = get(0);
+      const findings     = get(1);
+      const sources      = get(2);
+      const runs         = get(3);
+      const feedAnalytics = get(4);
+
+      if (news)          renderNewsChart(news);
+      else               _panelError('news-chart-wrap', 'Could not load news trend data.');
+
+      if (findings)      renderFindingsChart(findings);
+      else               _panelError('findings-chart-wrap', 'Could not load findings trend data.');
+
+      if (sources)       renderSources(sources);
+      else               _panelError('sources-wrap', 'Could not load source data.');
+
+      if (runs)          renderRuns(runs);
+      else               _panelError('runs-wrap', 'Could not load pipeline run data.');
+
+      if (feedAnalytics) renderFeedChart(feedAnalytics);
+      else               _panelError('feed-table-wrap', 'Could not load feed analytics data.');
+    });
 }
 
 /* ── Feed analytics chart ───────────────────────────── */
@@ -348,6 +378,6 @@ function renderFeedChart(rows) {
     </div>`;
 }
 
-loadAll();
+setTimeout(loadAll, 0);
 </script>
 {% endblock %}

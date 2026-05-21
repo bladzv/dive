@@ -38,6 +38,11 @@ FEATURE_TOGGLES: dict[str, dict] = {
     "github_issue_creation": {"label": "GitHub issue auto-creation", "default": False},
     "notify_pipeline_run": {"label": "Notify on each pipeline run (summary)", "default": True},
     "weekly_digest": {"label": "Notify on weekly pipeline run (digest)", "default": True},
+    "llm_categorizer": {"label": "AI news categorization (Ollama)", "default": True},
+    "llm_ai_next_steps": {
+        "label": "AI remediation steps for new findings (Ollama)",
+        "default": True,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -46,6 +51,33 @@ FEATURE_TOGGLES: dict[str, dict] = {
 
 SEVERITY_LEVELS = ["critical", "high", "medium", "low", "all"]
 DEFAULT_SEVERITY_THRESHOLD = "high"
+
+# ---------------------------------------------------------------------------
+# Categorizer settings
+# ---------------------------------------------------------------------------
+
+DEFAULT_CATEGORIZE_BATCH_SIZE = 10
+_CATEGORIZE_BATCH_SIZE_MIN = 1
+_CATEGORIZE_BATCH_SIZE_MAX = 20
+
+
+def get_categorize_batch_size(conn: sqlite3.Connection) -> int:
+    raw = db.get_setting(conn, "categorize_batch_size", str(DEFAULT_CATEGORIZE_BATCH_SIZE))
+    try:
+        size = int(raw)
+        return max(_CATEGORIZE_BATCH_SIZE_MIN, min(_CATEGORIZE_BATCH_SIZE_MAX, size))
+    except ValueError:
+        return DEFAULT_CATEGORIZE_BATCH_SIZE
+
+
+def set_categorize_batch_size(conn: sqlite3.Connection, size: int) -> None:
+    if not (_CATEGORIZE_BATCH_SIZE_MIN <= size <= _CATEGORIZE_BATCH_SIZE_MAX):
+        raise ValueError(
+            f"categorize_batch_size must be between {_CATEGORIZE_BATCH_SIZE_MIN} "
+            f"and {_CATEGORIZE_BATCH_SIZE_MAX}"
+        )
+    db.set_setting(conn, "categorize_batch_size", str(size))
+
 
 # ---------------------------------------------------------------------------
 # Default RSS feeds (mirrors collector.DEFAULT_RSS_FEEDS; bootstrapped on

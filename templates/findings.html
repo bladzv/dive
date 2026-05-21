@@ -194,16 +194,16 @@
           <td onclick="event.stopPropagation()">
             <div class="td-actions">
               {% if f.state == 'new' %}
-                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'acknowledge')">Ack</button>
-                <button class="btn btn-success btn-sm" onclick="doAction({{ f.id }}, 'resolve')">Resolve</button>
+                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Ack</button>
+                <button class="btn btn-success btn-sm" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
               {% elif f.state == 'acknowledged' %}
-                <button class="btn btn-success btn-sm" onclick="doAction({{ f.id }}, 'resolve')">Resolve</button>
-                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'reopen')">Reopen</button>
+                <button class="btn btn-success btn-sm" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
+                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
               {% elif f.state == 'resolved' %}
-                <button class="btn btn-outline btn-sm" onclick="doAction({{ f.id }}, 'reopen')">Reopen</button>
+                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
               {% endif %}
               <button class="btn btn-outline btn-sm"
-                      onclick="openAnnotation({{ f.id }}, {{ f.annotation | tojson }})"
+                      onclick='openAnnotation({{ f.id }}, {{ f.annotation | tojson }})'
                       title="Add/edit note" aria-label="Add or edit note">Note</button>
             </div>
           </td>
@@ -350,8 +350,7 @@ function setPageSize(size) {
   window.location = window.location.pathname + '?' + params.toString();
 }
 
-function doAction(id, action) {
-  const btn = event.target;
+function doAction(btn, id, action) {
   btn.disabled = true;
   apiFetch('/api/findings/' + id + '/' + action, {
     method: 'POST',

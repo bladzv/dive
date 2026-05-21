@@ -1536,7 +1536,18 @@ html.sidebar-collapsed .page-footer {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
-  align-items: start;
+  align-items: stretch;
+}
+
+.settings-grid-2col > .card {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-section-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.85rem;
 }
 
 /* ─── Settings: card internals (consistent across cards) ─ */

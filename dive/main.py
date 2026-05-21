@@ -16,6 +16,7 @@ FastAPI application with:
 from __future__ import annotations
 
 import asyncio
+import calendar as _cal
 import csv
 import io
 import json
@@ -24,7 +25,7 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -942,7 +943,7 @@ def _nav_badges() -> dict:
 
 def _dashboard_extras() -> dict:
     """Top affected repos, top CVEs, and activity heatmap for the dashboard."""
-    out: dict = {"top_repos": [], "top_cves": [], "heatmap": [], "heatmap_max": 0}
+    out: dict = {"top_repos": [], "top_cves": [], "heatmap_weeks": [], "heatmap_max": 0}
     try:
         with db.get_conn() as conn:
             # Top affected repos by open finding count, with severity breakdown
@@ -985,24 +986,64 @@ def _dashboard_extras() -> dict:
             """).fetchall()
             out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
 
-            # 12-week activity heatmap — news items per day
+            # 3-month GitHub-style activity heatmap — news items per day
             hm_rows = conn.execute("""
                 SELECT DATE(fetched_at) AS d, COUNT(*) AS c
                 FROM news_items
-                WHERE fetched_at >= datetime('now', '-84 days')
+                WHERE fetched_at >= datetime('now', '-95 days')
                 GROUP BY DATE(fetched_at)
             """).fetchall()
             counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
 
-            from datetime import date, timedelta
-
             today = date.today()
-            days = []
-            for i in range(84):
-                d = today - timedelta(days=83 - i)
-                days.append({"d": d.isoformat(), "c": counts.get(d.isoformat(), 0)})
-            out["heatmap"] = days
-            out["heatmap_max"] = max((x["c"] for x in days), default=0)
+            max_count = max(counts.values(), default=1) or 1
+
+            # Align start to the Sunday on or before (today - 90 days)
+            # isoweekday(): Mon=1 … Sun=7 → Sunday offset = isoweekday() % 7
+            start_raw = today - timedelta(days=90)
+            start = start_raw - timedelta(days=start_raw.isoweekday() % 7)
+
+            weeks = []
+            current = start
+            prev_month: str | None = None
+            while current <= today:
+                days = []
+                for i in range(7):
+                    d = current + timedelta(days=i)
+                    if d > today:
+                        days.append(None)
+                    else:
+                        c = counts.get(d.isoformat(), 0)
+                        ratio = c / max_count
+                        lvl = (
+                            0
+                            if c == 0
+                            else (
+                                1
+                                if ratio < 0.25
+                                else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4))
+                            )
+                        )
+                        days.append(
+                            {
+                                "d": d.isoformat(),
+                                "c": c,
+                                "level": lvl,
+                                "label": _cal.month_abbr[d.month] + " " + str(d.day),
+                            }
+                        )
+                month_label = None
+                first = next((x for x in days if x is not None), None)
+                if first:
+                    m = first["d"][:7]
+                    if m != prev_month:
+                        month_label = _cal.month_abbr[int(m[5:7])]
+                        prev_month = m
+                weeks.append({"days": days, "month_label": month_label})
+                current += timedelta(days=7)
+
+            out["heatmap_weeks"] = weeks
+            out["heatmap_max"] = max_count
         return out
     except Exception:
         return out
@@ -1133,7 +1174,7 @@ async def dashboard(
             "bookmarked_ids": list(bookmarked_ids),
             "top_repos": extras["top_repos"],
             "top_cves": extras["top_cves"],
-            "heatmap": extras["heatmap"],
+            "heatmap_weeks": extras["heatmap_weeks"],
             "heatmap_max": extras["heatmap_max"],
         },
     )

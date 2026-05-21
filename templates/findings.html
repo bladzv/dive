@@ -32,20 +32,17 @@
     {% endfor %}
   </select>
   {% endif %}
+
+  <span id="bulk-inline" style="display:none;align-items:center;gap:0.4rem;margin-left:auto">
+    <span id="bulk-count" style="font-size:0.8rem;font-weight:600;color:var(--text-muted)"></span>
+    <button class="btn btn-outline btn-sm" onclick="bulkAction('acknowledge')">Acknowledge</button>
+    <button class="btn btn-success  btn-sm" onclick="bulkAction('resolve')">Resolve</button>
+    <button class="btn btn-outline btn-sm" onclick="bulkAction('reopen')">Reopen</button>
+    <button class="btn btn-outline btn-sm" onclick="toggleAll(false)">Clear</button>
+  </span>
 </div>
 
 <div id="action-msg" style="display:none;margin-bottom:0.75rem"></div>
-
-<!-- ── Bulk action bar ───────────────────────────────── -->
-<div id="bulk-bar" class="bulk-bar" style="display:none">
-  <span id="bulk-count" style="font-size:0.875rem;font-weight:500"></span>
-  <div style="display:flex;gap:0.4rem;margin-left:auto;flex-wrap:wrap">
-    <button class="btn btn-outline btn-sm" onclick="bulkAction('acknowledge')">Acknowledge</button>
-    <button class="btn btn-success btn-sm" onclick="bulkAction('resolve')">Resolve</button>
-    <button class="btn btn-outline btn-sm" onclick="bulkAction('reopen')">Reopen</button>
-    <button class="btn btn-outline btn-sm" onclick="toggleAll(false)" style="margin-left:0.25rem">Clear</button>
-  </div>
-</div>
 
 <!-- ── Table ────────────────────────────────────────── -->
 {% if findings %}
@@ -160,14 +157,14 @@
               <a href="https://nvd.nist.gov/vuln/detail/{{ f.cve_id }}" target="_blank" rel="noopener"
                  class="source-badge" title="View on NVD">
                 <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M9.5 9.5H2.5v-7h4V1h-4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6.5h-1v3z" fill="currentColor"/><path d="M7.5 1v1h1.793L5.146 6.146l.708.708L10 2.707V4.5h1V1H7.5z" fill="currentColor"/></svg>
-                NVD
+                {{ f.cve_id }}
               </a>
               {% endif %}
               {% if f.ghsa_id %}
               <a href="https://github.com/advisories/{{ f.ghsa_id }}" target="_blank" rel="noopener"
                  class="source-badge" title="View on GitHub Advisory">
                 <svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M9.5 9.5H2.5v-7h4V1h-4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6.5h-1v3z" fill="currentColor"/><path d="M7.5 1v1h1.793L5.146 6.146l.708.708L10 2.707V4.5h1V1H7.5z" fill="currentColor"/></svg>
-                GHSA
+                {{ f.ghsa_id }}
               </a>
               {% endif %}
             </div>
@@ -310,9 +307,9 @@ function toggleAll(checked) {
 }
 
 function _updateBulkBar() {
-  const bar = document.getElementById('bulk-bar');
+  const inline = document.getElementById('bulk-inline');
   const countEl = document.getElementById('bulk-count');
-  bar.style.display = _selected.size > 0 ? 'flex' : 'none';
+  inline.style.display = _selected.size > 0 ? 'inline-flex' : 'none';
   countEl.textContent = _selected.size + ' selected';
   const allCbs = document.querySelectorAll('.row-check');
   const allCb  = document.getElementById('select-all');
@@ -343,14 +340,14 @@ function applyRepoFilter(repo) {
   if (repo) params.set('repo', repo);
   else params.delete('repo');
   params.delete('page');
-  window.location = '/findings' + (params.toString() ? '?' + params.toString() : '');
+  window.location = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
 }
 
 function setPageSize(size) {
   const params = new URLSearchParams(window.location.search);
   params.set('per_page', size);
   params.set('page', '1');
-  window.location = '/findings?' + params.toString();
+  window.location = window.location.pathname + '?' + params.toString();
 }
 
 function doAction(id, action) {

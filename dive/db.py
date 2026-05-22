@@ -4,7 +4,7 @@ db.py — SQLite schema and query functions.
 All external database access goes through this module.
 All queries use parameterised statements — no string interpolation.
 
-The database file lives at data/security_automation.db by default.
+The database file lives at data/dive.db by default.
 Override with the DB_PATH environment variable (useful for tests).
 
 Thread safety: each function opens and closes its own connection.
@@ -26,7 +26,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB_PATH = Path(os.environ.get("DB_PATH", "data/security_automation.db"))
+_DEFAULT_DB_PATH = Path(os.environ.get("DB_PATH", "data/dive.db"))
 
 
 # ---------------------------------------------------------------------------

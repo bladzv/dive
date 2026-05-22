@@ -568,34 +568,79 @@ function updatePipelineDrawer(stepDefs, pipeline) {
   stateEl.className = 'drawer-state ' + stateCls;
 
   const progress  = pipeline.step_progress || {};
+  const stepStats = pipeline.step_stats    || {};
+  const stepTimes = pipeline.step_times    || {};
   const completed = {};
   for (const h of (pipeline.step_history || [])) completed[h.key] = h.status;
   const current = pipeline.current_step;
 
-  stepsList.innerHTML = stepDefs.map(s => {
+  function fmtDuration(s) {
+    if (s == null) return '';
+    if (s < 60) return s.toFixed(1) + 's';
+    return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  }
+
+  function failedList(items, label) {
+    if (!items || !items.length) return '';
+    const id = 'fl-' + Math.random().toString(36).slice(2);
+    const noun = items.length === 1 ? label : label + 's';
+    return `<div class="drawer-failed-wrap">
+      <button class="drawer-failed-toggle" onclick="this.closest('.drawer-failed-wrap').classList.toggle('open')">
+        ▸ ${items.length} failed ${noun}
+      </button>
+      <ul class="drawer-failed-list">${items.map(i => `<li>${i}</li>`).join('')}</ul>
+    </div>`;
+  }
+
+  stepsList.innerHTML = stepDefs.filter(s => completed[s.key] !== 'skipped' && (completed[s.key] || current === s.key || !Object.keys(completed).length || pipeline.running)).map(s => {
     const status = completed[s.key];
     let cls = 'step-pending';
-    if (status === 'ok')           cls = 'step-done';
-    else if (status === 'error')   cls = 'step-error';
-    else if (status === 'skipped') cls = 'step-skipped';
-    else if (current === s.key)    cls = 'step-running';
+    if (status === 'ok')         cls = 'step-done';
+    else if (status === 'error') cls = 'step-error';
+    else if (current === s.key)  cls = 'step-running';
 
-    const prog = progress[s.key];
+    const prog  = progress[s.key];
+    const stats = stepStats[s.key] || {};
+    const times = stepTimes[s.key] || {};
+    const dur   = times.duration_s != null ? fmtDuration(times.duration_s) : '';
+
     let subHtml = '';
-    if (prog && prog.total > 0) {
+
+    if (prog && prog.total > 0 && cls === 'step-running') {
       const pct = Math.round((prog.done / prog.total) * 100);
-      subHtml = `<div class="drawer-step-sub">${prog.done} / ${prog.total}</div>
-        <div class="drawer-progress-wrap">
-          <div class="drawer-progress-bar" style="width:${pct}%"></div>
-        </div>`;
+      subHtml += `<div class="drawer-step-sub">${prog.done} / ${prog.total}</div>
+        <div class="drawer-progress-wrap"><div class="drawer-progress-bar" style="width:${pct}%"></div></div>`;
     } else if (cls === 'step-running') {
-      subHtml = `<div class="drawer-step-sub">Working…</div>`;
+      subHtml += `<div class="drawer-step-sub">Working…</div>`;
     }
+
+    if (status === 'ok' || status === 'error') {
+      const bits = [];
+      if (stats.items_new   != null) bits.push(`${stats.items_new} new items`);
+      if (stats.categorized != null) bits.push(`${stats.categorized} categorised`);
+      if (stats.uncategorized != null) bits.push(`${stats.uncategorized} uncategorised`);
+      if (stats.repos_scanned != null && s.key !== 'secrets') bits.push(`${stats.repos_scanned} repos`);
+      if (stats.packages_checked != null) bits.push(`${stats.packages_checked} packages`);
+      if (stats.findings_new != null) bits.push(`${stats.findings_new} new findings`);
+      if (stats.repos_scanned != null && s.key === 'secrets') bits.push(`${stats.repos_scanned} repos`);
+      if (stats.secrets_new != null) bits.push(`${stats.secrets_new} new secrets`);
+      if (stats.created != null) bits.push(`${stats.created} created`);
+      if (stats.skipped != null) bits.push(`${stats.skipped} skipped`);
+      if (stats.auto_resolved != null) bits.push(`${stats.auto_resolved} auto-resolved`);
+      if (stats.regressions != null) bits.push(`${stats.regressions} regressions`);
+      if (stats.alerted != null) bits.push(`${stats.alerted} alerted`);
+      if (stats.suppressed != null) bits.push(`${stats.suppressed} suppressed`);
+      if (bits.length) subHtml += `<div class="drawer-step-sub">${bits.join(' · ')}</div>`;
+      subHtml += failedList(stats.failed_sources, 'source');
+      subHtml += failedList(stats.failed_repos,   'repo');
+    }
+
+    const durHtml = dur ? `<span class="drawer-step-dur">${dur}</span>` : '';
 
     return `<li class="drawer-step ${cls}">
       <div class="drawer-step-icon"></div>
       <div class="drawer-step-info">
-        <div class="drawer-step-label">${s.label}</div>
+        <div class="drawer-step-label">${s.label}${durHtml}</div>
         ${subHtml}
       </div>
     </li>`;
@@ -603,18 +648,21 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 
   // Summary panel — visible after run completes
   if (!pipeline.running && pipeline.last_status) {
-    const categorizeProg = progress['categorize'] || {};
-    const scanProg       = progress['scan']       || {};
     let rows = '';
     if (pipeline.last_completed) {
       rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${timeAgo(pipeline.last_completed)}</span></div>`;
     }
-    if (categorizeProg.total > 0) {
-      rows += `<div class="drawer-summary-row"><span>Items categorized</span><span class="drawer-summary-val">${categorizeProg.done} / ${categorizeProg.total}</span></div>`;
+    if (pipeline.run_duration_s != null) {
+      rows += `<div class="drawer-summary-row"><span>Total duration</span><span class="drawer-summary-val">${fmtDuration(pipeline.run_duration_s)}</span></div>`;
     }
-    if (scanProg.total > 0) {
-      rows += `<div class="drawer-summary-row"><span>Repos scanned</span><span class="drawer-summary-val">${scanProg.done} / ${scanProg.total}</span></div>`;
-    }
+    const cs = stepStats['collect']    || {};
+    const ks = stepStats['scan']       || {};
+    const ss = stepStats['secrets']    || {};
+    const ls = stepStats['lifecycle']  || {};
+    if (cs.items_new   != null) rows += `<div class="drawer-summary-row"><span>New items collected</span><span class="drawer-summary-val">${cs.items_new}</span></div>`;
+    if (ks.findings_new != null) rows += `<div class="drawer-summary-row"><span>New findings</span><span class="drawer-summary-val">${ks.findings_new}</span></div>`;
+    if (ss.secrets_new != null) rows += `<div class="drawer-summary-row"><span>New secrets</span><span class="drawer-summary-val">${ss.secrets_new}</span></div>`;
+    if (ls.auto_resolved != null) rows += `<div class="drawer-summary-row"><span>Auto-resolved</span><span class="drawer-summary-val">${ls.auto_resolved}</span></div>`;
     summaryEl.style.display = rows ? '' : 'none';
     summaryEl.innerHTML = rows;
   } else {

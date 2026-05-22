@@ -22,6 +22,7 @@ import logging
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -101,19 +102,34 @@ class CollectorStats:
 # ---------------------------------------------------------------------------
 
 
-def run(conn: sqlite3.Connection, config: AppConfig) -> CollectorStats:
+def run(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> CollectorStats:
     """Fetch all sources and insert new items into the database.
 
     Returns a CollectorStats summary. Never raises — individual source failures
     are captured in stats.failed_sources.
     """
     stats = CollectorStats()
+    _sources_done = 0
+
+    def _tick() -> None:
+        nonlocal _sources_done
+        _sources_done += 1
+        if on_progress:
+            # total = RSS feeds + NVD + KEV + GHSA (4 source groups; RSS expands later)
+            on_progress(_sources_done, _sources_done)  # indeterminate total
 
     with _make_client() as client:
-        _run_rss(client, conn, stats)
+        _run_rss(client, conn, stats, on_source_done=_tick)
         _run_nvd(client, conn, config, stats)
+        _tick()
         _run_kev(client, conn, stats)
+        _tick()
         _run_github_advisories(client, conn, config, stats)
+        _tick()
 
     if stats.failed_sources:
         logger.warning(
@@ -176,6 +192,7 @@ def _run_rss(
     client: httpx.Client,
     conn: sqlite3.Connection,
     stats: CollectorStats,
+    on_source_done: Callable[[], None] | None = None,
 ) -> None:
     feeds = settings_module.get_enabled_feeds(conn)
     for feed_row in feeds:
@@ -185,6 +202,8 @@ def _run_rss(
         except Exception as exc:
             logger.exception("Unexpected error fetching RSS feed %s: %s", name, exc)
             stats.failed_sources.append(name)
+        if on_source_done:
+            on_source_done()
 
 
 def _fetch_rss_feed(

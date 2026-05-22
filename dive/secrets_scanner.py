@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def run(
     conn: sqlite3.Connection,
     config: AppConfig,
     excluded_repos: list[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> ScanStats:
     """Entry point: scan all user repos for secrets. Called by the pipeline."""
     stats = ScanStats()
@@ -75,10 +77,9 @@ def run(
         logger.error("Failed to list repos for secrets scan: %s", exc)
         return stats
 
-    for repo in repos:
-        if repo.full_name in _excluded:
-            logger.debug("Skipping excluded repo (secrets scan): %s", repo.full_name)
-            continue
+    scannable = [r for r in repos if r.full_name not in _excluded]
+    total = len(scannable)
+    for repo in scannable:
         try:
             new_count = _scan_repo(conn, repo, config.github.token, scan_depth, fp_fingerprints)
             stats.repos_scanned += 1
@@ -86,6 +87,8 @@ def run(
         except Exception as exc:
             logger.error("Secrets scan failed for %s: %s", repo.full_name, exc)
             stats.failed_repos.append(repo.full_name)
+        if on_progress:
+            on_progress(stats.repos_scanned + len(stats.failed_repos), total)
 
     logger.info(
         "Secrets scanner: %d repos, %d new findings, %d failed",

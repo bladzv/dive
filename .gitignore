@@ -46,6 +46,9 @@ data/
 tmp/
 temp/
 
+# Dev server state
+.dive-db-mode
+
 # macOS
 .DS_Store
 

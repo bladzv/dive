@@ -39,7 +39,7 @@ FastAPI + Jinja2 templates in `templates/`, CSS in `static/`. All dashboard rout
 
 ### Data persistence
 
-- SQLite at `data/security_automation.db` (WAL mode, created at startup)
+- SQLite at `data/dive.db` (WAL mode, created at startup)
 - Runtime config (interval, active model) stored in the `settings` KV table — not in `config.yaml`
 - `config.yaml` holds secrets only (GitHub token, dashboard password, webhook URLs)
 - `rss_feeds` table: user-managed feed list; default feeds are bootstrapped lazily on first read

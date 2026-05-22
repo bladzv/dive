@@ -365,6 +365,36 @@ html.sidebar-collapsed .app-sidebar {
   transition: width 0.3s ease;
 }
 
+.drawer-step-dur {
+  font-size: 0.68rem;
+  color: var(--text-subtle);
+  font-weight: 400;
+  margin-left: 0.4rem;
+}
+.drawer-failed-wrap {
+  margin-top: 0.25rem;
+}
+.drawer-failed-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.7rem;
+  color: var(--error);
+  cursor: pointer;
+  opacity: 0.85;
+}
+.drawer-failed-toggle:hover { opacity: 1; }
+.drawer-failed-list {
+  display: none;
+  margin: 0.2rem 0 0 0.6rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.69rem;
+  color: var(--text-subtle);
+}
+.drawer-failed-wrap.open .drawer-failed-list { display: block; }
+.drawer-failed-wrap.open .drawer-failed-toggle { opacity: 1; }
+
 .drawer-summary {
   border-top: 1px solid var(--border);
   padding: 0.65rem 0.9rem;
@@ -2303,7 +2333,7 @@ input[type="checkbox"] {
 /* News filter bar — narrower controls so the bar stays compact */
 .filter-bar select                { max-width: 200px; }
 .filter-bar .search-inline input  { max-width: 400px; }
-.filter-bar .news-search-form input { max-width: 680px; width: 680px; }
+.filter-bar .news-search-form input { max-width: 340px; width: 340px; }
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }

@@ -98,6 +98,9 @@ _pipeline_status: dict = {
     "step_history": [],  # [{key, status}] in order, cleared at run start
     "paused": False,  # True when a pause is in effect
     "step_progress": {},  # {step_key: {"done": int, "total": int}}
+    "step_stats": {},  # {step_key: {stat_name: value}} — outcome stats per step
+    "step_times": {},  # {step_key: {"start": iso, "end": iso, "duration_s": float}}
+    "run_duration_s": None,  # total wall-clock seconds for the last completed run
 }
 
 # Canonical list of pipeline steps shown in the UI step ticker. The pipeline
@@ -205,6 +208,7 @@ def _enter_step(key: str) -> bool:
 
     with _pipeline_lock:
         _pipeline_status["current_step"] = key
+        _pipeline_status["step_times"].setdefault(key, {})["start"] = datetime.now(UTC).isoformat()
     return True
 
 
@@ -213,12 +217,28 @@ def _finish_step(key: str, status: str = "ok") -> None:
     with _pipeline_lock:
         _pipeline_status["step_history"].append({"key": key, "status": status})
         _pipeline_status["current_step"] = None
+        times = _pipeline_status["step_times"].setdefault(key, {})
+        end = datetime.now(UTC)
+        times["end"] = end.isoformat()
+        start_iso = times.get("start")
+        if start_iso:
+            try:
+                start = datetime.fromisoformat(start_iso)
+                times["duration_s"] = round((end - start).total_seconds(), 1)
+            except Exception:
+                pass
 
 
 def _set_step_progress(key: str, done: int, total: int) -> None:
     """Update per-step progress counters. Called from pipeline step callbacks."""
     with _pipeline_lock:
         _pipeline_status["step_progress"][key] = {"done": done, "total": total}
+
+
+def _set_step_stats(key: str, **kwargs: object) -> None:
+    """Record outcome stats for a completed step. Called after _finish_step."""
+    with _pipeline_lock:
+        _pipeline_status["step_stats"][key] = {k: v for k, v in kwargs.items() if v is not None}
 
 
 def _reset_pipeline_control() -> None:
@@ -231,6 +251,9 @@ def _reset_pipeline_control() -> None:
         _pipeline_status["step_history"] = []
         _pipeline_status["paused"] = False
         _pipeline_status["step_progress"] = {}
+        _pipeline_status["step_stats"] = {}
+        _pipeline_status["step_times"] = {}
+        _pipeline_status["run_duration_s"] = None
 
 
 def _run_pipeline() -> None:
@@ -281,7 +304,11 @@ def _run_pipeline() -> None:
         if _COLLECTOR_AVAILABLE:
             try:
                 with db.get_conn() as conn:
-                    stats = collector_module.run(conn, _config)
+                    stats = collector_module.run(
+                        conn,
+                        _config,
+                        on_progress=lambda d, t: _set_step_progress("collect", d, t),
+                    )
                     items_collected = stats.items_fetched
                     logger.info(
                         "Collector: %d new items (%d failed sources)",
@@ -289,6 +316,11 @@ def _run_pipeline() -> None:
                         len(stats.failed_sources),
                     )
                 _finish_step("collect")
+                _set_step_stats(
+                    "collect",
+                    items_new=stats.items_new,
+                    failed_sources=stats.failed_sources or None,
+                )
             except Exception as exc:
                 logger.error("Collector failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Collector error: {exc}")
@@ -320,6 +352,11 @@ def _run_pipeline() -> None:
                         cat_stats.uncategorized,
                     )
                 _finish_step("categorize")
+                _set_step_stats(
+                    "categorize",
+                    categorized=cat_stats.categorized,
+                    uncategorized=cat_stats.uncategorized or None,
+                )
             except Exception as exc:
                 logger.error("Categorizer failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Categorizer error: {exc}")
@@ -359,6 +396,13 @@ def _run_pipeline() -> None:
                     if scan_stats.failed_repos:
                         logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
                 _finish_step("scan")
+                _set_step_stats(
+                    "scan",
+                    repos_scanned=scan_stats.repos_scanned,
+                    packages_checked=scan_stats.packages_checked,
+                    findings_new=scan_stats.findings_new or None,
+                    failed_repos=scan_stats.failed_repos or None,
+                )
             except Exception as exc:
                 logger.error("Scanner failed: %s", exc, exc_info=True)
                 notifier.send_failure_alert(_config, f"Scanner error: {exc}")
@@ -388,6 +432,12 @@ def _run_pipeline() -> None:
                     if issue_stats.failed_repos:
                         logger.warning("Issue creation failed repos: %s", issue_stats.failed_repos)
                 _finish_step("issues")
+                _set_step_stats(
+                    "issues",
+                    created=issue_stats.issues_created or None,
+                    skipped=issue_stats.issues_skipped or None,
+                    failed_repos=issue_stats.failed_repos or None,
+                )
             except Exception as exc:
                 logger.error("GitHub issue creation failed: %s", exc, exc_info=True)
                 _finish_step("issues", "error")
@@ -409,7 +459,12 @@ def _run_pipeline() -> None:
             secrets_status = "ok"
             try:
                 with db.get_conn() as conn:
-                    sec_stats = ss.run(conn, _config, excluded_repos=_excluded_repos)
+                    sec_stats = ss.run(
+                        conn,
+                        _config,
+                        excluded_repos=_excluded_repos,
+                        on_progress=lambda d, t: _set_step_progress("secrets", d, t),
+                    )
                     secrets_new_total = sec_stats.secrets_new
                     if sec_stats.failed_repos:
                         logger.warning("Secrets scanner failed repos: %s", sec_stats.failed_repos)
@@ -430,6 +485,12 @@ def _run_pipeline() -> None:
             except Exception as exc:
                 logger.error("Secrets notifier failed: %s", exc, exc_info=True)
             _finish_step("secrets", secrets_status)
+            _set_step_stats(
+                "secrets",
+                repos_scanned=sec_stats.repos_scanned,
+                secrets_new=sec_stats.secrets_new or None,
+                failed_repos=sec_stats.failed_repos or None,
+            )
         else:
             logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")
             _finish_step("secrets", "skipped")
@@ -448,6 +509,11 @@ def _run_pipeline() -> None:
                 if resolved:
                     logger.info("Lifecycle: %d auto-resolved (no longer present)", resolved)
             _finish_step("lifecycle")
+            _set_step_stats(
+                "lifecycle",
+                auto_resolved=resolved or None,
+                regressions=reverted or None,
+            )
         except Exception as exc:
             logger.error("Lifecycle reconciliation failed: %s", exc, exc_info=True)
             _finish_step("lifecycle", "error")
@@ -475,6 +541,11 @@ def _run_pipeline() -> None:
                         len(unnotified) - len(to_alert),
                     )
             _finish_step("notify")
+            _set_step_stats(
+                "notify",
+                alerted=len(to_alert) if unnotified else None,
+                suppressed=(len(unnotified) - len(to_alert)) or None if unnotified else None,
+            )
         except Exception as exc:
             logger.error("Notifier failed: %s", exc, exc_info=True)
             _finish_step("notify", "error")
@@ -494,12 +565,12 @@ def _run_pipeline() -> None:
                 findings_total=total_findings,
             )
 
+        duration = round((datetime.now(UTC) - _pipeline_start_time).total_seconds(), 1)
         with _pipeline_lock:
             _pipeline_status["running"] = False
             _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "success"
-
-        duration = (datetime.now(UTC) - _pipeline_start_time).total_seconds()
+            _pipeline_status["run_duration_s"] = duration
         if _config:
             try:
                 with db.get_conn() as conn:
@@ -1199,7 +1270,9 @@ async def findings_page(
             conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
         )
         repo_rows = conn.execute(
-            "SELECT DISTINCT repo_full_name FROM findings ORDER BY repo_full_name"
+            "SELECT DISTINCT repo_full_name FROM findings"
+            " WHERE (:state IS NULL OR state = :state) ORDER BY repo_full_name",
+            {"state": state},
         ).fetchall()
 
     return templates.TemplateResponse(
@@ -1258,7 +1331,9 @@ async def secrets_page(
             conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
         )
         repo_rows = conn.execute(
-            "SELECT DISTINCT repo_full_name FROM secret_findings ORDER BY repo_full_name"
+            "SELECT DISTINCT repo_full_name FROM secret_findings"
+            " WHERE (:state IS NULL OR state = :state) ORDER BY repo_full_name",
+            {"state": state},
         ).fetchall()
 
     return templates.TemplateResponse(
@@ -1412,6 +1487,8 @@ async def health() -> JSONResponse:
         # Copy mutable nested structures so callers can't mutate internal state.
         pipeline["step_history"] = list(pipeline.get("step_history", []))
         pipeline["step_progress"] = dict(pipeline.get("step_progress", {}))
+        pipeline["step_stats"] = dict(pipeline.get("step_stats", {}))
+        pipeline["step_times"] = dict(pipeline.get("step_times", {}))
     next_run: str | None = None
     if _scheduler:
         job = _scheduler.get_job("pipeline")

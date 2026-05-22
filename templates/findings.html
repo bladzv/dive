@@ -288,7 +288,7 @@ function openBestSource(cveId, ghsaId) {
 }
 
 /* ── Bulk selection ─────────────────────────────────── */
-const _selected = new Set();
+var _selected = new Set();
 
 function toggleRow(id, checked) {
   if (checked) _selected.add(id);
@@ -370,7 +370,7 @@ function doAction(btn, id, action) {
 }
 
 /* ── Annotation modal ───────────────────────────────── */
-let _annotatingId = null;
+var _annotatingId = null;
 
 function openAnnotation(id, current) {
   _annotatingId = id;

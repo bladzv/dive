@@ -395,3 +395,187 @@ def test_time_ago_hours():
 
 def test_time_ago_none_returns_dash():
     assert main._time_ago(None) == "—"
+
+
+# ---------------------------------------------------------------------------
+# News retention setting (A3)
+# ---------------------------------------------------------------------------
+
+
+def test_scanner_settings_includes_retention(client):
+    data = client.get("/api/config/scanner").json()
+    assert "news_retention_days" in data
+    assert data["news_retention_days"] == 0
+
+
+def test_scanner_settings_saves_retention(client):
+    resp = client.post(
+        "/api/config/scanner",
+        json={"news_retention_days": 45},
+        headers={"X-Run-Token": "test-token-abc"},
+    )
+    assert resp.status_code == 200
+    assert client.get("/api/config/scanner").json()["news_retention_days"] == 45
+
+
+def test_scanner_settings_rejects_negative_retention(client):
+    resp = client.post(
+        "/api/config/scanner",
+        json={"news_retention_days": -5},
+        headers={"X-Run-Token": "test-token-abc"},
+    )
+    assert resp.status_code == 400
+
+
+def test_settings_page_shows_retention_field(client):
+    html = client.get("/settings").text
+    assert "news-retention-days" in html
+
+
+# ---------------------------------------------------------------------------
+# Filtered export (A4)
+# ---------------------------------------------------------------------------
+
+
+def _seed_news(source: str, url: str):
+    from datetime import UTC, datetime
+
+    with db.get_conn() as conn:
+        db.insert_news_item(
+            conn,
+            {
+                "url": url,
+                "title": f"Item from {source}",
+                "source": source,
+                "fetched_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
+def test_export_news_honors_source_filter(client):
+    _seed_news("Feed A", "https://x/a")
+    _seed_news("Feed B", "https://x/b")
+    resp = client.get("/api/export/news?format=csv&source=Feed A")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Feed A" in body
+    assert "Feed B" not in body
+
+
+def test_export_news_unfiltered_returns_all(client):
+    _seed_news("Feed A", "https://x/a")
+    _seed_news("Feed B", "https://x/b")
+    body = client.get("/api/export/news?format=csv").text
+    assert "Feed A" in body and "Feed B" in body
+
+
+def test_export_findings_honors_repo_filter(client):
+    with db.get_conn() as conn:
+        for repo in ("owner/a", "owner/b"):
+            db.upsert_finding(
+                conn,
+                {
+                    "repo_full_name": repo,
+                    "package_name": "pkg",
+                    "package_ecosystem": "PyPI",
+                    "cve_id": f"CVE-{repo[-1]}",
+                },
+            )
+    body = client.get("/api/export/findings?format=csv&repo=owner/a").text
+    assert "owner/a" in body
+    assert "owner/b" not in body
+
+
+def test_news_page_export_link_carries_filter(client):
+    html = client.get("/news?source=Feed%20A").text
+    assert "/api/export/news?format=csv&source=Feed" in html.replace("&amp;", "&")
+
+
+# ---------------------------------------------------------------------------
+# Feed PATCH — name/url editing
+# ---------------------------------------------------------------------------
+
+
+def _add_feed(client, name="Test Feed", url="https://test.example.com/rss"):
+    """Helper: insert a feed row directly via the DB (bypasses URL validation)."""
+    import dive.settings as st
+
+    with db.get_conn() as conn:
+        return st.add_feed(conn, name, url)
+
+
+def test_patch_feed_name_only(client):
+    feed = _add_feed(client)
+    resp = client.patch(
+        f"/api/config/feeds/{feed['id']}",
+        json={"name": "Renamed Feed"},
+        headers={"X-Run-Token": "test-token-abc"},
+    )
+    assert resp.status_code == 200
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT name FROM rss_feeds WHERE id=?", (feed["id"],)).fetchone()
+    assert row["name"] == "Renamed Feed"
+
+
+def test_patch_feed_url_valid(client):
+    feed = _add_feed(client)
+    with patch("dive.main._validate_feed_url", return_value=True):
+        resp = client.patch(
+            f"/api/config/feeds/{feed['id']}",
+            json={"url": "https://new.example.com/rss"},
+            headers={"X-Run-Token": "test-token-abc"},
+        )
+    assert resp.status_code == 200
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT url FROM rss_feeds WHERE id=?", (feed["id"],)).fetchone()
+    assert row["url"] == "https://new.example.com/rss"
+
+
+def test_patch_feed_url_invalid(client):
+    feed = _add_feed(client)
+    with patch("dive.main._validate_feed_url", return_value=False):
+        resp = client.patch(
+            f"/api/config/feeds/{feed['id']}",
+            json={"url": "https://broken.example.com/rss"},
+            headers={"X-Run-Token": "test-token-abc"},
+        )
+    assert resp.status_code == 422
+
+
+def test_patch_feed_url_duplicate(client):
+    _add_feed(client, "Feed A", "https://a.example.com/rss")
+    feed_b = _add_feed(client, "Feed B", "https://b.example.com/rss")
+    with patch("dive.main._validate_feed_url", return_value=True):
+        resp = client.patch(
+            f"/api/config/feeds/{feed_b['id']}",
+            json={"url": "https://a.example.com/rss"},
+            headers={"X-Run-Token": "test-token-abc"},
+        )
+    assert resp.status_code == 409
+
+
+def test_patch_feed_not_found(client):
+    resp = client.patch(
+        "/api/config/feeds/99999",
+        json={"name": "Ghost"},
+        headers={"X-Run-Token": "test-token-abc"},
+    )
+    assert resp.status_code == 404
+
+
+def test_patch_default_feed_name_and_url(client):
+    import dive.settings as st
+
+    with db.get_conn() as conn:
+        st.get_feeds(conn)
+        default_id = conn.execute("SELECT id FROM rss_feeds WHERE is_default=1 LIMIT 1").fetchone()[
+            "id"
+        ]
+
+    with patch("dive.main._validate_feed_url", return_value=True):
+        resp = client.patch(
+            f"/api/config/feeds/{default_id}",
+            json={"name": "Custom Name", "url": "https://custom.example.com/rss"},
+            headers={"X-Run-Token": "test-token-abc"},
+        )
+    assert resp.status_code == 200

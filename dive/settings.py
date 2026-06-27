@@ -80,8 +80,8 @@ def set_categorize_batch_size(conn: sqlite3.Connection, size: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Default RSS feeds (mirrors collector.DEFAULT_RSS_FEEDS; bootstrapped on
-# first call to get_feeds() when the rss_feeds table is empty)
+# Default RSS feeds (single source of truth; collector imports this list).
+# Bootstrapped on first call to get_feeds() when the rss_feeds table is empty.
 # ---------------------------------------------------------------------------
 
 DEFAULT_FEEDS: list[tuple[str, str]] = [
@@ -91,9 +91,9 @@ DEFAULT_FEEDS: list[tuple[str, str]] = [
     ("SANS ISC", "https://isc.sans.edu/rssfeed_full.xml"),
     ("Cisco Talos", "https://blog.talosintelligence.com/rss/"),
     ("Palo Alto Unit 42", "https://unit42.paloaltonetworks.com/feed/"),
-    ("Google Mandiant", "https://cloud.google.com/blog/topics/threat-intelligence/rss/"),
+    ("Google Mandiant", "https://cloudblog.withgoogle.com/topics/threat-intelligence/rss/"),
     ("CrowdStrike Blog", "https://www.crowdstrike.com/blog/feed/"),
-    ("Dark Reading", "https://www.darkreading.com/rss_simple.asp"),
+    ("Dark Reading", "https://www.darkreading.com/rss.xml"),
 ]
 
 
@@ -145,6 +145,45 @@ def _bootstrap_default_feeds(conn: sqlite3.Connection) -> None:
             )
         except Exception as exc:
             logger.warning("Could not bootstrap feed %s: %s", name, exc)
+
+
+def sync_default_feed_urls(conn: sqlite3.Connection) -> None:
+    """Update stored URLs for built-in feeds whose URLs have changed in DEFAULT_FEEDS.
+    Matches by name; skips feeds the user has already renamed (they've taken ownership)."""
+    for name, url in DEFAULT_FEEDS:
+        conn.execute(
+            "UPDATE rss_feeds SET url = ? WHERE is_default = 1 AND name = ? AND url != ?",
+            (url, name, url),
+        )
+
+
+def update_feed(
+    conn: sqlite3.Connection,
+    feed_id: int,
+    name: str | None = None,
+    url: str | None = None,
+) -> bool:
+    """Update name and/or URL of any feed (default or custom). Raises ValueError on
+    duplicate URL. Resets last_fetched_at and item_count when URL changes."""
+    if url is not None:
+        conflict = conn.execute(
+            "SELECT id FROM rss_feeds WHERE url = ? AND id != ?", (url, feed_id)
+        ).fetchone()
+        if conflict:
+            raise ValueError(f"A feed with URL '{url}' already exists.")
+    fields: list[str] = []
+    params: list = []
+    if name is not None:
+        fields.append("name = ?")
+        params.append(name)
+    if url is not None:
+        fields.extend(["url = ?", "last_fetched_at = NULL", "item_count = 0"])
+        params.append(url)
+    if not fields:
+        return True
+    params.append(feed_id)
+    cur = conn.execute(f"UPDATE rss_feeds SET {', '.join(fields)} WHERE id = ?", params)
+    return cur.rowcount > 0
 
 
 def add_feed(conn: sqlite3.Connection, name: str, url: str) -> sqlite3.Row:
@@ -296,3 +335,27 @@ def get_excluded_repos(conn: sqlite3.Connection) -> list[str]:
 def set_excluded_repos(conn: sqlite3.Connection, repos: list[str]) -> None:
     """Replace the excluded repos list."""
     db.set_setting(conn, "scanner.excluded_repos", json.dumps(repos))
+
+
+# ---------------------------------------------------------------------------
+# News retention
+# ---------------------------------------------------------------------------
+
+DEFAULT_NEWS_RETENTION_DAYS = 0  # 0 = keep forever (auto-delete disabled)
+_NEWS_RETENTION_MAX_DAYS = 3650
+
+
+def get_news_retention_days(conn: sqlite3.Connection) -> int:
+    """Days of news history to keep. 0 means keep forever (cleanup disabled)."""
+    raw = db.get_setting(conn, "news.retention_days", str(DEFAULT_NEWS_RETENTION_DAYS))
+    try:
+        return max(0, min(_NEWS_RETENTION_MAX_DAYS, int(raw)))
+    except (ValueError, TypeError):
+        return DEFAULT_NEWS_RETENTION_DAYS
+
+
+def set_news_retention_days(conn: sqlite3.Connection, days: int) -> None:
+    """Set the news retention period in days. 0 disables auto-deletion."""
+    if not (0 <= days <= _NEWS_RETENTION_MAX_DAYS):
+        raise ValueError(f"retention_days must be between 0 and {_NEWS_RETENTION_MAX_DAYS}")
+    db.set_setting(conn, "news.retention_days", str(days))

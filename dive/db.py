@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS secret_findings (
     secret_type     TEXT    NOT NULL,
     rule_id         TEXT    NOT NULL,
     fingerprint     TEXT    NOT NULL UNIQUE,
+    match_key       TEXT,
     state           TEXT    NOT NULL DEFAULT 'new',
     first_seen_at   TEXT    NOT NULL,
     last_seen_at    TEXT    NOT NULL,
@@ -218,6 +219,102 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE findings ADD COLUMN latest_version_vuln_count INTEGER")
 
     _dedup_aliased_findings(conn)
+    _migrate_secret_findings(conn)
+    _migrate_default_feed_urls(conn)
+
+
+def _migrate_secret_findings(conn: sqlite3.Connection) -> None:
+    """Add a commit-independent match_key to secret_findings and dedupe.
+
+    gitleaks' Fingerprint embeds the commit SHA, which is unstable across
+    shallow-clone runs (the boundary commit slides as new commits land), so the
+    same real secret was being re-inserted under a fresh fingerprint each run.
+    match_key drops the commit so re-sightings update instead of duplicating.
+    Safe to run repeatedly.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(secret_findings)").fetchall()}
+    if "match_key" not in cols:
+        conn.execute("ALTER TABLE secret_findings ADD COLUMN match_key TEXT")
+
+    # Drop the uniqueness guard while reconciling so backfilling duplicate rows
+    # to the same key doesn't trip it; it is recreated at the end.
+    conn.execute("DROP INDEX IF EXISTS idx_secrets_matchkey")
+
+    # Backfill any rows missing a match_key (new column or older rows).
+    rows = conn.execute("""
+        SELECT id, repo_full_name, file_path, rule_id, secret_type, line_number
+        FROM secret_findings
+        WHERE match_key IS NULL OR match_key = ''
+        """).fetchall()
+    for r in rows:
+        conn.execute(
+            "UPDATE secret_findings SET match_key = ? WHERE id = ?",
+            (
+                secret_match_key(
+                    r["repo_full_name"],
+                    r["file_path"],
+                    r["rule_id"],
+                    r["secret_type"],
+                    r["line_number"],
+                ),
+                r["id"],
+            ),
+        )
+
+    # Collapse pre-existing duplicates: keep the earliest row per match_key,
+    # but never drop a row a user already triaged as false_positive.
+    dupes = conn.execute("""
+        SELECT id, match_key, state
+        FROM secret_findings
+        WHERE match_key IN (
+            SELECT match_key FROM secret_findings
+            GROUP BY match_key HAVING COUNT(*) > 1
+        )
+        ORDER BY match_key,
+                 CASE WHEN state = 'false_positive' THEN 0 ELSE 1 END,
+                 id
+        """).fetchall()
+    seen: set[str] = set()
+    for r in dupes:
+        if r["match_key"] in seen:
+            conn.execute("DELETE FROM secret_findings WHERE id = ?", (r["id"],))
+        else:
+            seen.add(r["match_key"])
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_secrets_matchkey " "ON secret_findings(match_key)"
+    )
+
+
+def _migrate_default_feed_urls(conn: sqlite3.Connection) -> None:
+    """Repoint default feeds whose upstream RSS URL changed. Existing installs
+    seeded the old (now dead) URLs into rss_feeds; fix them in place so users
+    don't have to re-add feeds manually. Only touches is_default rows.
+    """
+    for old_url, new_url in _RENAMED_DEFAULT_FEEDS:
+        # Skip if the new URL already exists (UNIQUE on url) to avoid a clash.
+        clash = conn.execute(
+            "SELECT 1 FROM rss_feeds WHERE url = ? AND is_default = 1", (new_url,)
+        ).fetchone()
+        if clash:
+            continue
+        conn.execute(
+            "UPDATE rss_feeds SET url = ? WHERE url = ? AND is_default = 1",
+            (new_url, old_url),
+        )
+
+
+# Old → new default feed URLs (upstream feeds that moved or died).
+_RENAMED_DEFAULT_FEEDS: list[tuple[str, str]] = [
+    (
+        "https://www.darkreading.com/rss_simple.asp",
+        "https://www.darkreading.com/rss.xml",
+    ),
+    (
+        "https://cloud.google.com/blog/topics/threat-intelligence/rss/",
+        "https://cloudblog.withgoogle.com/topics/threat-intelligence/rss/",
+    ),
+]
 
 
 def _dedup_aliased_findings(conn: sqlite3.Connection) -> None:
@@ -680,6 +777,20 @@ def update_latest_version_for_package(
     )
 
 
+def _findings_where(state: str | None, repo: str | None) -> tuple[str, list[Any]]:
+    """Build the shared WHERE clause for findings list/count/export queries."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if state:
+        clauses.append("state = ?")
+        params.append(state)
+    if repo:
+        clauses.append("repo_full_name = ?")
+        params.append(repo)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 def get_findings(
     conn: sqlite3.Connection,
     *,
@@ -689,15 +800,7 @@ def get_findings(
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return findings, optionally filtered by state and/or repo."""
-    clauses = []
-    params: list[Any] = []
-    if state:
-        clauses.append("state = ?")
-        params.append(state)
-    if repo:
-        clauses.append("repo_full_name = ?")
-        params.append(repo)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _findings_where(state, repo)
     params.extend([limit, offset])
     return conn.execute(
         f"SELECT * FROM findings {where} ORDER BY priority_score DESC NULLS LAST LIMIT ? OFFSET ?",
@@ -712,15 +815,7 @@ def get_findings_count(
     repo: str | None = None,
 ) -> int:
     """Return total count of findings matching the given filters."""
-    clauses: list[str] = []
-    params: list[Any] = []
-    if state:
-        clauses.append("state = ?")
-        params.append(state)
-    if repo:
-        clauses.append("repo_full_name = ?")
-        params.append(repo)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _findings_where(state, repo)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()
     return int(row["n"] or 0)
 
@@ -772,15 +867,40 @@ def mark_findings_notified(conn: sqlite3.Connection, finding_ids: list[int]) -> 
 # ---------------------------------------------------------------------------
 
 
+def secret_match_key(
+    repo_full_name: str,
+    file_path: str,
+    rule_id: str,
+    secret_type: str,
+    line_number: int | None,
+) -> str:
+    """Commit-independent identity for a secret finding.
+
+    Deliberately excludes the commit SHA — gitleaks' Fingerprint embeds it, and
+    shallow clones make it unstable across runs (see _migrate_secret_findings).
+    A secret that physically moves to a different line may re-report once; that
+    is far cheaper than re-inserting the same secret on every scan.
+    """
+    return "|".join([repo_full_name, file_path, rule_id, secret_type, str(line_number or "")])
+
+
 def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
-    """Upsert a secret finding by fingerprint.
+    """Upsert a secret finding by its commit-independent match_key.
 
     Returns True if this is a brand-new finding (triggers notification).
-    For existing findings only last_seen_at is refreshed; state is unchanged.
+    For existing findings last_seen_at and the latest sighting's commit/line/
+    fingerprint are refreshed; state is unchanged.
     """
+    match_key = secret_match_key(
+        finding["repo_full_name"],
+        finding["file_path"],
+        finding["rule_id"],
+        finding["secret_type"],
+        finding.get("line_number"),
+    )
     existing = conn.execute(
-        "SELECT id FROM secret_findings WHERE fingerprint = ?",
-        (finding["fingerprint"],),
+        "SELECT id FROM secret_findings WHERE match_key = ?",
+        (match_key,),
     ).fetchone()
 
     if existing is None:
@@ -788,9 +908,9 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             """
             INSERT INTO secret_findings
                 (repo_full_name, file_path, line_number, commit_sha,
-                 secret_type, rule_id, fingerprint, state,
+                 secret_type, rule_id, fingerprint, match_key, state,
                  first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
             """,
             (
                 finding["repo_full_name"],
@@ -800,6 +920,7 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
                 finding["secret_type"],
                 finding["rule_id"],
                 finding["fingerprint"],
+                match_key,
                 _now(),
                 _now(),
             ),
@@ -807,8 +928,18 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
         return True
 
     conn.execute(
-        "UPDATE secret_findings SET last_seen_at = ? WHERE id = ?",
-        (_now(), existing["id"]),
+        """
+        UPDATE secret_findings
+        SET last_seen_at = ?, commit_sha = ?, line_number = ?, fingerprint = ?
+        WHERE id = ?
+        """,
+        (
+            _now(),
+            finding["commit_sha"],
+            finding.get("line_number"),
+            finding["fingerprint"],
+            existing["id"],
+        ),
     )
     return False
 
@@ -1166,22 +1297,13 @@ def get_top_affected_repos(conn: sqlite3.Connection, limit: int = 5) -> list[sql
     ).fetchall()
 
 
-def get_news_items_paginated(
-    conn: sqlite3.Connection,
-    *,
-    category: str | None = None,
-    severity: str | None = None,
-    source: str | None = None,
-    search: str | None = None,
-    sort: str = "published_desc",
-    limit: int = 25,
-    offset: int = 0,
-) -> list[sqlite3.Row]:
-    """Return paginated news items with optional filters.
-
-    sort: "published_desc" (default) | "published_asc"
-    Items with no published_at fall back to fetched_at for ordering.
-    """
+def _news_where(
+    category: str | None,
+    severity: str | None,
+    source: str | None,
+    search: str | None,
+) -> tuple[str, list[Any]]:
+    """Build the shared WHERE clause for news list/count/export queries."""
     clauses: list[str] = []
     params: list[Any] = []
     if category:
@@ -1198,6 +1320,26 @@ def get_news_items_paginated(
         s = f"%{search}%"
         params.extend([s, s])
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def get_news_items_paginated(
+    conn: sqlite3.Connection,
+    *,
+    category: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    search: str | None = None,
+    sort: str = "published_desc",
+    limit: int = 25,
+    offset: int = 0,
+) -> list[sqlite3.Row]:
+    """Return paginated news items with optional filters.
+
+    sort: "published_desc" (default) | "published_asc"
+    Items with no published_at fall back to fetched_at for ordering.
+    """
+    where, params = _news_where(category, severity, source, search)
     order = "ASC" if sort == "published_asc" else "DESC"
     params.extend([limit, offset])
     return conn.execute(
@@ -1221,22 +1363,7 @@ def get_news_items_count(
     search: str | None = None,
 ) -> int:
     """Return total count of news items matching the given filters."""
-    clauses: list[str] = []
-    params: list[Any] = []
-    if category:
-        clauses.append("category = ?")
-        params.append(category)
-    if severity:
-        clauses.append("severity = ?")
-        params.append(severity)
-    if source:
-        clauses.append("source = ?")
-        params.append(source)
-    if search:
-        clauses.append("(title LIKE ? OR summary LIKE ?)")
-        s = f"%{search}%"
-        params.extend([s, s])
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _news_where(category, severity, source, search)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM news_items {where}", params).fetchone()
     return int(row["n"] or 0)
 
@@ -1260,14 +1387,26 @@ def get_feed_analytics(conn: sqlite3.Connection, days: int = 30) -> list[sqlite3
     ).fetchall()
 
 
-def get_news_items_for_export(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return all news items for data export (JSON/CSV)."""
-    return conn.execute("""
+def get_news_items_for_export(
+    conn: sqlite3.Connection,
+    *,
+    category: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    search: str | None = None,
+) -> list[sqlite3.Row]:
+    """Return news items for data export (JSON/CSV), honoring the same filters
+    as the news list view so an export matches what the user is viewing."""
+    where, params = _news_where(category, severity, source, search)
+    return conn.execute(
+        f"""
         SELECT id, title, url, source, published_at, fetched_at,
                summary, category, severity, affected_products, tags
-        FROM news_items
+        FROM news_items {where}
         ORDER BY fetched_at DESC
-        """).fetchall()
+        """,
+        params,
+    ).fetchall()
 
 
 def get_findings_for_issue_creation(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1287,17 +1426,27 @@ def set_finding_github_issue_url(conn: sqlite3.Connection, finding_id: int, url:
     )
 
 
-def get_findings_for_export(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return all findings for data export (JSON/CSV)."""
-    return conn.execute("""
+def get_findings_for_export(
+    conn: sqlite3.Connection,
+    *,
+    state: str | None = None,
+    repo: str | None = None,
+) -> list[sqlite3.Row]:
+    """Return findings for data export (JSON/CSV), honoring the same filters
+    as the findings list view so an export matches what the user is viewing."""
+    where, params = _findings_where(state, repo)
+    return conn.execute(
+        f"""
         SELECT id, repo_full_name, cve_id, ghsa_id, package_name,
                package_ecosystem, installed_version, fixed_version,
                cvss_score, is_kev, patch_available, priority_score,
                state, first_seen_at, last_seen_at, resolved_at,
                manifest_path, annotation, github_issue_url
-        FROM findings
+        FROM findings {where}
         ORDER BY priority_score DESC NULLS LAST
-        """).fetchall()
+        """,
+        params,
+    ).fetchall()
 
 
 def get_secret_findings_summary(conn: sqlite3.Connection) -> dict:
@@ -1322,6 +1471,23 @@ def get_secret_findings_summary(conn: sqlite3.Connection) -> dict:
 # ---------------------------------------------------------------------------
 # Data management (clear / bulk delete)
 # ---------------------------------------------------------------------------
+
+
+def delete_old_news(conn: sqlite3.Connection, days: int, preserve_bookmarked: bool = True) -> int:
+    """Delete news items older than `days` days (by fetched_at).
+
+    Used by the scheduled retention job. When preserve_bookmarked is True,
+    bookmarked items are kept regardless of age so the user never silently
+    loses something they explicitly saved. Returns the number of rows deleted.
+    A non-positive `days` is a no-op (retention disabled).
+    """
+    if days <= 0:
+        return 0
+    sql = "DELETE FROM news_items WHERE fetched_at < date('now', ? || ' days')"
+    if preserve_bookmarked:
+        sql += " AND id NOT IN (SELECT news_item_id FROM bookmarks)"
+    cur = conn.execute(sql, (f"-{days}",))
+    return cur.rowcount
 
 
 def clear_news_items(conn: sqlite3.Connection, days_back: int | None = None) -> int:

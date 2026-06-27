@@ -133,6 +133,92 @@ class TestRemoveFeed:
         assert settings.remove_feed(conn, 99999) is False
 
 
+class TestSyncDefaultFeedUrls:
+    def test_updates_changed_url(self, conn):
+        settings.get_feeds(conn)
+        old_url = "https://old.example.com/feed"
+        name = settings.DEFAULT_FEEDS[0][0]
+        conn.execute("UPDATE rss_feeds SET url = ? WHERE name = ?", (old_url, name))
+        settings.sync_default_feed_urls(conn)
+        row = conn.execute("SELECT url FROM rss_feeds WHERE name = ?", (name,)).fetchone()
+        assert row["url"] == settings.DEFAULT_FEEDS[0][1]
+
+    def test_skips_user_renamed_feed(self, conn):
+        settings.get_feeds(conn)
+        canonical_url = settings.DEFAULT_FEEDS[0][1]
+        conn.execute(
+            "UPDATE rss_feeds SET url = ?, name = 'My Custom Name' WHERE is_default = 1 AND name = ?",
+            (canonical_url, settings.DEFAULT_FEEDS[0][0]),
+        )
+        conn.execute(
+            "UPDATE rss_feeds SET url = 'https://stale.example.com' WHERE name = 'My Custom Name'"
+        )
+        settings.sync_default_feed_urls(conn)
+        row = conn.execute("SELECT url FROM rss_feeds WHERE name = 'My Custom Name'").fetchone()
+        assert row["url"] == "https://stale.example.com"
+
+    def test_no_op_when_urls_match(self, conn):
+        settings.get_feeds(conn)
+        settings.sync_default_feed_urls(conn)
+        urls = [r["url"] for r in settings.get_feeds(conn)]
+        expected = [url for _, url in settings.DEFAULT_FEEDS]
+        assert sorted(urls) == sorted(expected)
+
+
+class TestUpdateFeed:
+    def test_update_url(self, conn):
+        row = settings.add_feed(conn, "My Feed", "https://a.example.com/rss")
+        result = settings.update_feed(conn, row["id"], url="https://b.example.com/rss")
+        assert result is True
+        updated = conn.execute("SELECT url FROM rss_feeds WHERE id=?", (row["id"],)).fetchone()
+        assert updated["url"] == "https://b.example.com/rss"
+
+    def test_update_url_resets_stats(self, conn):
+        row = settings.add_feed(conn, "Stats Feed", "https://c.example.com/rss")
+        settings.update_feed_stats(conn, "https://c.example.com/rss", "2025-01-01T00:00:00", 42)
+        settings.update_feed(conn, row["id"], url="https://d.example.com/rss")
+        updated = conn.execute(
+            "SELECT last_fetched_at, item_count FROM rss_feeds WHERE id=?", (row["id"],)
+        ).fetchone()
+        assert updated["last_fetched_at"] is None
+        assert updated["item_count"] == 0
+
+    def test_update_name_only(self, conn):
+        row = settings.add_feed(conn, "Old Name", "https://e.example.com/rss")
+        settings.update_feed(conn, row["id"], name="New Name")
+        updated = conn.execute(
+            "SELECT name, url FROM rss_feeds WHERE id=?", (row["id"],)
+        ).fetchone()
+        assert updated["name"] == "New Name"
+        assert updated["url"] == "https://e.example.com/rss"
+
+    def test_update_name_only_does_not_reset_stats(self, conn):
+        row = settings.add_feed(conn, "Named Feed", "https://f.example.com/rss")
+        settings.update_feed_stats(conn, "https://f.example.com/rss", "2025-01-01T00:00:00", 5)
+        settings.update_feed(conn, row["id"], name="Renamed")
+        updated = conn.execute(
+            "SELECT item_count FROM rss_feeds WHERE id=?", (row["id"],)
+        ).fetchone()
+        assert updated["item_count"] == 5
+
+    def test_duplicate_url_raises(self, conn):
+        r1 = settings.add_feed(conn, "Feed 1", "https://g.example.com/rss")
+        r2 = settings.add_feed(conn, "Feed 2", "https://h.example.com/rss")
+        with pytest.raises(ValueError, match="already exists"):
+            settings.update_feed(conn, r2["id"], url=r1["url"])
+
+    def test_nonexistent_id_returns_false(self, conn):
+        assert settings.update_feed(conn, 99999, name="X") is False
+
+    def test_works_on_default_feed(self, conn):
+        settings.get_feeds(conn)
+        default_id = conn.execute("SELECT id FROM rss_feeds WHERE is_default=1 LIMIT 1").fetchone()[
+            "id"
+        ]
+        result = settings.update_feed(conn, default_id, name="My Custom Name")
+        assert result is True
+
+
 class TestUpdateFeedStats:
     def test_updates_last_fetched_and_item_count(self, conn):
         settings.add_feed(conn, "Stats Feed", "https://stats.example.com/rss")
@@ -293,3 +379,20 @@ class TestExcludedRepos:
     def test_corrupt_non_list_falls_back_to_empty(self, conn):
         db.set_setting(conn, "scanner.excluded_repos", '{"a": 1}')
         assert settings.get_excluded_repos(conn) == []
+
+
+class TestNewsRetention:
+    def test_default_is_disabled(self, conn):
+        assert settings.get_news_retention_days(conn) == 0
+
+    def test_roundtrip(self, conn):
+        settings.set_news_retention_days(conn, 90)
+        assert settings.get_news_retention_days(conn) == 90
+
+    def test_rejects_negative(self, conn):
+        with pytest.raises(ValueError):
+            settings.set_news_retention_days(conn, -1)
+
+    def test_corrupt_value_falls_back_to_default(self, conn):
+        db.set_setting(conn, "news.retention_days", "not-a-number")
+        assert settings.get_news_retention_days(conn) == 0

@@ -439,11 +439,19 @@ function fallbackCopy(text, done) {
 
 window.copyCodeBlock = copyCodeBlock;
 
+/* Escape a value for safe interpolation into innerHTML. */
+function escapeHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = value == null ? '' : String(value);
+  return div.innerHTML;
+}
+
 function pollStatus() {
   refreshNavBadges();
   fetch('/api/health')
-    .then(r => r.json())
+    .then(r => r.ok ? r.json() : null)
     .then(data => {
+      if (!data) return;  // transient non-200 — keep last known state, retry next tick
       updateStatusBadge(data.pipeline);
       updatePipelineControls(data.pipeline);
       updatePipelineDrawer(data.pipeline_steps, data.pipeline);
@@ -582,13 +590,13 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 
   function failedList(items, label) {
     if (!items || !items.length) return '';
-    const id = 'fl-' + Math.random().toString(36).slice(2);
     const noun = items.length === 1 ? label : label + 's';
+    // Feed/repo names are user-controlled — escape before injecting as HTML.
     return `<div class="drawer-failed-wrap">
       <button class="drawer-failed-toggle" onclick="this.closest('.drawer-failed-wrap').classList.toggle('open')">
         ▸ ${items.length} failed ${noun}
       </button>
-      <ul class="drawer-failed-list">${items.map(i => `<li>${i}</li>`).join('')}</ul>
+      <ul class="drawer-failed-list">${items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>
     </div>`;
   }
 

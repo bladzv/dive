@@ -91,6 +91,12 @@
         <p class="form-hint">Number of recent commits to scan for secrets per repository (default 30).</p>
       </div>
 
+      <div class="form-group">
+        <label class="form-label" for="news-retention-days">News retention (days)</label>
+        <input type="number" id="news-retention-days" min="0" max="3650" step="1" class="form-input-narrow">
+        <p class="form-hint">Auto-delete news older than this many days (runs daily). 0 = keep forever. Bookmarked items are always kept.</p>
+      </div>
+
     </div>
 
     <!-- ── Keyword Watchlist ─────────────────────────── -->
@@ -335,6 +341,10 @@ function loadFeeds() {
     });
 }
 
+function _esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function renderFeedsTable(feeds) {
   if (!feeds.length) {
     document.getElementById('feeds-table-wrap').innerHTML =
@@ -348,11 +358,11 @@ function renderFeedsTable(feeds) {
           <th>Name</th><th>Last fetched</th><th>Items</th><th>Enabled</th><th></th>
         </tr></thead>
         <tbody>${feeds.map(f => `
-          <tr id="feed-row-${f.id}">
+          <tr id="feed-row-${f.id}" data-name="${_esc(f.name)}" data-url="${_esc(f.url)}">
             <td>
-              ${f.name}
+              ${_esc(f.name)}
               ${f.is_default ? '<span class="badge badge-unknown" style="margin-left:0.35rem;font-size:0.6rem">default</span>' : ''}
-              <br><span style="font-size:0.7rem;color:var(--text-dim)">${f.url}</span>
+              <br><span style="font-size:0.7rem;color:var(--text-dim)">${_esc(f.url)}</span>
             </td>
             <td style="font-size:0.78rem;color:var(--text-dim)">${f.last_fetched_at ? f.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
             <td style="font-size:0.82rem">${f.item_count || 0}</td>
@@ -361,7 +371,8 @@ function renderFeedsTable(feeds) {
                      onchange="toggleFeed(${f.id}, this.checked)"
                      style="width:1rem;height:1rem;accent-color:var(--accent)">
             </td>
-            <td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-sm" onclick="editFeed(${f.id})" style="margin-right:0.25rem">Edit</button>
               ${!f.is_default
                 ? `<button class="btn btn-danger btn-sm" onclick="deleteFeed(${f.id})">Remove</button>`
                 : '<span style="font-size:0.72rem;color:var(--text-dim)">built-in</span>'}
@@ -370,6 +381,68 @@ function renderFeedsTable(feeds) {
         </tbody>
       </table>
     </div>`;
+}
+
+function editFeed(id) {
+  const row = document.getElementById('feed-row-' + id);
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.id = 'edit-name-' + id;
+  nameInput.value = row.dataset.name;
+  nameInput.style.cssText = 'width:100%;margin-bottom:0.25rem;padding:0.2rem 0.4rem;font-size:0.85rem;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box';
+
+  const urlInput = document.createElement('input');
+  urlInput.type = 'text';
+  urlInput.id = 'edit-url-' + id;
+  urlInput.value = row.dataset.url;
+  urlInput.style.cssText = 'width:100%;padding:0.2rem 0.4rem;font-size:0.72rem;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);box-sizing:border-box';
+
+  const nameCell = row.cells[0];
+  nameCell.innerHTML = '';
+  nameCell.appendChild(nameInput);
+  nameCell.appendChild(urlInput);
+
+  row.cells[4].innerHTML = `
+    <button class="btn btn-primary btn-sm" id="save-btn-${id}" onclick="saveFeed(${id})" style="margin-right:0.25rem">Save</button>
+    <button class="btn btn-sm" onclick="loadFeeds()">Cancel</button>`;
+}
+
+function saveFeed(id) {
+  const row = document.getElementById('feed-row-' + id);
+  const nameInput = document.getElementById('edit-name-' + id);
+  const urlInput  = document.getElementById('edit-url-'  + id);
+  const saveBtn   = document.getElementById('save-btn-'  + id);
+
+  const newName = nameInput.value.trim();
+  const newUrl  = urlInput.value.trim();
+
+  if (!newName) { showToast('Name cannot be blank', 'error'); return; }
+  if (!newUrl)  { showToast('URL cannot be blank', 'error');  return; }
+
+  if (newName === row.dataset.name && newUrl === row.dataset.url) { loadFeeds(); return; }
+
+  const body = {};
+  if (newName !== row.dataset.name) body.name = newName;
+  if (newUrl  !== row.dataset.url)  body.url  = newUrl;
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  apiFetch('/api/config/feeds/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+    return r.json();
+  })
+  .then(() => { showToast('Feed updated', 'success'); loadFeeds(); })
+  .catch(err => {
+    showToast(err.message, 'error');
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+  });
 }
 
 function toggleFeed(id, enabled) {
@@ -484,6 +557,7 @@ function loadScannerSettings() {
       document.getElementById('severity-select').value = data.severity_threshold || 'high';
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
       document.getElementById('secrets-scan-depth').value = data.secrets_scan_depth ?? 30;
+      document.getElementById('news-retention-days').value = data.news_retention_days ?? 0;
       document.getElementById('categorize-batch-size').value = data.categorize_batch_size ?? 10;
     })
     .catch(() => {});
@@ -494,10 +568,16 @@ function saveScannerSettings() {
   const raw = document.getElementById('excluded-repos').value;
   const excluded = raw.split('\n').map(s => s.trim()).filter(Boolean);
   const depth = parseInt(document.getElementById('secrets-scan-depth').value, 10);
+  const retentionDays = parseInt(document.getElementById('news-retention-days').value, 10);
   apiFetch('/api/config/scanner', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ severity_threshold: threshold, excluded_repos: excluded, secrets_scan_depth: depth })
+    body: JSON.stringify({
+      severity_threshold: threshold,
+      excluded_repos: excluded,
+      secrets_scan_depth: depth,
+      news_retention_days: Number.isFinite(retentionDays) ? retentionDays : 0
+    })
   })
   .then(r => r.json())
   .then(() => showToast('Scanner settings saved', 'success'))

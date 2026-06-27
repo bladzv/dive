@@ -7,10 +7,15 @@
   <div>
     <p class="heading-copy">Aggregated advisories, exploit reports, and ecosystem signals.</p>
   </div>
+  {# Carry the active filters into the export URL so exports match the view. #}
+  {% set _exp = (('&category=' ~ category_filter|urlencode) if category_filter else '')
+              ~ (('&severity=' ~ severity_filter|urlencode) if severity_filter else '')
+              ~ (('&source='   ~ source_filter|urlencode)   if source_filter   else '')
+              ~ (('&search='   ~ search_filter|urlencode)   if search_filter   else '') %}
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} items</span>
-    <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
-    <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">Export JSON</a>
+    <a href="/api/export/news?format=csv{{ _exp }}" class="btn btn-outline btn-sm">Export CSV</a>
+    <a href="/api/export/news?format=json{{ _exp }}" class="btn btn-outline btn-sm">Export JSON</a>
   </div>
 </section>
 

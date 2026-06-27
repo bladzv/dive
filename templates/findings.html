@@ -8,7 +8,7 @@
     <p class="heading-copy">Prioritised by exploitability, KEV signal, patch availability, and repository ownership.</p>
   </div>
   {# Carry the active filters into the export URL so exports match the view. #}
-  {% set _exp = (('&state=' ~ state_filter|urlencode) if state_filter else '')
+  {% set _exp = (('&state=' ~ state_filter|urlencode) if state_filter and state_filter != 'all' else '')
               ~ (('&repo='  ~ repo_filter|urlencode)  if repo_filter  else '') %}
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} total</span>
@@ -22,7 +22,8 @@
 {% set _r_first = ('?repo=' ~ repo_filter|urlencode) if repo_filter else '' %}
 {% set _r_and   = ('&repo=' ~ repo_filter|urlencode) if repo_filter else '' %}
 <div class="filter-bar">
-  <a href="/findings{{ _r_first }}"                    class="btn btn-sm {{ 'btn-primary' if not state_filter else 'btn-outline' }}">All</a>
+  <a href="/findings?state=all{{ _r_and }}"            class="btn btn-sm {{ 'btn-primary' if state_filter == 'all'          else 'btn-outline' }}">All</a>
+  <a href="/findings?state=unresolved{{ _r_and }}"     class="btn btn-sm {{ 'btn-primary' if state_filter == 'unresolved'   else 'btn-outline' }}">Unresolved</a>
   <a href="/findings?state=new{{ _r_and }}"            class="btn btn-sm {{ 'btn-primary' if state_filter == 'new'          else 'btn-outline' }}">New</a>
   <a href="/findings?state=acknowledged{{ _r_and }}"   class="btn btn-sm {{ 'btn-primary' if state_filter == 'acknowledged' else 'btn-outline' }}">Acknowledged</a>
   <a href="/findings?state=resolved{{ _r_and }}"       class="btn btn-sm {{ 'btn-primary' if state_filter == 'resolved'     else 'btn-outline' }}">Resolved</a>

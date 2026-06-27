@@ -97,6 +97,12 @@
         <p class="form-hint">Auto-delete news older than this many days (runs daily). 0 = keep forever. Bookmarked items are always kept.</p>
       </div>
 
+      <div class="form-group">
+        <label class="form-label" for="log-retention-days">Log retention (days)</label>
+        <input type="number" id="log-retention-days" min="0" max="3650" step="1" class="form-input-narrow">
+        <p class="form-hint">Auto-delete application logs older than this many days (runs daily). 0 = keep forever.</p>
+      </div>
+
     </div>
 
     <!-- ── Keyword Watchlist ─────────────────────────── -->
@@ -150,7 +156,7 @@
 </section>
 
 <!-- ══ Section: AI ═════════════════════════════════════ -->
-<section class="settings-section">
+<section class="settings-section" id="ai-section">
   <header class="settings-section-head">
     <h2>AI</h2>
     <p>Ollama model and categorization settings. Active model: <code id="active-model-label">{{ current_model }}</code></p>
@@ -558,6 +564,7 @@ function loadScannerSettings() {
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
       document.getElementById('secrets-scan-depth').value = data.secrets_scan_depth ?? 30;
       document.getElementById('news-retention-days').value = data.news_retention_days ?? 0;
+      document.getElementById('log-retention-days').value = data.log_retention_days ?? 30;
       document.getElementById('categorize-batch-size').value = data.categorize_batch_size ?? 10;
     })
     .catch(() => {});
@@ -569,6 +576,7 @@ function saveScannerSettings() {
   const excluded = raw.split('\n').map(s => s.trim()).filter(Boolean);
   const depth = parseInt(document.getElementById('secrets-scan-depth').value, 10);
   const retentionDays = parseInt(document.getElementById('news-retention-days').value, 10);
+  const logRetentionDays = parseInt(document.getElementById('log-retention-days').value, 10);
   apiFetch('/api/config/scanner', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -576,7 +584,8 @@ function saveScannerSettings() {
       severity_threshold: threshold,
       excluded_repos: excluded,
       secrets_scan_depth: depth,
-      news_retention_days: Number.isFinite(retentionDays) ? retentionDays : 0
+      news_retention_days: Number.isFinite(retentionDays) ? retentionDays : 0,
+      log_retention_days: Number.isFinite(logRetentionDays) ? logRetentionDays : 30
     })
   })
   .then(r => r.json())

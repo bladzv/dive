@@ -20,7 +20,7 @@ import os
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +126,16 @@ CREATE TABLE IF NOT EXISTS run_log (
     findings_total    INTEGER NOT NULL DEFAULT 0,
     error_message     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS log_entries (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT    NOT NULL,
+    level       TEXT    NOT NULL,
+    logger_name TEXT    NOT NULL,
+    message     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_log_ts    ON log_entries(timestamp);
+CREATE INDEX IF NOT EXISTS idx_log_level ON log_entries(level);
 
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
@@ -583,6 +593,73 @@ def get_last_successful_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
 
 
 # ---------------------------------------------------------------------------
+# Application log entries
+# ---------------------------------------------------------------------------
+
+
+def insert_log_entry(
+    conn: sqlite3.Connection,
+    timestamp: str,
+    level: str,
+    logger_name: str,
+    message: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO log_entries (timestamp, level, logger_name, message) VALUES (?, ?, ?, ?)",
+        (timestamp, level, logger_name, message),
+    )
+
+
+def get_log_entries(
+    conn: sqlite3.Connection,
+    page: int = 1,
+    per_page: int = 25,
+    level: str = "",
+    search: str = "",
+) -> list[sqlite3.Row]:
+    params: list[Any] = []
+    where_clauses: list[str] = []
+    if level:
+        where_clauses.append("level = ?")
+        params.append(level.upper())
+    if search:
+        where_clauses.append("(message LIKE ? OR logger_name LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    offset = (page - 1) * per_page
+    params.extend([per_page, offset])
+    return conn.execute(
+        f"SELECT * FROM log_entries {where} ORDER BY id DESC LIMIT ? OFFSET ?",  # noqa: S608
+        params,
+    ).fetchall()
+
+
+def count_log_entries(conn: sqlite3.Connection, level: str = "", search: str = "") -> int:
+    params: list[Any] = []
+    where_clauses: list[str] = []
+    if level:
+        where_clauses.append("level = ?")
+        params.append(level.upper())
+    if search:
+        where_clauses.append("(message LIKE ? OR logger_name LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM log_entries {where}",  # noqa: S608
+        params,
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def delete_old_log_entries(conn: sqlite3.Connection, days: int) -> int:
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    cur = conn.execute("DELETE FROM log_entries WHERE timestamp < ?", (cutoff,))
+    return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
 # Settings (key/value preferences)
 # ---------------------------------------------------------------------------
 
@@ -777,13 +854,30 @@ def update_latest_version_for_package(
     )
 
 
-def _findings_where(state: str | None, repo: str | None) -> tuple[str, list[Any]]:
-    """Build the shared WHERE clause for findings list/count/export queries."""
+def _findings_where(
+    state: str | None,
+    repo: str | None,
+    since: str | None = None,
+    until: str | None = None,
+) -> tuple[str, list[Any]]:
+    """Build the shared WHERE clause for findings list/count/export queries.
+
+    Pseudo-states: 'unresolved' expands to state IN ('new','acknowledged');
+    'all' is treated as no state filter. since/until bound first_seen_at.
+    """
     clauses: list[str] = []
     params: list[Any] = []
-    if state:
+    if state == "unresolved":
+        clauses.append("state IN ('new', 'acknowledged')")
+    elif state and state != "all":
         clauses.append("state = ?")
         params.append(state)
+    if since:
+        clauses.append("first_seen_at >= ?")
+        params.append(since)
+    if until:
+        clauses.append("first_seen_at < ?")
+        params.append(until)
     if repo:
         clauses.append("repo_full_name = ?")
         params.append(repo)
@@ -796,11 +890,13 @@ def get_findings(
     *,
     state: str | None = None,
     repo: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return findings, optionally filtered by state and/or repo."""
-    where, params = _findings_where(state, repo)
+    where, params = _findings_where(state, repo, since=since, until=until)
     params.extend([limit, offset])
     return conn.execute(
         f"SELECT * FROM findings {where} ORDER BY priority_score DESC NULLS LAST LIMIT ? OFFSET ?",
@@ -813,9 +909,11 @@ def get_findings_count(
     *,
     state: str | None = None,
     repo: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> int:
     """Return total count of findings matching the given filters."""
-    where, params = _findings_where(state, repo)
+    where, params = _findings_where(state, repo, since=since, until=until)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()
     return int(row["n"] or 0)
 
@@ -944,24 +1042,49 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     return False
 
 
+def _secrets_where(
+    state: str | None,
+    repo: str | None,
+    since: str | None = None,
+    until: str | None = None,
+) -> tuple[str, list[Any]]:
+    """Build the shared WHERE clause for secret findings queries.
+
+    Pseudo-states: 'unresolved' maps to state='new'; 'all' means no state filter.
+    since/until bound first_seen_at (used by New and Unresolved tabs).
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if state == "unresolved":
+        clauses.append("state = 'new'")
+    elif state and state != "all":
+        clauses.append("state = ?")
+        params.append(state)
+    if since:
+        clauses.append("first_seen_at >= ?")
+        params.append(since)
+    if until:
+        clauses.append("first_seen_at < ?")
+        params.append(until)
+    if repo:
+        clauses.append("repo_full_name = ?")
+        params.append(repo)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
 def get_secret_findings(
     conn: sqlite3.Connection,
     *,
     state: str | None = None,
     repo: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return secret findings, optionally filtered by state and/or repo."""
-    clauses: list[str] = []
-    params: list[Any] = []
-    if state:
-        clauses.append("state = ?")
-        params.append(state)
-    if repo:
-        clauses.append("repo_full_name = ?")
-        params.append(repo)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _secrets_where(state, repo, since=since, until=until)
     params.extend([limit, offset])
     return conn.execute(
         f"SELECT * FROM secret_findings {where} ORDER BY first_seen_at DESC LIMIT ? OFFSET ?",
@@ -974,17 +1097,11 @@ def get_secret_findings_count(
     *,
     state: str | None = None,
     repo: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> int:
     """Return total count of secret findings matching the given filters."""
-    clauses: list[str] = []
-    params: list[Any] = []
-    if state:
-        clauses.append("state = ?")
-        params.append(state)
-    if repo:
-        clauses.append("repo_full_name = ?")
-        params.append(repo)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    where, params = _secrets_where(state, repo, since=since, until=until)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM secret_findings {where}", params).fetchone()
     return int(row["n"] or 0)
 
@@ -1018,6 +1135,15 @@ def mark_secret_finding_false_positive(conn: sqlite3.Connection, finding_id: int
     """Mark a secret finding as a false positive. Returns True if updated."""
     cur = conn.execute(
         "UPDATE secret_findings SET state = 'false_positive' WHERE id = ? AND state = 'new'",
+        (finding_id,),
+    )
+    return cur.rowcount > 0
+
+
+def unmark_secret_false_positive(conn: sqlite3.Connection, finding_id: int) -> bool:
+    """Revert a false-positive secret finding back to 'new'. Returns True if updated."""
+    cur = conn.execute(
+        "UPDATE secret_findings SET state = 'new' WHERE id = ? AND state = 'false_positive'",
         (finding_id,),
     )
     return cur.rowcount > 0

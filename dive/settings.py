@@ -359,3 +359,27 @@ def set_news_retention_days(conn: sqlite3.Connection, days: int) -> None:
     if not (0 <= days <= _NEWS_RETENTION_MAX_DAYS):
         raise ValueError(f"retention_days must be between 0 and {_NEWS_RETENTION_MAX_DAYS}")
     db.set_setting(conn, "news.retention_days", str(days))
+
+
+# ---------------------------------------------------------------------------
+# Log retention
+# ---------------------------------------------------------------------------
+
+DEFAULT_LOG_RETENTION_DAYS = 30  # sensible default; logs can grow quickly
+_LOG_RETENTION_MAX_DAYS = 3650
+
+
+def get_log_retention_days(conn: sqlite3.Connection) -> int:
+    """Days of application logs to keep. 0 means keep forever (cleanup disabled)."""
+    raw = db.get_setting(conn, "log.retention_days", str(DEFAULT_LOG_RETENTION_DAYS))
+    try:
+        return max(0, min(_LOG_RETENTION_MAX_DAYS, int(raw)))
+    except (ValueError, TypeError):
+        return DEFAULT_LOG_RETENTION_DAYS
+
+
+def set_log_retention_days(conn: sqlite3.Connection, days: int) -> None:
+    """Set the log retention period in days. 0 disables auto-deletion."""
+    if not (0 <= days <= _LOG_RETENTION_MAX_DAYS):
+        raise ValueError(f"retention_days must be between 0 and {_LOG_RETENTION_MAX_DAYS}")
+    db.set_setting(conn, "log.retention_days", str(days))

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Logs — DIVE{% endblock %}
+{% block topbar_title %}Logs{% endblock %}
+
+{% block content %}
+<section class="page-heading">
+  <div>
+    <p class="heading-copy">Application log messages captured from the pipeline and server (INFO and above).</p>
+  </div>
+  <div class="hero-actions">
+    <span class="badge badge-unknown">{{ pagination.total }} entries</span>
+  </div>
+</section>
+
+<!-- ── Filter bar ────────────────────────────────────── -->
+<div class="filter-bar">
+  <a href="/logs{% if search_filter %}?search={{ search_filter|urlencode }}{% endif %}"
+     class="btn btn-sm {{ 'btn-primary' if not level_filter else 'btn-outline' }}">All</a>
+  <a href="/logs?level=INFO{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
+     class="btn btn-sm {{ 'btn-primary' if level_filter == 'INFO' else 'btn-outline' }}">INFO</a>
+  <a href="/logs?level=WARNING{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
+     class="btn btn-sm {{ 'btn-primary' if level_filter == 'WARNING' else 'btn-outline' }}">WARNING</a>
+  <a href="/logs?level=ERROR{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
+     class="btn btn-sm {{ 'btn-primary' if level_filter == 'ERROR' else 'btn-outline' }}">ERROR</a>
+
+  <form method="get" action="/logs" style="display:contents">
+    {% if level_filter %}<input type="hidden" name="level" value="{{ level_filter }}">{% endif %}
+    <input type="search" name="search" value="{{ search_filter or '' }}"
+           placeholder="Search messages…" class="filter-search"
+           style="margin-left:auto"
+           onkeydown="if(event.key==='Enter'){this.form.submit()}">
+    {% if search_filter %}
+    <a href="/logs{% if level_filter %}?level={{ level_filter }}{% endif %}"
+       class="btn btn-sm btn-outline" title="Clear search">✕</a>
+    {% endif %}
+  </form>
+</div>
+
+<!-- ── Log table ─────────────────────────────────────── -->
+{% if log_entries %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:11rem">Timestamp</th>
+        <th style="width:6rem">Level</th>
+        <th style="width:14rem">Logger</th>
+        <th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in log_entries %}
+      <tr>
+        <td data-label="Timestamp" style="font-size:0.8rem;color:var(--text-dim);white-space:nowrap">
+          {{ entry.timestamp }}
+        </td>
+        <td data-label="Level">
+          {% if entry.level == 'ERROR' or entry.level == 'CRITICAL' %}
+            <span class="badge badge-critical">{{ entry.level }}</span>
+          {% elif entry.level == 'WARNING' %}
+            <span class="badge badge-medium">{{ entry.level }}</span>
+          {% else %}
+            <span class="badge badge-unknown">{{ entry.level }}</span>
+          {% endif %}
+        </td>
+        <td data-label="Logger" style="font-size:0.8rem;color:var(--text-dim);font-family:monospace">
+          {{ entry.logger_name }}
+        </td>
+        <td data-label="Message" style="font-size:0.85rem;word-break:break-word">
+          {{ entry.message }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% else %}
+<div class="card empty-state">
+  <div class="empty-icon"><svg><use href="#i-log"/></svg></div>
+  <p>No log entries{% if level_filter or search_filter %} match the current filter{% endif %}.</p>
+  {% if not level_filter and not search_filter %}
+  <p style="font-size:0.85rem;color:var(--text-dim)">Logs are captured from pipeline runs. Trigger a run to see entries here.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ── Pagination ────────────────────────────────────── -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination-bar">
+  <div class="pagination-info">
+    Showing {{ pagination.offset + 1 }}–{{ [pagination.offset + pagination.per_page, pagination.total] | min }} of {{ pagination.total }}
+  </div>
+  <div class="pagination-controls">
+    {% if pagination.has_prev %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page - 1) }}" class="btn btn-outline btn-sm">‹ Prev</a>
+    {% endif %}
+    <span class="pagination-pages">
+      {% for p in range(1, pagination.total_pages + 1) %}
+        {% if p == pagination.page %}
+        <span class="btn btn-primary btn-sm" style="pointer-events:none">{{ p }}</span>
+        {% elif p == 1 or p == pagination.total_pages or (p >= pagination.page - 2 and p <= pagination.page + 2) %}
+        <a href="{{ request.url | replace_query_param('page', p) }}" class="btn btn-outline btn-sm">{{ p }}</a>
+        {% elif p == pagination.page - 3 or p == pagination.page + 3 %}
+        <span class="pagination-ellipsis">…</span>
+        {% endif %}
+      {% endfor %}
+    </span>
+    {% if pagination.has_next %}
+    <a href="{{ request.url | replace_query_param('page', pagination.page + 1) }}" class="btn btn-outline btn-sm">Next ›</a>
+    {% endif %}
+  </div>
+  <div class="pagination-size">
+    <select onchange="setPageSize(this.value)" title="Rows per page">
+      {% for s in pagination.page_size_options %}
+      <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+{% endif %}
+
+<script>
+function setPageSize(size) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('per_page', size);
+  url.searchParams.delete('page');
+  window.location.href = url.toString();
+}
+</script>
+{% endblock %}

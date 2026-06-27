@@ -177,6 +177,22 @@ def _run_weekly_digest() -> None:
         logger.error("Weekly digest failed: %s", exc, exc_info=True)
 
 
+def _run_news_cleanup() -> None:
+    """Delete news older than the configured retention window. Fires daily at
+    03:00. No-op when retention is disabled (0 days). Bookmarked items are kept.
+    """
+    try:
+        with db.get_conn() as conn:
+            days = st.get_news_retention_days(conn)
+            if days <= 0:
+                return
+            deleted = db.delete_old_news(conn, days, preserve_bookmarked=True)
+            if deleted:
+                logger.info("News retention: deleted %d items older than %d days", deleted, days)
+    except Exception as exc:
+        logger.error("News cleanup failed: %s", exc, exc_info=True)
+
+
 class _PipelineCancelled(Exception):
     """Raised internally when the operator cancels a running pipeline. Caught
     in the _run_pipeline outer handler so the run logs a 'cancelled' status."""
@@ -673,6 +689,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     logger.info("Database ready")
 
     with db.get_conn() as conn:
+        st.sync_default_feed_urls(conn)
         # Generate run token if not already stored (CSRF protection for Run Now)
         if not db.get_setting(conn, "run_token"):
             db.set_setting(conn, "run_token", secrets.token_hex(32))
@@ -701,6 +718,14 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         trigger=CronTrigger(day_of_week="mon", hour=8, minute=0),
         id="weekly_digest",
         name="Weekly security digest",
+        max_instances=1,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_news_cleanup,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="news_cleanup",
+        name="News retention cleanup",
         max_instances=1,
         replace_existing=True,
     )
@@ -2013,21 +2038,47 @@ async def add_feed(
 
 
 @app.patch("/api/config/feeds/{feed_id}")
-async def toggle_feed(
+async def update_feed(
     feed_id: int,
     request: Request,
     _user: Annotated[str, Depends(_require_auth)],
     _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
-    """Enable or disable a feed. Body: {\"enabled\": true|false}"""
+    """Update a feed. Accepts {enabled}, {name}, {url}, or any combination."""
     body = await request.json()
-    if "enabled" not in body:
-        raise HTTPException(status_code=400, detail="enabled field required")
-    with db.get_conn() as conn:
-        updated = st.set_feed_enabled(conn, feed_id, bool(body["enabled"]))
-    if not updated:
-        raise HTTPException(status_code=404, detail="Feed not found")
-    return JSONResponse({"status": "updated", "feed_id": feed_id, "enabled": bool(body["enabled"])})
+
+    if "enabled" in body:
+        with db.get_conn() as conn:
+            updated = st.set_feed_enabled(conn, feed_id, bool(body["enabled"]))
+        if not updated:
+            raise HTTPException(status_code=404, detail="Feed not found")
+        return JSONResponse(
+            {"status": "updated", "feed_id": feed_id, "enabled": bool(body["enabled"])}
+        )
+
+    name = str(body["name"]).strip() if "name" in body else None
+    url = str(body["url"]).strip() if "url" in body else None
+
+    if name is not None and not name:
+        raise HTTPException(status_code=400, detail="name cannot be blank")
+    if url is not None:
+        if not url:
+            raise HTTPException(status_code=400, detail="url cannot be blank")
+        is_valid = await asyncio.to_thread(_validate_feed_url, url)
+        if not is_valid:
+            raise HTTPException(status_code=422, detail="URL is not a reachable RSS/Atom feed.")
+
+    if name is None and url is None:
+        raise HTTPException(status_code=400, detail="No updatable fields provided")
+
+    try:
+        with db.get_conn() as conn:
+            updated = st.update_feed(conn, feed_id, name=name, url=url)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Feed not found")
+        return JSONResponse({"status": "updated", "feed_id": feed_id})
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.delete("/api/config/feeds/{feed_id}")
@@ -2141,6 +2192,7 @@ async def get_scanner_settings(
                 "severity_levels": st.SEVERITY_LEVELS,
                 "secrets_scan_depth": scan_depth,
                 "categorize_batch_size": st.get_categorize_batch_size(conn),
+                "news_retention_days": st.get_news_retention_days(conn),
             }
         )
 
@@ -2177,6 +2229,11 @@ async def update_scanner_settings(
         if "categorize_batch_size" in body:
             try:
                 st.set_categorize_batch_size(conn, int(body["categorize_batch_size"]))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        if "news_retention_days" in body:
+            try:
+                st.set_news_retention_days(conn, int(body["news_retention_days"]))
             except (TypeError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse({"status": "updated"})
@@ -2389,10 +2446,13 @@ def _news_to_csv(rows) -> str:
 async def export_findings(
     _user: Annotated[str, Depends(_require_auth)],
     format: str = "json",
+    state: str | None = None,
+    repo: str | None = None,
 ) -> StreamingResponse:
-    """Export all findings as JSON or CSV."""
+    """Export findings as JSON or CSV, honoring the same state/repo filters as
+    the findings list view (so a filtered export matches what's on screen)."""
     with db.get_conn() as conn:
-        rows = db.get_findings_for_export(conn)
+        rows = db.get_findings_for_export(conn, state=state, repo=repo)
 
     if format == "csv":
         content = _findings_to_csv(rows)
@@ -2415,10 +2475,17 @@ async def export_findings(
 async def export_news(
     _user: Annotated[str, Depends(_require_auth)],
     format: str = "json",
+    category: str | None = None,
+    severity: str | None = None,
+    source: str | None = None,
+    search: str | None = None,
 ) -> StreamingResponse:
-    """Export the full news archive as JSON or CSV."""
+    """Export news as JSON or CSV, honoring the same category/severity/source/
+    search filters as the news list view (filtered export matches the screen)."""
     with db.get_conn() as conn:
-        rows = db.get_news_items_for_export(conn)
+        rows = db.get_news_items_for_export(
+            conn, category=category, severity=severity, source=source, search=search
+        )
 
     if format == "csv":
         content = _news_to_csv(rows)

@@ -1,5 +1,5 @@
 ---
-name: create-logs
+name: generate-logs
 description: Record all changes made in the current session into .github/actions.md. Compares the local codebase against the remote main branch and logs every action taken.
 disable-model-invocation: true
 ---

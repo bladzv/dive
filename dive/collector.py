@@ -72,17 +72,8 @@ _NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _GHSA_URL = "https://api.github.com/advisories"
 
-DEFAULT_RSS_FEEDS: list[tuple[str, str]] = [
-    ("Bleeping Computer", "https://www.bleepingcomputer.com/feed/"),
-    ("Krebs on Security", "https://krebsonsecurity.com/feed/"),
-    ("The Hacker News", "https://feeds.feedburner.com/TheHackersNews"),
-    ("SANS ISC", "https://isc.sans.edu/rssfeed_full.xml"),
-    ("Cisco Talos", "https://blog.talosintelligence.com/rss/"),
-    ("Palo Alto Unit 42", "https://unit42.paloaltonetworks.com/feed/"),
-    ("Google Mandiant", "https://cloud.google.com/blog/topics/threat-intelligence/rss/"),
-    ("CrowdStrike Blog", "https://www.crowdstrike.com/blog/feed/"),
-    ("Dark Reading", "https://www.darkreading.com/rss_simple.asp"),
-]
+# Default feeds live in settings.DEFAULT_FEEDS (single source of truth) and are
+# read at runtime from the rss_feeds table via settings.get_enabled_feeds().
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +144,23 @@ def run(
 # ---------------------------------------------------------------------------
 
 
+# Some feeds (e.g. Dark Reading) reject non-browser User-Agents with HTTP 403,
+# so present a common browser UA. Accept advertises feed/XML content types.
+_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 def _make_client() -> httpx.Client:
     return httpx.Client(
         follow_redirects=True,
         max_redirects=5,
         timeout=_HTTP_TIMEOUT,
-        headers={"User-Agent": "dive/0.1 (self-hosted)"},
+        headers={
+            "User-Agent": _BROWSER_UA,
+            "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+        },
     )
 
 

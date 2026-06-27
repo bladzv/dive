@@ -7,10 +7,13 @@
   <div>
     <p class="heading-copy">Prioritised by exploitability, KEV signal, patch availability, and repository ownership.</p>
   </div>
+  {# Carry the active filters into the export URL so exports match the view. #}
+  {% set _exp = (('&state=' ~ state_filter|urlencode) if state_filter else '')
+              ~ (('&repo='  ~ repo_filter|urlencode)  if repo_filter  else '') %}
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} total</span>
-    <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">Export JSON</a>
-    <a href="/api/export/findings?format=csv"  class="btn btn-outline btn-sm">Export CSV</a>
+    <a href="/api/export/findings?format=json{{ _exp }}" class="btn btn-outline btn-sm">Export JSON</a>
+    <a href="/api/export/findings?format=csv{{ _exp }}"  class="btn btn-outline btn-sm">Export CSV</a>
   </div>
 </section>
 
@@ -278,6 +281,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/bulk-selection.js" data-pjax></script>
 <script>
 /* ── Row click — open best external source directly ─── */
 function openBestSource(cveId, ghsaId) {
@@ -287,36 +291,8 @@ function openBestSource(cveId, ghsaId) {
   if (url) window.open(url, '_blank', 'noopener');
 }
 
-/* ── Bulk selection ─────────────────────────────────── */
-var _selected = new Set();
-
-function toggleRow(id, checked) {
-  if (checked) _selected.add(id);
-  else         _selected.delete(id);
-  _updateBulkBar();
-}
-
-function toggleAll(checked) {
-  document.querySelectorAll('.row-check').forEach(cb => {
-    cb.checked = checked;
-    const id = parseInt(cb.value, 10);
-    if (checked) _selected.add(id);
-    else         _selected.delete(id);
-  });
-  _updateBulkBar();
-}
-
-function _updateBulkBar() {
-  const inline = document.getElementById('bulk-inline');
-  const countEl = document.getElementById('bulk-count');
-  inline.style.display = _selected.size > 0 ? 'inline-flex' : 'none';
-  countEl.textContent = _selected.size + ' selected';
-  const allCbs = document.querySelectorAll('.row-check');
-  const allCb  = document.getElementById('select-all');
-  allCb.checked       = _selected.size > 0 && _selected.size === allCbs.length;
-  allCb.indeterminate = _selected.size > 0 && _selected.size < allCbs.length;
-}
-
+/* Bulk selection helpers (_selected, toggleRow, toggleAll, _updateBulkBar,
+   applyRepoFilter, setPageSize) live in /static/bulk-selection.js. */
 function bulkAction(action) {
   if (!_selected.size) return;
   apiFetch('/api/findings/bulk', {
@@ -333,21 +309,6 @@ function bulkAction(action) {
     setTimeout(() => location.reload(), 700);
   })
   .catch(err => showToast(err.message, 'error'));
-}
-
-function applyRepoFilter(repo) {
-  const params = new URLSearchParams(window.location.search);
-  if (repo) params.set('repo', repo);
-  else params.delete('repo');
-  params.delete('page');
-  window.location = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
-}
-
-function setPageSize(size) {
-  const params = new URLSearchParams(window.location.search);
-  params.set('per_page', size);
-  params.set('page', '1');
-  window.location = window.location.pathname + '?' + params.toString();
 }
 
 function doAction(btn, id, action) {
@@ -404,5 +365,7 @@ function saveAnnotation() {
   })
   .catch(err => showToast(err.message, 'error'));
 }
+
+initBulkSelection();
 </script>
 {% endblock %}

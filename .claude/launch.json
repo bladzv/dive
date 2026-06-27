@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "dive",
-      "runtimeExecutable": "python3",
+      "runtimeExecutable": "/Users/enj/git/dive/.venv/bin/python3",
       "runtimeArgs": ["-m", "uvicorn", "dive.main:app", "--host", "127.0.0.1", "--port", "8766", "--reload"],
       "port": 8766,
       "env": {

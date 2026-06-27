@@ -1,5 +1,5 @@
 ---
-name: create-pr-description
+name: generate-pr-description
 description: Generate a complete PR description from the session action log. Derives a semantic branch name, conventional commit message, links related GitHub Issues, and writes the full description to .github/pr_description.md.
 disable-model-invocation: true
 ---

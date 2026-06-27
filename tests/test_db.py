@@ -229,3 +229,195 @@ def test_set_setting_overwrites_existing(conn):
     db.set_setting(conn, "model", "qwen2.5:3b")
     db.set_setting(conn, "model", "gemma2:2b")
     assert db.get_setting(conn, "model") == "gemma2:2b"
+
+
+# ---------------------------------------------------------------------------
+# Secret findings — commit-independent dedup (A1)
+# ---------------------------------------------------------------------------
+
+
+def _make_secret(**overrides) -> dict:
+    base = {
+        "repo_full_name": "owner/repo",
+        "file_path": "config/settings.py",
+        "line_number": 12,
+        "commit_sha": "abc1234",
+        "secret_type": "GitHub PAT",
+        "rule_id": "github-pat",
+        "fingerprint": "abc1234:config/settings.py:github-pat:12",
+    }
+    base.update(overrides)
+    return base
+
+
+def _secret_count(conn) -> int:
+    return conn.execute("SELECT COUNT(*) AS n FROM secret_findings").fetchone()["n"]
+
+
+def test_upsert_secret_finding_new_returns_true(conn):
+    assert db.upsert_secret_finding(conn, _make_secret()) is True
+    assert _secret_count(conn) == 1
+
+
+def test_upsert_secret_finding_same_match_key_diff_commit_no_dup(conn):
+    """The boundary commit slides across shallow-clone runs: same secret, new
+    commit_sha and fingerprint. It must NOT create a second row."""
+    db.upsert_secret_finding(conn, _make_secret())
+    second = db.upsert_secret_finding(
+        conn,
+        _make_secret(
+            commit_sha="def5678",
+            fingerprint="def5678:config/settings.py:github-pat:12",
+        ),
+    )
+    assert second is False
+    assert _secret_count(conn) == 1
+    # The latest sighting's commit/fingerprint are refreshed on the surviving row.
+    row = conn.execute("SELECT commit_sha, fingerprint FROM secret_findings").fetchone()
+    assert row["commit_sha"] == "def5678"
+    assert row["fingerprint"] == "def5678:config/settings.py:github-pat:12"
+
+
+def test_upsert_secret_finding_distinct_secrets_kept(conn):
+    db.upsert_secret_finding(
+        conn, _make_secret(line_number=12, fingerprint="abc1234:config/settings.py:github-pat:12")
+    )
+    db.upsert_secret_finding(
+        conn, _make_secret(line_number=40, fingerprint="abc1234:config/settings.py:github-pat:40")
+    )
+    assert _secret_count(conn) == 2
+
+
+def test_migrate_dedupes_existing_secret_duplicates(conn):
+    """Rows created before the match_key migration (same secret, different
+    commit) must collapse to one when _migrate runs again."""
+    now = "2024-01-01T00:00:00+00:00"
+    for i, sha in enumerate(("c1", "c2", "c3")):
+        conn.execute(
+            """
+            INSERT INTO secret_findings
+                (repo_full_name, file_path, line_number, commit_sha,
+                 secret_type, rule_id, fingerprint, match_key, state,
+                 first_seen_at, last_seen_at)
+            VALUES (?,?,?,?,?,?,?,NULL,'new',?,?)
+            """,
+            (
+                "owner/repo",
+                "a.py",
+                5,
+                sha,
+                "PAT",
+                "github-pat",
+                f"{sha}:a.py:github-pat:5",
+                now,
+                now,
+            ),
+        )
+    assert _secret_count(conn) == 3
+    db._migrate(conn)
+    assert _secret_count(conn) == 1
+    row = conn.execute("SELECT match_key FROM secret_findings").fetchone()
+    assert row["match_key"] == db.secret_match_key("owner/repo", "a.py", "github-pat", "PAT", 5)
+
+
+def test_migrate_dedup_keeps_false_positive(conn):
+    """A user-triaged false_positive must survive dedup over a plain 'new' dup."""
+    now = "2024-01-01T00:00:00+00:00"
+    rows = [("c1", "new"), ("c2", "false_positive")]
+    for sha, state in rows:
+        conn.execute(
+            """
+            INSERT INTO secret_findings
+                (repo_full_name, file_path, line_number, commit_sha,
+                 secret_type, rule_id, fingerprint, match_key, state,
+                 first_seen_at, last_seen_at)
+            VALUES (?,?,?,?,?,?,?,NULL,?,?,?)
+            """,
+            (
+                "owner/repo",
+                "a.py",
+                5,
+                sha,
+                "PAT",
+                "github-pat",
+                f"{sha}:a.py:github-pat:5",
+                state,
+                now,
+                now,
+            ),
+        )
+    db._migrate(conn)
+    assert _secret_count(conn) == 1
+    assert conn.execute("SELECT state FROM secret_findings").fetchone()["state"] == "false_positive"
+
+
+# ---------------------------------------------------------------------------
+# News retention (A3)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_old_news_removes_old_keeps_recent(conn):
+    db.insert_news_item(
+        conn, _make_item(url="https://x/old", fetched_at="2020-01-01T00:00:00+00:00")
+    )
+    db.insert_news_item(conn, _make_item(url="https://x/new", fetched_at=db._now()))
+    deleted = db.delete_old_news(conn, days=30)
+    assert deleted == 1
+    remaining = conn.execute("SELECT url FROM news_items").fetchall()
+    assert [r["url"] for r in remaining] == ["https://x/new"]
+
+
+def test_delete_old_news_preserves_bookmarked(conn):
+    db.insert_news_item(
+        conn, _make_item(url="https://x/old", fetched_at="2020-01-01T00:00:00+00:00")
+    )
+    item_id = conn.execute("SELECT id FROM news_items WHERE url = 'https://x/old'").fetchone()["id"]
+    db.add_bookmark(conn, item_id)
+    deleted = db.delete_old_news(conn, days=30, preserve_bookmarked=True)
+    assert deleted == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM news_items").fetchone()["n"] == 1
+
+
+def test_delete_old_news_disabled_is_noop(conn):
+    db.insert_news_item(
+        conn, _make_item(url="https://x/old", fetched_at="2020-01-01T00:00:00+00:00")
+    )
+    assert db.delete_old_news(conn, days=0) == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM news_items").fetchone()["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Filtered export (A4)
+# ---------------------------------------------------------------------------
+
+
+def test_get_news_items_for_export_filters(conn):
+    db.insert_news_item(conn, _make_item(url="https://x/a", source="Feed A"))
+    db.insert_news_item(conn, _make_item(url="https://x/b", source="Feed B"))
+    rows = db.get_news_items_for_export(conn, source="Feed A")
+    assert [r["source"] for r in rows] == ["Feed A"]
+    assert len(db.get_news_items_for_export(conn)) == 2
+
+
+def test_get_findings_for_export_filters(conn):
+    db.upsert_finding(
+        conn,
+        {
+            "repo_full_name": "owner/a",
+            "package_name": "requests",
+            "package_ecosystem": "PyPI",
+            "cve_id": "CVE-2024-1",
+        },
+    )
+    db.upsert_finding(
+        conn,
+        {
+            "repo_full_name": "owner/b",
+            "package_name": "flask",
+            "package_ecosystem": "PyPI",
+            "cve_id": "CVE-2024-2",
+        },
+    )
+    rows = db.get_findings_for_export(conn, repo="owner/a")
+    assert [r["repo_full_name"] for r in rows] == ["owner/a"]
+    assert len(db.get_findings_for_export(conn)) == 2

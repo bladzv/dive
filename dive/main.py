@@ -21,6 +21,8 @@ import csv
 import io
 import json
 import logging
+import logging.handlers
+import queue
 import re
 import secrets
 import threading
@@ -66,6 +68,43 @@ logger = logging.getLogger(__name__)
 # BASE_DIR points to the project root (one level above this package directory)
 # so we can find static/ and templates/ regardless of how Python was invoked.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# ---------------------------------------------------------------------------
+# SQLite log handler — captures INFO+ log messages to the log_entries table.
+# Uses a QueueHandler/QueueListener so log() calls never block the caller.
+# ---------------------------------------------------------------------------
+
+_log_queue: queue.Queue = queue.Queue(maxsize=2000)
+_log_listener: logging.handlers.QueueListener | None = None
+
+
+class _SQLiteLogHandler(logging.Handler):
+    """Write log records to the log_entries table via a fresh DB connection."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S")
+            msg = self.format(record)
+            with db.get_conn() as conn:
+                db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
+        except Exception:
+            pass  # never raise from a log handler
+
+
+def _setup_sqlite_logging() -> None:
+    """Wire the SQLite handler behind a QueueListener so logging never blocks."""
+    global _log_listener
+    sqlite_handler = _SQLiteLogHandler()
+    sqlite_handler.setFormatter(logging.Formatter("%(message)s"))
+    sqlite_handler.setLevel(logging.INFO)
+    _log_listener = logging.handlers.QueueListener(
+        _log_queue, sqlite_handler, respect_handler_level=True
+    )
+    queue_handler = logging.handlers.QueueHandler(_log_queue)
+    queue_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(queue_handler)
+    _log_listener.start()
+
 
 # ---------------------------------------------------------------------------
 # Process-level state (set during lifespan startup, read-only after that)
@@ -191,6 +230,20 @@ def _run_news_cleanup() -> None:
                 logger.info("News retention: deleted %d items older than %d days", deleted, days)
     except Exception as exc:
         logger.error("News cleanup failed: %s", exc, exc_info=True)
+
+
+def _run_log_cleanup() -> None:
+    """Delete log entries older than the configured retention window. Fires daily at 03:10."""
+    try:
+        with db.get_conn() as conn:
+            days = st.get_log_retention_days(conn)
+            if days <= 0:
+                return
+            deleted = db.delete_old_log_entries(conn, days)
+            if deleted:
+                logger.info("Log retention: deleted %d entries older than %d days", deleted, days)
+    except Exception as exc:
+        logger.error("Log cleanup failed: %s", exc, exc_info=True)
 
 
 class _PipelineCancelled(Exception):
@@ -686,6 +739,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     )
 
     db.init()
+    _setup_sqlite_logging()
     logger.info("Database ready")
 
     with db.get_conn() as conn:
@@ -726,6 +780,14 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         trigger=CronTrigger(hour=3, minute=0),
         id="news_cleanup",
         name="News retention cleanup",
+        max_instances=1,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_log_cleanup,
+        trigger=CronTrigger(hour=3, minute=10),
+        id="log_cleanup",
+        name="Log retention cleanup",
         max_instances=1,
         replace_existing=True,
     )
@@ -1288,16 +1350,35 @@ async def findings_page(
     per_page: int = 25,
 ) -> HTMLResponse:
     """Findings table with filter controls and pagination."""
+    if state is None:
+        state = "unresolved"
+
     with db.get_conn() as conn:
-        total = db.get_findings_count(conn, state=state, repo=repo)
+        last_run = db.get_last_successful_run(conn)
+        last_started = last_run["started_at"] if last_run else None
+
+        since: str | None = None
+        until: str | None = None
+        if state == "new":
+            since = last_started or "9999-01-01"
+        elif state == "unresolved":
+            until = last_started
+
+        total = db.get_findings_count(conn, state=state, repo=repo, since=since, until=until)
         pg = _paginate(page, per_page, total)
         rows = db.get_findings(
-            conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
+            conn,
+            state=state,
+            repo=repo,
+            since=since,
+            until=until,
+            limit=pg["per_page"],
+            offset=pg["offset"],
         )
+        repo_where, repo_params = db._findings_where(state, repo=None, since=since, until=until)
         repo_rows = conn.execute(
-            "SELECT DISTINCT repo_full_name FROM findings"
-            " WHERE (:state IS NULL OR state = :state) ORDER BY repo_full_name",
-            {"state": state},
+            f"SELECT DISTINCT repo_full_name FROM findings {repo_where} ORDER BY repo_full_name",
+            repo_params,
         ).fetchall()
 
     return templates.TemplateResponse(
@@ -1349,16 +1430,35 @@ async def secrets_page(
     per_page: int = 25,
 ) -> HTMLResponse:
     """Secrets view — leaked credentials detected by gitleaks."""
+    if state is None:
+        state = "unresolved"
+
     with db.get_conn() as conn:
-        total = db.get_secret_findings_count(conn, state=state, repo=repo)
+        last_run = db.get_last_successful_run(conn)
+        last_started = last_run["started_at"] if last_run else None
+
+        since: str | None = None
+        until: str | None = None
+        if state == "new":
+            since = last_started or "9999-01-01"
+        elif state == "unresolved":
+            until = last_started
+
+        total = db.get_secret_findings_count(conn, state=state, repo=repo, since=since, until=until)
         pg = _paginate(page, per_page, total)
         rows = db.get_secret_findings(
-            conn, state=state, repo=repo, limit=pg["per_page"], offset=pg["offset"]
+            conn,
+            state=state,
+            repo=repo,
+            since=since,
+            until=until,
+            limit=pg["per_page"],
+            offset=pg["offset"],
         )
+        repo_where, repo_params = db._secrets_where(state, repo=None, since=since, until=until)
         repo_rows = conn.execute(
-            "SELECT DISTINCT repo_full_name FROM secret_findings"
-            " WHERE (:state IS NULL OR state = :state) ORDER BY repo_full_name",
-            {"state": state},
+            f"SELECT DISTINCT repo_full_name FROM secret_findings {repo_where} ORDER BY repo_full_name",
+            repo_params,
         ).fetchall()
 
     return templates.TemplateResponse(
@@ -1499,6 +1599,42 @@ async def news_page(
     )
 
 
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(
+    request: Request,
+    _user: Annotated[str, Depends(_require_auth)],
+    level: str = "",
+    search: str = "",
+    page: int = 1,
+    per_page: int = 25,
+) -> HTMLResponse:
+    """Application log viewer with level filter, search, and pagination."""
+    level = level.upper() if level in ("INFO", "WARNING", "ERROR", "CRITICAL") else ""
+    with db.get_conn() as conn:
+        total = db.count_log_entries(conn, level=level, search=search)
+        pg = _paginate(page, per_page, total)
+        rows = db.get_log_entries(
+            conn,
+            page=pg["page"],
+            per_page=pg["per_page"],
+            level=level,
+            search=search,
+        )
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "nav_active": "logs",
+            "run_token": _get_run_token(),
+            "current_model": _get_current_model(),
+            "log_entries": [dict(r) for r in rows],
+            "level_filter": level,
+            "search_filter": search,
+            "pagination": pg,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
@@ -1528,6 +1664,7 @@ async def health() -> JSONResponse:
             "pipeline_steps": PIPELINE_STEPS,
             "next_run": next_run,
             "ollama_ok": ollama_ok,
+            "active_model": _get_current_model(),
         }
     )
 
@@ -1953,6 +2090,22 @@ async def mark_secret_false_positive(
     return JSONResponse({"status": "false_positive", "finding_id": finding_id})
 
 
+@app.post("/api/secrets/{finding_id}/unmark-false-positive")
+async def unmark_secret_false_positive(
+    finding_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Revert a false-positive secret finding back to 'new'."""
+    with db.get_conn() as conn:
+        updated = db.unmark_secret_false_positive(conn, finding_id)
+    if not updated:
+        raise HTTPException(
+            status_code=404, detail="Finding not found or not in 'false_positive' state"
+        )
+    return JSONResponse({"status": "new", "finding_id": finding_id})
+
+
 @app.post("/api/secrets/{finding_id}/resolve")
 async def resolve_secret_finding(
     finding_id: int,
@@ -2193,6 +2346,7 @@ async def get_scanner_settings(
                 "secrets_scan_depth": scan_depth,
                 "categorize_batch_size": st.get_categorize_batch_size(conn),
                 "news_retention_days": st.get_news_retention_days(conn),
+                "log_retention_days": st.get_log_retention_days(conn),
             }
         )
 
@@ -2234,6 +2388,11 @@ async def update_scanner_settings(
         if "news_retention_days" in body:
             try:
                 st.set_news_retention_days(conn, int(body["news_retention_days"]))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        if "log_retention_days" in body:
+            try:
+                st.set_log_retention_days(conn, int(body["log_retention_days"]))
             except (TypeError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse({"status": "updated"})

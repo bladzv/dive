@@ -161,7 +161,7 @@ def run(
     all_packages: list[Package] = []
 
     try:
-        user = g.get_user(config.github.username)
+        user = g.get_user()
         repos = list(user.get_repos(type="all"))
     except GithubException as exc:
         logger.error("Failed to list repositories: %s", exc)

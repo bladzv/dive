@@ -21,8 +21,9 @@ PyGithub>=2.3.0
 PyYAML>=6.0
 
 # Multipart form support (required by FastAPI for file uploads and forms)
-# Minimum 0.0.27 — fixes CVE-2026-40347 (5.3), CVE-2026-42561 (7.5), CVE-2026-24486 (8.6)
-python-multipart>=0.0.27
+# Minimum 0.0.31 — fixes CVE-2026-40347 (5.3), CVE-2026-42561 (7.5), CVE-2026-24486 (8.6),
+#   CVE-2026-53539 (7.5), CVE-2026-53538 (3.7), CVE-2026-53540 (3.7), CVE-2026-53537 (3.7)
+python-multipart>=0.0.31
 
 # File-based lock for concurrent run protection
 # Minimum 3.20.3 — fixes CVE-2026-22701 (5.3), CVE-2025-68146 (6.3)

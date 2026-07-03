@@ -201,12 +201,13 @@ code {
   padding: 0.7rem 0.8rem 0.85rem;
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
-  transition: width 0.3s ease-in-out, padding 0.3s ease-in-out;
+  transition: width 0.3s ease-in-out, padding 0.3s ease-in-out, top 0.3s ease-in-out;
   overflow: hidden;
   will-change: width;
 }
 
 html.sidebar-collapsed .app-sidebar {
+  top: 0;
   padding-left: 0;
   padding-right: 0;
   align-items: center;
@@ -240,6 +241,13 @@ html.sidebar-collapsed .app-sidebar {
   padding: 0 1rem 0 0;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
+  transition: left 0.3s ease-in-out;
+}
+
+/* Collapsed: brand column is empty, so let the sidebar (now full-height)
+   occupy it instead of reserving dead space under the header. */
+html.sidebar-collapsed .workspace-topbar {
+  left: var(--sidebar-collapsed);
 }
 
 /* ─── Pipeline drawer ───────────────────────────────── */
@@ -410,6 +418,26 @@ html.sidebar-collapsed .app-sidebar {
 }
 .drawer-summary-val { color: var(--text); font-weight: 600; }
 
+.drawer-error {
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-error-msg {
+  font-size: 0.76rem;
+  color: var(--error);
+  word-break: break-word;
+}
+.drawer-error-link {
+  display: inline-block;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--error);
+  opacity: 0.85;
+  text-decoration: none;
+}
+.drawer-error-link:hover { opacity: 1; text-decoration: underline; }
+
 .topbar-meta.pipeline-status-chip { cursor: pointer; }
 .topbar-meta.pipeline-status-chip:hover { background: var(--hover); border-radius: var(--radius-sm); }
 
@@ -432,45 +460,32 @@ html.sidebar-collapsed .app-sidebar {
   padding: 0 0.65rem 0 0.95rem;
   border-right: 1px solid var(--border);
   transition: width 0.3s ease-in-out, padding 0.3s ease-in-out;
-  overflow: visible;
+  overflow: hidden;
   position: relative;
 }
 
 html.sidebar-collapsed .topbar-brand {
+  width: 0;
   padding: 0;
-  gap: 6px;
-  justify-content: center;
+  border-right: none;
 }
 
-/* Collapsed: show only the brand-mark (brand-copy is hidden via its own rule below) */
-html.sidebar-collapsed .brand {
-  gap: 0;
-  flex: 0 0 auto;
-}
+/* Collapsed: fade the wordmark out quickly, then let the shrinking
+   topbar-brand box clip it away — no reflow, since .brand never resizes
+   itself (flex-shrink: 0), it's just progressively clipped by its parent. */
+html.sidebar-collapsed .brand { opacity: 0; }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   min-width: 0;
+  flex-shrink: 0;
   color: var(--text-bright);
+  opacity: 1;
+  transition: opacity 0.2s ease-in-out;
 }
 .brand:hover { color: var(--text-bright); }
-
-.brand-mark {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--brand-mark);
-  color: #fff;
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  margin-top: 5px;
-}
 
 .brand-copy {
   display: flex;
@@ -479,22 +494,35 @@ html.sidebar-collapsed .brand {
   line-height: 1.1;
 }
 
-.brand-copy strong {
+.brand-name {
+  display: block;
   color: var(--text-bright);
-  font-size: 0.92rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
 }
 
-.brand-copy small { display: none; }
+.brand-name span {
+  color: var(--text-muted);
+  font-weight: 600;
+}
 
-html.sidebar-collapsed .brand-copy { display: none; }
+.brand-copy small {
+  display: block;
+  color: var(--text-subtle);
+  font-size: 0.6rem;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  margin-top: 2px;
+}
 
 /* Sidebar collapse / expand button — floating accent circle on sidebar edge */
 .sidebar-collapse-btn {
-  position: absolute;
-  right: -13px;
-  top: 50%;
+  position: fixed;
+  left: calc(var(--sidebar) - 13px);
+  top: calc(var(--topbar) / 2);
   transform: translateY(-50%);
   z-index: 101;
   display: inline-flex;
@@ -510,7 +538,7 @@ html.sidebar-collapsed .brand-copy { display: none; }
   cursor: pointer;
   flex: 0 0 auto;
   box-shadow: 0 2px 8px rgba(99, 102, 241, 0.45);
-  transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  transition: left 0.3s ease-in-out, background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 .sidebar-collapse-btn:hover {
   background: var(--brand-mark-hover);
@@ -518,13 +546,6 @@ html.sidebar-collapsed .brand-copy { display: none; }
   transform: translateY(-50%) scale(1.1);
 }
 .sidebar-collapse-btn svg { width: 13px; height: 13px; }
-
-html.sidebar-collapsed .brand-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  font-size: 0.68rem;
-}
 
 .sidebar-run,
 .sidebar-model,
@@ -1588,7 +1609,15 @@ html.sidebar-collapsed .page-footer {
 .settings-section-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
   margin-top: 0.85rem;
+}
+
+.unsaved-indicator {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--high);
 }
 
 /* ─── Settings: card internals (consistent across cards) ─ */
@@ -2500,6 +2529,41 @@ tbody td {
   font-weight: 500;
 }
 
+/* ─── Skeleton loading ─────────────────────────────── */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--hover), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+.skeleton-line { height: 0.8rem; margin: 0.35rem 0; width: 100%; }
+.skeleton-line.short  { width: 40%; }
+.skeleton-line.medium { width: 65%; }
+.skeleton-block { width: 100%; height: 100%; min-height: 60px; }
+.skeleton-chip { display: inline-block; width: 88px; height: 1.6rem; margin: 0 0.4rem 0.4rem 0; border-radius: 999px; }
+.skeleton-card {
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.skeleton-card .skeleton-line:first-child { height: 0.86rem; width: 55%; }
+.skeleton-row td { padding: 0.62rem 0.85rem; }
+
+@keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after { animation: none; }
+}
+
 /* ─── Model picker ─────────────────────────────────── */
 .model-grid {
   display: grid;
@@ -2737,38 +2801,41 @@ body:has(.login-card) {
   /* Desktop-only drawer toggle hidden on mobile */
   .sidebar-collapse-btn { display: none; }
 
-  /* Brand text hidden on mobile — mark only */
-  .brand-copy { display: none; }
+  /* Brand hidden on mobile topbar */
+  .brand { display: none; }
 
   /* Reset any sidebar-collapsed overrides so mobile always shows full drawer */
   html.sidebar-collapsed { --sidebar: 232px; }
   html.sidebar-collapsed .app-sidebar {
+    top: var(--topbar);
     width: 232px;
     padding-left: 0.8rem;
     padding-right: 0.8rem;
   }
+  html.sidebar-collapsed .workspace-topbar { left: 0; }
   html.sidebar-collapsed .topbar-brand {
     width: auto;
     padding: 0 0.5rem 0 0.5rem;
     gap: 0.4rem;
     justify-content: flex-start;
   }
-  html.sidebar-collapsed .brand-mark {
-    width: 32px;
-    height: 32px;
-  }
-  html.sidebar-collapsed .brand-mark svg {
-    width: 20px;
-    height: 20px;
-  }
   html.sidebar-collapsed .site-nav a {
     padding: 0.42rem 0.6rem;
     justify-content: flex-start;
     font-size: 0.84rem;
   }
-  html.sidebar-collapsed .site-nav a > span,
-  html.sidebar-collapsed .nav-badge,
-  html.sidebar-collapsed .nav-group-label { display: revert; }
+  html.sidebar-collapsed .site-nav a > span:not(.nav-badge) {
+    max-width: 180px;
+    opacity: 1;
+    margin-left: 0.65rem;
+  }
+  html.sidebar-collapsed .nav-badge { display: revert; }
+  html.sidebar-collapsed .nav-group-label {
+    max-height: 30px;
+    opacity: 1;
+    margin: 0.9rem 0.55rem 0.3rem;
+  }
+  html.sidebar-collapsed .nav-group-label:first-child { margin-top: 0.1rem; }
   html.sidebar-collapsed .sidebar-logout {
     padding: 0.35rem 0.7rem;
     font-size: 0.8rem;

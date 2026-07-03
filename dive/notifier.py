@@ -393,7 +393,7 @@ def _dispatch(
             logger.error("Discord delivery failed: %s", exc)
             errors.append(f"Discord: {exc}")
 
-    if notif.email and notif.email.smtp_host:
+    if notif.email and notif.email.is_configured:
         try:
             _send_email(notif.email, subject=subject, body=text)
             logger.info("Email alert delivered to %s", notif.email.to_address)

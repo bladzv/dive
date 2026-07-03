@@ -210,7 +210,6 @@ def run(
             logger.exception("Unexpected error scanning %s: %s", repo.full_name, exc)
         if on_progress:
             on_progress(stats.repos_scanned, total_repos)
-            stats.failed_repos.append(repo.full_name)
 
     # Record rate limit at end
     try:

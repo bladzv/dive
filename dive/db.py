@@ -592,6 +592,21 @@ def get_last_successful_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def reconcile_interrupted_runs(conn: sqlite3.Connection) -> int:
+    """Close out any run_log rows left at status='running' by a process that
+    died mid-run (e.g. a container restart). Without this a crashed run stays
+    'running' forever and permanently hides real history behind it. Returns
+    the number of rows reconciled."""
+    cur = conn.execute("""
+        UPDATE run_log
+        SET status = 'error',
+            completed_at = COALESCE(completed_at, started_at),
+            error_message = 'Interrupted by application restart'
+        WHERE status = 'running'
+        """)
+    return cur.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Application log entries
 # ---------------------------------------------------------------------------
@@ -1363,6 +1378,27 @@ def save_weekly_digest(conn: sqlite3.Connection, data: dict) -> None:
     import json
 
     set_setting(conn, "weekly_digest.latest", json.dumps(data, ensure_ascii=False))
+
+
+def get_pipeline_snapshot(conn: sqlite3.Connection) -> dict | None:
+    """Return the most recently persisted pipeline run snapshot, or None."""
+    raw = get_setting(conn, "pipeline.last_snapshot", "")
+    if not raw:
+        return None
+    try:
+        import json
+
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def save_pipeline_snapshot(conn: sqlite3.Connection, data: dict) -> None:
+    """Store the last-completed-run pipeline status JSON snapshot in the
+    settings table, so per-step detail survives a process restart."""
+    import json
+
+    set_setting(conn, "pipeline.last_snapshot", json.dumps(data, ensure_ascii=False))
 
 
 def get_weekly_digest_top_findings(

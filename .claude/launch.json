@@ -9,6 +9,15 @@
       "env": {
         "DB_PATH": "/tmp/dive_test2.db"
       }
+    },
+    {
+      "name": "dive-verify",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "exec /Users/enj/git/dive/.venv/bin/python3 -m uvicorn dive.main:app --host 127.0.0.1 --port $PORT"],
+      "autoPort": true,
+      "env": {
+        "DB_PATH": "/tmp/dive_test_verify.db"
+      }
     }
   ]
 }

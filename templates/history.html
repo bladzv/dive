@@ -25,6 +25,7 @@
   <div class="card">
     <div class="card-title">News Items Collected</div>
     <div id="news-chart-wrap" style="position:relative;height:220px">
+      <div class="skeleton skeleton-block" style="position:absolute;inset:0"></div>
       <canvas id="news-chart"></canvas>
     </div>
   </div>
@@ -33,6 +34,7 @@
   <div class="card">
     <div class="card-title">New Findings per Day</div>
     <div id="findings-chart-wrap" style="position:relative;height:220px">
+      <div class="skeleton skeleton-block" style="position:absolute;inset:0"></div>
       <canvas id="findings-chart"></canvas>
     </div>
   </div>
@@ -41,7 +43,11 @@
   <div class="card">
     <div class="card-title">Source Reliability</div>
     <div id="sources-wrap">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+      <div class="table-wrap"><table><tbody>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line medium"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line short"></div></td></tr>
+      </tbody></table></div>
     </div>
   </div>
 
@@ -49,18 +55,27 @@
   <div class="card">
     <div class="card-title">Pipeline Runs</div>
     <div id="runs-wrap">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+      <div class="table-wrap"><table><tbody>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line medium"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line short"></div></td></tr>
+      </tbody></table></div>
     </div>
   </div>
 
   <!-- ── Feed analytics ────────────────────────────── -->
   <div class="card">
     <div class="card-title">Feed Analytics — Items per Source</div>
-    <div style="position:relative;height:260px">
+    <div id="feed-chart-wrap" style="position:relative;height:260px">
+      <div class="skeleton skeleton-block" style="position:absolute;inset:0"></div>
       <canvas id="feed-chart"></canvas>
     </div>
     <div id="feed-table-wrap" style="margin-top:1.25rem">
-      <p style="color:var(--text-dim);font-size:0.85rem">Loading…</p>
+      <div class="table-wrap"><table><tbody>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line medium"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line short"></div></td></tr>
+      </tbody></table></div>
     </div>
   </div>
 
@@ -70,19 +85,19 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-const SEVERITY_COLORS = {
+var SEVERITY_COLORS = {
   'Critical': '#f87171',
   'High':     '#fb923c',
   'Medium':   '#facc15',
   'Low':      '#60a5fa',
   'Unknown':  '#64748b',
 };
-const CHART_TEXT = '#8b95b0';
-const CHART_GRID = 'rgba(139, 149, 176, 0.18)';
-const CHART_LEGEND = '#d8deeb';
+var CHART_TEXT = '#8b95b0';
+var CHART_GRID = 'rgba(139, 149, 176, 0.18)';
+var CHART_LEGEND = '#d8deeb';
 
-let _newsChart = null;
-let _findingsChart = null;
+var _newsChart = null;
+var _findingsChart = null;
 
 /* ── Utilities ──────────────────────────────────────── */
 function getDays() {
@@ -102,6 +117,7 @@ function buildDateRange(days) {
 
 /* ── News trend chart ───────────────────────────────── */
 function renderNewsChart(rows) {
+  document.querySelector('#news-chart-wrap .skeleton')?.remove();
   const days = getDays();
   const labels = buildDateRange(days);
 
@@ -144,6 +160,7 @@ function renderNewsChart(rows) {
 
 /* ── Findings trend chart ───────────────────────────── */
 function renderFindingsChart(rows) {
+  document.querySelector('#findings-chart-wrap .skeleton')?.remove();
   const days = getDays();
   const labels = buildDateRange(days);
   const lookup = {};
@@ -301,16 +318,17 @@ function loadAll() {
 }
 
 /* ── Feed analytics chart ───────────────────────────── */
-let _feedChart = null;
+var _feedChart = null;
 
 // Stable colour palette for up to ~12 sources
-const FEED_PALETTE = [
+var FEED_PALETTE = [
   '#818cf8','#38bdf8','#fb923c','#60a5fa','#facc15',
   '#f87171','#a78bfa','#34d399','#f472b6','#22d3ee',
   '#bef264','#fdba74',
 ];
 
 function renderFeedChart(rows) {
+  document.querySelector('#feed-chart-wrap .skeleton')?.remove();
   // Collect unique sources and days
   const sourceSet = new Set();
   const daySet    = new Set();

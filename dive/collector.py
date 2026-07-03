@@ -164,25 +164,57 @@ def _make_client() -> httpx.Client:
     )
 
 
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRY_BACKOFF_SECONDS = [1.0, 3.0]
+
+
 def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None:
-    """GET with size cap, HTTP warning, and error logging. Returns None on failure."""
+    """GET with size cap, HTTP warning, retry-on-transient-error, and error logging.
+
+    Returns None on failure. Retries on connection errors and on status codes
+    that typically indicate a transient upstream issue (429/5xx) — not on 403/404,
+    which mean "not going to happen" regardless of retry.
+    """
     if url.startswith("http://"):
         logger.warning("Fetching non-TLS URL: %s", url)
-    try:
-        response = client.get(url, **kwargs)
-        response.raise_for_status()
-        if len(response.content) > _MAX_RESPONSE_BYTES:
-            logger.warning(
-                "Response too large (%d bytes), skipping: %s", len(response.content), url
-            )
+
+    attempts = len(_RETRY_BACKOFF_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            response = client.get(url, **kwargs)
+            response.raise_for_status()
+            if len(response.content) > _MAX_RESPONSE_BYTES:
+                logger.warning(
+                    "Response too large (%d bytes), skipping: %s", len(response.content), url
+                )
+                return None
+            return response
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in _RETRYABLE_STATUS_CODES and attempt < attempts - 1:
+                logger.debug(
+                    "HTTP %s from %s — retrying in %.0fs",
+                    status,
+                    url,
+                    _RETRY_BACKOFF_SECONDS[attempt],
+                )
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            logger.warning("HTTP %s from %s", status, url)
             return None
-        return response
-    except httpx.HTTPStatusError as exc:
-        logger.warning("HTTP %s from %s", exc.response.status_code, url)
-        return None
-    except httpx.RequestError as exc:
-        logger.warning("Request failed for %s: %s", url, exc)
-        return None
+        except httpx.RequestError as exc:
+            if attempt < attempts - 1:
+                logger.debug(
+                    "Request failed for %s: %s — retrying in %.0fs",
+                    url,
+                    exc,
+                    _RETRY_BACKOFF_SECONDS[attempt],
+                )
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            logger.warning("Request failed for %s: %s", url, exc)
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------

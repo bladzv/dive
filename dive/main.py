@@ -310,8 +310,42 @@ def _set_step_stats(key: str, **kwargs: object) -> None:
         _pipeline_status["step_stats"][key] = {k: v for k, v in kwargs.items() if v is not None}
 
 
+_SNAPSHOT_FIELDS = (
+    "last_started",
+    "last_completed",
+    "last_status",
+    "last_error",
+    "step_history",
+    "step_progress",
+    "step_stats",
+    "step_times",
+    "run_duration_s",
+)
+
+
+def _persist_pipeline_snapshot() -> None:
+    """Save the last-completed-run fields of _pipeline_status to the settings
+    table, so the drawer's per-step detail survives a process restart. Called
+    at each of the three terminal points in _run_pipeline() (success, error,
+    cancelled) — never while a run is in progress.
+    """
+    with _pipeline_lock:
+        snapshot = {k: _pipeline_status[k] for k in _SNAPSHOT_FIELDS}
+    try:
+        with db.get_conn() as conn:
+            db.save_pipeline_snapshot(conn, snapshot)
+    except Exception:
+        logger.warning("Failed to persist pipeline snapshot", exc_info=True)
+
+
 def _reset_pipeline_control() -> None:
-    """Clear cancel + pause flags and progress counters. Called at run start."""
+    """Clear cancel + pause flags and discard the previous run's per-step
+    detail. Called at the START of a run only — the drawer needs the
+    just-finished run's step_history/step_stats/etc. to stay in place after
+    completion (until the user closes it or the next run starts), so this
+    must NOT be called again once a run finishes. See
+    _reset_pipeline_control_flags() for the finally-block equivalent.
+    """
     _pipeline_control["cancel_requested"] = False
     _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
@@ -323,6 +357,20 @@ def _reset_pipeline_control() -> None:
         _pipeline_status["step_stats"] = {}
         _pipeline_status["step_times"] = {}
         _pipeline_status["run_duration_s"] = None
+
+
+def _reset_pipeline_control_flags() -> None:
+    """Clear cancel + pause flags only, without touching step detail. Called
+    unconditionally in the _run_pipeline() `finally` block so a stale
+    pause/cancel request never blocks the next run — unlike
+    _reset_pipeline_control(), this preserves step_history/step_stats/etc.
+    so the drawer can keep showing the just-finished run's detail.
+    """
+    _pipeline_control["cancel_requested"] = False
+    _pipeline_control["pause_requested"] = False
+    _pipeline_pause_event.set()
+    with _pipeline_lock:
+        _pipeline_status["paused"] = False
 
 
 def _run_pipeline() -> None:
@@ -640,6 +688,7 @@ def _run_pipeline() -> None:
             _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "success"
             _pipeline_status["run_duration_s"] = duration
+        _persist_pipeline_snapshot()
         if _config:
             try:
                 with db.get_conn() as conn:
@@ -665,6 +714,7 @@ def _run_pipeline() -> None:
             _pipeline_status["last_completed"] = datetime.now(UTC).isoformat()
             _pipeline_status["last_status"] = "cancelled"
             _pipeline_status["current_step"] = None
+        _persist_pipeline_snapshot()
         try:
             if run_id is not None:
                 with db.get_conn() as conn:
@@ -681,6 +731,7 @@ def _run_pipeline() -> None:
             _pipeline_status["last_status"] = "error"
             _pipeline_status["last_error"] = str(exc)
             _pipeline_status["current_step"] = None
+        _persist_pipeline_snapshot()
         try:
             if run_id is not None:
                 with db.get_conn() as conn:
@@ -690,7 +741,7 @@ def _run_pipeline() -> None:
         if _config:
             notifier.send_failure_alert(_config, str(exc))
     finally:
-        _reset_pipeline_control()
+        _reset_pipeline_control_flags()
         lock.release()
 
 
@@ -755,7 +806,39 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
             db.set_setting(conn, "session_secret", session_secret)
             logger.debug("Session secret generated")
 
+        # Close out any run left 'running' by a process that died mid-run, then
+        # hydrate in-memory pipeline status from persisted history so the "Last
+        # run" badge — and the pipeline drawer's full per-step detail — survive
+        # a restart instead of resetting to "Never" / empty.
+        db.reconcile_interrupted_runs(conn)
+        snapshot = db.get_pipeline_snapshot(conn)
+        recent_runs = None if snapshot else db.get_run_history(conn, limit=1)
+
     _session_serializer = URLSafeTimedSerializer(session_secret)
+
+    if snapshot:
+        with _pipeline_lock:
+            for key in _SNAPSHOT_FIELDS:
+                if key in snapshot:
+                    _pipeline_status[key] = snapshot[key]
+        logger.info("Restored last pipeline run snapshot: %s", snapshot.get("last_status"))
+    elif recent_runs:
+        # Fallback for installs upgrading from before snapshots existed — only
+        # the coarse run_log columns are available, no per-step detail.
+        last = recent_runs[0]
+        with _pipeline_lock:
+            _pipeline_status["last_started"] = last["started_at"]
+            _pipeline_status["last_completed"] = last["completed_at"]
+            _pipeline_status["last_status"] = last["status"]
+            _pipeline_status["last_error"] = last["error_message"]
+            if last["completed_at"]:
+                try:
+                    start = datetime.fromisoformat(last["started_at"])
+                    end = datetime.fromisoformat(last["completed_at"])
+                    _pipeline_status["run_duration_s"] = round((end - start).total_seconds(), 1)
+                except Exception:
+                    pass
+        logger.info("Restored last pipeline run status from history: %s", last["status"])
 
     interval = _interval_hours(_config)
     _scheduler = BackgroundScheduler(daemon=True)

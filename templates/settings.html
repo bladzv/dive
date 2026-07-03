@@ -23,7 +23,9 @@
       <div class="card-title">Feature toggles</div>
       <p class="card-desc">Enable or disable individual pipeline steps and channels.</p>
       <div id="toggles-list" class="toggle-list">
-        <p class="form-hint">Loading…</p>
+        <div class="skeleton skeleton-line medium"></div>
+        <div class="skeleton skeleton-line medium"></div>
+        <div class="skeleton skeleton-line short"></div>
       </div>
     </div>
 
@@ -32,7 +34,7 @@
       <div class="card-title">Pipeline schedule</div>
       <div class="form-group">
         <label class="form-label" for="interval-select">Run every</label>
-        <select id="interval-select" onchange="handleIntervalChange(this.value)">
+        <select id="interval-select" onchange="handleIntervalChange(this.value); markDirty('pipeline')">
           {% for val, label in interval_options %}
           <option value="{{ val }}" {{ 'selected' if val == current_interval else '' }}>{{ label }}</option>
           {% endfor %}
@@ -40,7 +42,8 @@
         </select>
         <div id="custom-interval-row" class="custom-interval-row">
           <input type="number" id="custom-hours" min="1" max="8760" placeholder="hours"
-                 value="{{ current_interval if current_interval not in interval_values else '' }}">
+                 value="{{ current_interval if current_interval not in interval_values else '' }}"
+                 oninput="markDirty('pipeline')">
           <span class="form-hint-inline">hours (minimum 1)</span>
         </div>
         <p class="form-hint">How often the pipeline collects news and scans repositories.</p>
@@ -49,6 +52,7 @@
 
   </div>
   <div class="settings-section-actions">
+    <span class="unsaved-indicator" id="unsaved-pipeline" style="display:none">Unsaved changes</span>
     <button class="btn btn-primary btn-sm" onclick="savePipelineSection()">Save pipeline settings</button>
   </div>
 </section>
@@ -68,7 +72,7 @@
 
       <div class="form-group">
         <label class="form-label" for="severity-select">Minimum severity for notifications</label>
-        <select id="severity-select">
+        <select id="severity-select" onchange="markDirty('scanner')">
           <option value="critical">Critical only</option>
           <option value="high">High and above (default)</option>
           <option value="medium">Medium and above</option>
@@ -81,25 +85,29 @@
       <div class="form-group">
         <label class="form-label" for="excluded-repos">Excluded repositories</label>
         <textarea id="excluded-repos" rows="3" class="form-textarea"
-                  placeholder="owner/repo-name, one per line"></textarea>
+                  placeholder="owner/repo-name, one per line"
+                  oninput="markDirty('scanner')"></textarea>
         <p class="form-hint">Repos listed here are skipped by the vulnerability and secrets scanner.</p>
       </div>
 
       <div class="form-group">
         <label class="form-label" for="secrets-scan-depth">Secrets scan depth (commits)</label>
-        <input type="number" id="secrets-scan-depth" min="1" max="500" step="1" class="form-input-narrow">
+        <input type="number" id="secrets-scan-depth" min="1" max="500" step="1" class="form-input-narrow"
+               oninput="markDirty('scanner')">
         <p class="form-hint">Number of recent commits to scan for secrets per repository (default 30).</p>
       </div>
 
       <div class="form-group">
         <label class="form-label" for="news-retention-days">News retention (days)</label>
-        <input type="number" id="news-retention-days" min="0" max="3650" step="1" class="form-input-narrow">
+        <input type="number" id="news-retention-days" min="0" max="3650" step="1" class="form-input-narrow"
+               oninput="markDirty('scanner')">
         <p class="form-hint">Auto-delete news older than this many days (runs daily). 0 = keep forever. Bookmarked items are always kept.</p>
       </div>
 
       <div class="form-group">
         <label class="form-label" for="log-retention-days">Log retention (days)</label>
-        <input type="number" id="log-retention-days" min="0" max="3650" step="1" class="form-input-narrow">
+        <input type="number" id="log-retention-days" min="0" max="3650" step="1" class="form-input-narrow"
+               oninput="markDirty('scanner')">
         <p class="form-hint">Auto-delete application logs older than this many days (runs daily). 0 = keep forever.</p>
       </div>
 
@@ -113,7 +121,9 @@
       </p>
 
       <div id="keywords-list" class="chip-list">
-        <p class="form-hint">Loading…</p>
+        <div class="skeleton skeleton-chip"></div>
+        <div class="skeleton skeleton-chip"></div>
+        <div class="skeleton skeleton-chip"></div>
       </div>
 
       <div class="inline-add-row">
@@ -125,6 +135,7 @@
 
   </div>
   <div class="settings-section-actions">
+    <span class="unsaved-indicator" id="unsaved-scanner" style="display:none">Unsaved changes</span>
     <button class="btn btn-primary btn-sm" onclick="saveScannerSettings()">Save scanner settings</button>
   </div>
 </section>
@@ -140,7 +151,11 @@
     <div class="card-title">RSS feeds</div>
 
     <div id="feeds-table-wrap">
-      <p class="form-hint">Loading…</p>
+      <div class="table-wrap"><table><tbody>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line medium"></div></td></tr>
+        <tr class="skeleton-row"><td><div class="skeleton skeleton-line short"></div></td></tr>
+      </tbody></table></div>
     </div>
 
     <div class="card-divider"></div>
@@ -168,7 +183,10 @@
     <div class="card">
       <div class="card-title">Ollama model</div>
       <div id="model-grid" class="model-grid">
-        <p class="form-hint">Loading available models…</p>
+        <div class="skeleton-card skeleton"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line medium"></div></div>
+        <div class="skeleton-card skeleton"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line medium"></div></div>
+        <div class="skeleton-card skeleton"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line medium"></div></div>
+        <div class="skeleton-card skeleton"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line medium"></div></div>
       </div>
       <div class="install-hint" id="install-hint" style="display:none">
         <p class="form-hint">To install this model, run one of:</p>
@@ -192,13 +210,15 @@
       <div class="card-title">Categorization</div>
       <div class="form-group">
         <label class="form-label" for="categorize-batch-size">Batch size</label>
-        <input type="number" id="categorize-batch-size" min="1" max="20" step="1" class="form-input-narrow">
+        <input type="number" id="categorize-batch-size" min="1" max="20" step="1" class="form-input-narrow"
+               oninput="markDirty('ai')">
         <p class="form-hint">News items sent to Ollama per request (1–20, default 10). Smaller batches give richer context and recover better from failures.</p>
       </div>
     </div>
 
   </div>
   <div class="settings-section-actions">
+    <span class="unsaved-indicator" id="unsaved-ai" style="display:none">Unsaved changes</span>
     <button class="btn btn-primary btn-sm" onclick="saveCategorizeSettings()">Save AI settings</button>
   </div>
 </section>
@@ -271,7 +291,7 @@
 
 {% block scripts %}
 <script>
-const INTERVAL_VALUES = {{ interval_values | tojson }};
+var INTERVAL_VALUES = {{ interval_values | tojson }};
 
 /* ── Schedule ──────────────────────────────────────── */
 function handleIntervalChange(val) {
@@ -287,7 +307,7 @@ function handleIntervalChange(val) {
 })();
 
 /* ── Feature Toggles ───────────────────────────────── */
-let _toggleState = {};
+var _toggleState = {};
 
 function loadToggles() {
   fetch('/api/config/toggles', { credentials: 'same-origin' })
@@ -299,7 +319,7 @@ function loadToggles() {
         _toggleState[key] = meta.enabled;
         return `<label>
           <input type="checkbox" id="toggle-${key}" ${meta.enabled ? 'checked' : ''}
-                 onchange="_toggleState['${key}']=this.checked">
+                 onchange="_toggleState['${key}']=this.checked; markDirty('pipeline')">
           ${meta.label}
         </label>`;
       }).join('');
@@ -316,11 +336,14 @@ function savePipelineSection() {
   let hours;
   if (sel.value === 'custom') {
     hours = parseFloat(document.getElementById('custom-hours').value);
-    if (!hours || hours < 1) { showToast('Enter a valid number of hours (≥ 1)', 'error'); return; }
+    if (!hours || hours < 1) {
+      showToast('Enter a valid number of hours (≥ 1)', 'error');
+      return Promise.reject(new Error('invalid hours'));
+    }
   } else {
     hours = parseFloat(sel.value);
   }
-  Promise.all([
+  return Promise.all([
     apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -332,8 +355,8 @@ function savePipelineSection() {
       body: JSON.stringify(_toggleState),
     }).then(r => r.json()),
   ])
-  .then(() => showToast('Pipeline settings saved', 'success'))
-  .catch(() => showToast('Failed to save pipeline settings', 'error'));
+  .then(() => { showToast('Pipeline settings saved', 'success'); clearDirty('pipeline'); })
+  .catch(err => { showToast('Failed to save pipeline settings', 'error'); throw err; });
 }
 
 /* ── RSS Feeds ─────────────────────────────────────── */
@@ -577,7 +600,7 @@ function saveScannerSettings() {
   const depth = parseInt(document.getElementById('secrets-scan-depth').value, 10);
   const retentionDays = parseInt(document.getElementById('news-retention-days').value, 10);
   const logRetentionDays = parseInt(document.getElementById('log-retention-days').value, 10);
-  apiFetch('/api/config/scanner', {
+  return apiFetch('/api/config/scanner', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -589,20 +612,20 @@ function saveScannerSettings() {
     })
   })
   .then(r => r.json())
-  .then(() => showToast('Scanner settings saved', 'success'))
-  .catch(() => showToast('Failed to save scanner settings', 'error'));
+  .then(() => { showToast('Scanner settings saved', 'success'); clearDirty('scanner'); })
+  .catch(err => { showToast('Failed to save scanner settings', 'error'); throw err; });
 }
 
 function saveCategorizeSettings() {
   const batchSize = parseInt(document.getElementById('categorize-batch-size').value, 10);
-  apiFetch('/api/config/scanner', {
+  return apiFetch('/api/config/scanner', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ categorize_batch_size: batchSize })
   })
   .then(r => r.json())
-  .then(() => showToast('Categorization settings saved', 'success'))
-  .catch(() => showToast('Failed to save categorization settings', 'error'));
+  .then(() => { showToast('Categorization settings saved', 'success'); clearDirty('ai'); })
+  .catch(err => { showToast('Failed to save categorization settings', 'error'); throw err; });
 }
 
 /* ── Ollama Model ──────────────────────────────────── */
@@ -725,7 +748,7 @@ function clearData() {
 }
 
 /* ── Confirm modal ─────────────────────────────────── */
-let _confirmCallback = null;
+var _confirmCallback = null;
 
 function showConfirm(message, warning, onConfirm) {
   document.getElementById('confirm-message').textContent = message;
@@ -751,6 +774,33 @@ function closeConfirmModal() {
   _confirmCallback = null;
   document.getElementById('confirm-backdrop').style.display = 'none';
   document.getElementById('confirm-modal').style.display   = 'none';
+}
+
+/* ── Unsaved changes tracking ─────────────────────────
+   Only the three sections with an explicit Save button track dirty state —
+   keywords, feed toggles, and model selection already save immediately. */
+var _dirtySections = new Set();
+
+function markDirty(section) {
+  _dirtySections.add(section);
+  const el = document.getElementById('unsaved-' + section);
+  if (el) el.style.display = '';
+  window.setUnsavedChanges(true, { onSave: saveAllDirtySections });
+}
+
+function clearDirty(section) {
+  _dirtySections.delete(section);
+  const el = document.getElementById('unsaved-' + section);
+  if (el) el.style.display = 'none';
+  window.setUnsavedChanges(_dirtySections.size > 0, { onSave: saveAllDirtySections });
+}
+
+function saveAllDirtySections() {
+  const tasks = [];
+  if (_dirtySections.has('pipeline')) tasks.push(savePipelineSection());
+  if (_dirtySections.has('scanner'))  tasks.push(saveScannerSettings());
+  if (_dirtySections.has('ai'))       tasks.push(saveCategorizeSettings());
+  return Promise.all(tasks);
 }
 
 /* ── Init ──────────────────────────────────────────── */

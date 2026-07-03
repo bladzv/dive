@@ -75,6 +75,10 @@ class EmailConfig:
     from_address: str = ""
     to_address: str = ""
 
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.username and self.to_address)
+
 
 @dataclass
 class NotificationsConfig:
@@ -94,8 +98,7 @@ class AppConfig:
     @property
     def has_any_notification_channel(self) -> bool:
         n = self.notifications
-        has_email = bool(n.email.username and n.email.to_address)
-        return bool(n.slack.webhook_url or n.discord.webhook_url or has_email)
+        return bool(n.slack.webhook_url or n.discord.webhook_url or n.email.is_configured)
 
 
 # ---------------------------------------------------------------------------

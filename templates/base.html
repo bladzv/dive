@@ -99,10 +99,9 @@
         <svg width="18" height="18"><use href="#i-menu"/></svg>
       </button>
       <a class="brand" href="/" aria-label="DIVE dashboard">
-        <span class="brand-mark" aria-hidden="true">DV</span>
         <span class="brand-copy">
-          <strong>DIVE</strong>
-          <small>Dependency Intelligence</small>
+          <strong class="brand-name">D<span>.</span>I<span>.</span>V<span>.</span>E<span>.</span></strong>
+          <small>Dependency Intelligence for<br>Vulnerability Exposure</small>
         </span>
       </a>
       <button class="sidebar-collapse-btn" id="sidebar-collapse-btn"
@@ -250,6 +249,29 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="cancel-run-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-run-modal-title">
+  <div class="modal-panel">
+    <h2 id="cancel-run-modal-title">Cancel running pipeline?</h2>
+    <p>The pipeline will stop at the next step boundary.</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="document.getElementById('cancel-run-modal').classList.remove('open')">Keep running</button>
+      <button class="btn btn-danger" onclick="_confirmCancelRun()">Cancel run</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="unsaved-modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-modal-title">
+  <div class="modal-panel">
+    <h2 id="unsaved-modal-title">Unsaved changes</h2>
+    <p>You have unsaved changes on this page. Save them before leaving?</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="_unsavedModalCancel()">Cancel</button>
+      <button class="btn btn-danger" onclick="_unsavedModalDiscard()">Discard</button>
+      <button class="btn btn-primary" id="unsaved-modal-save-btn" onclick="_unsavedModalSave()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script id="dive-base-js">
 /* ── Sign-out confirmation ───────────────────────────── */
 function confirmSignOut(event) {
@@ -257,12 +279,19 @@ function confirmSignOut(event) {
   document.getElementById('logout-modal').classList.add('open');
 }
 
-document.getElementById('logout-modal').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('open');
+/* Generic modal dismissal — applies to logout, cancel-run, and unsaved-changes
+   modals alike: click the backdrop or press Escape to close. */
+document.querySelectorAll('.modal-backdrop').forEach(function(modal) {
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) modal.classList.remove('open');
+  });
 });
 
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') document.getElementById('logout-modal').classList.remove('open');
+  if (e.key !== 'Escape') return;
+  document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
+  const drawer = document.getElementById('pipeline-drawer');
+  if (drawer && drawer.classList.contains('open')) closePipelineDrawer();
 });
 
 /* ── Theme ───────────────────────────────────────────── */
@@ -517,12 +546,73 @@ function togglePause() {
 }
 
 function cancelRun() {
-  if (!confirm('Cancel the running pipeline at the next step boundary?')) return;
+  document.getElementById('cancel-run-modal').classList.add('open');
+}
+
+function _confirmCancelRun() {
+  document.getElementById('cancel-run-modal').classList.remove('open');
   apiFetch('/api/run/cancel', { method: 'POST' })
   .then(r => r.json())
   .then(() => showToast('Cancellation requested', 'info'))
   .catch(() => showToast('Cancel request failed', 'error'));
 }
+
+/* ── Unsaved-changes guard ────────────────────────────
+   Pages with editable, explicitly-saved fields (e.g. Settings) call
+   window.setUnsavedChanges(true, { onSave }) when a field is dirty, and
+   window.setUnsavedChanges(false) once saved. This guards in-app (pjax)
+   navigation with a custom Save/Discard/Cancel modal, and tab close/refresh
+   with the browser's native prompt (browsers don't allow a custom one). */
+let _unsavedDirty = false;
+let _unsavedOnSave = null;
+let _unsavedPendingNav = null;
+
+window.setUnsavedChanges = function(isDirty, opts) {
+  _unsavedDirty = !!isDirty;
+  _unsavedOnSave = (opts && opts.onSave) || null;
+};
+
+function _openUnsavedModal(pendingNav) {
+  _unsavedPendingNav = pendingNav;
+  document.getElementById('unsaved-modal').classList.add('open');
+}
+
+function _unsavedModalCancel() {
+  _unsavedPendingNav = null;
+  document.getElementById('unsaved-modal').classList.remove('open');
+}
+
+function _unsavedModalDiscard() {
+  const nav = _unsavedPendingNav;
+  _unsavedPendingNav = null;
+  _unsavedDirty = false;
+  document.getElementById('unsaved-modal').classList.remove('open');
+  if (nav) nav();
+}
+
+function _unsavedModalSave() {
+  if (!_unsavedOnSave) { _unsavedModalDiscard(); return; }
+  const btn = document.getElementById('unsaved-modal-save-btn');
+  btn.disabled = true;
+  Promise.resolve(_unsavedOnSave())
+    .then(() => {
+      const nav = _unsavedPendingNav;
+      _unsavedPendingNav = null;
+      _unsavedDirty = false;
+      document.getElementById('unsaved-modal').classList.remove('open');
+      if (nav) nav();
+    })
+    // The page's own onSave handler is expected to toast its own error message;
+    // just keep the modal open here so the user can retry or discard instead.
+    .catch(() => {})
+    .finally(() => { btn.disabled = false; });
+}
+
+window.addEventListener('beforeunload', function(e) {
+  if (!_unsavedDirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 /* ── Pipeline drawer ─────────────────────────────────── */
 function openPipelineDrawer() {
@@ -667,6 +757,13 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 
   // Summary panel — visible after run completes
   if (!pipeline.running && pipeline.last_status) {
+    let errorHtml = '';
+    if (pipeline.last_status === 'error' && pipeline.last_error) {
+      errorHtml = `<div class="drawer-error">
+        <div class="drawer-error-msg">${escapeHtml(pipeline.last_error)}</div>
+        <a class="drawer-error-link" href="/logs?level=ERROR">View logs →</a>
+      </div>`;
+    }
     let rows = '';
     if (pipeline.last_completed) {
       rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${timeAgo(pipeline.last_completed)}</span></div>`;
@@ -682,8 +779,9 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     if (ks.findings_new != null) rows += `<div class="drawer-summary-row"><span>New findings</span><span class="drawer-summary-val">${ks.findings_new}</span></div>`;
     if (ss.secrets_new != null) rows += `<div class="drawer-summary-row"><span>New secrets</span><span class="drawer-summary-val">${ss.secrets_new}</span></div>`;
     if (ls.auto_resolved != null) rows += `<div class="drawer-summary-row"><span>Auto-resolved</span><span class="drawer-summary-val">${ls.auto_resolved}</span></div>`;
-    summaryEl.style.display = rows ? '' : 'none';
-    summaryEl.innerHTML = rows;
+    const content = errorHtml + rows;
+    summaryEl.style.display = content ? '' : 'none';
+    summaryEl.innerHTML = content;
   } else {
     summaryEl.style.display = 'none';
   }
@@ -732,9 +830,13 @@ pollStatus();
     })), Promise.resolve());
   }
 
+  let currentUrl = location.href;
+
   async function navigate(url) {
     if (busy) return;
     busy = true;
+    _unsavedDirty = false;
+    _unsavedOnSave = null;
     try {
       const res = await fetch(url, { credentials: 'same-origin' });
       if (!res.ok) { location.href = url; return; }
@@ -764,6 +866,7 @@ pollStatus();
       });
 
       history.pushState({ url }, doc.title, url);
+      currentUrl = url;
       runPageScripts(doc);
       window.scrollTo(0, 0);
     } catch (_) { location.href = url; }
@@ -775,10 +878,23 @@ pollStatus();
     const a = e.target.closest('a[href]');
     if (!a || !canIntercept(a)) return;
     e.preventDefault();
-    navigate(a.getAttribute('href'));
+    const href = a.getAttribute('href');
+    if (_unsavedDirty) { _openUnsavedModal(() => navigate(href)); return; }
+    navigate(href);
   });
 
-  window.addEventListener('popstate', function() { navigate(location.href); });
+  window.addEventListener('popstate', function() {
+    if (_unsavedDirty) {
+      const target = location.href;
+      // The browser already changed the URL for this back/forward step — push
+      // our current page back on top so we visibly stay put until the user
+      // decides via the modal.
+      history.pushState({ url: currentUrl }, '', currentUrl);
+      _openUnsavedModal(() => navigate(target));
+      return;
+    }
+    navigate(location.href);
+  });
 })();
 
 /* ── Run Now ─────────────────────────────────────────── */

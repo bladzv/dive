@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Label applied to every auto-created issue so they are easy to filter.
 _LABEL_NAME = "security"
 _ISSUE_TITLE_PREFIX = "[Security]"
+_RATE_LIMIT_WARN_PCT = 0.10  # warn/stop when < 10% of requests remain
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ class IssueCreationStats:
     issues_skipped: int = 0  # duplicate open issue found
     issues_failed: int = 0
     failed_repos: list[str] = field(default_factory=list)
+    rate_limit_warning: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,11 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> IssueCreationStats:
     create (or skip if duplicate) a GitHub issue for each, then stamps the
     URL back onto the finding row.
 
+    Findings are grouped by repo so each repo's Repo object and open-issue
+    title set are fetched exactly once — not once per finding, which was
+    50 repo fetches + 50 full paginated issue-list walks for 50 findings in
+    one repo.
+
     Errors for individual repos are caught and counted; the loop continues
     so a single inaccessible repo does not abort the rest.
     """
@@ -69,34 +76,80 @@ def run(conn: sqlite3.Connection, config: AppConfig) -> IssueCreationStats:
 
     gh = Github(config.github.token)
 
+    findings_by_repo: dict[str, list] = {}
     for finding in findings:
-        repo_name = finding["repo_full_name"]
+        findings_by_repo.setdefault(finding["repo_full_name"], []).append(finding)
+
+    for repo_name, repo_findings in findings_by_repo.items():
         try:
-            url, was_created = _create_or_skip(gh, finding)
-            db.set_finding_github_issue_url(conn, finding["id"], url)
-            if was_created:
-                stats.issues_created += 1
-                logger.info("GitHub issue created: %s", url)
-            else:
-                stats.issues_skipped += 1
-                logger.debug("Existing GitHub issue found, URL stamped: %s", url)
+            remaining, limit = gh.rate_limiting
+            if remaining < limit * _RATE_LIMIT_WARN_PCT:
+                logger.warning(
+                    "GitHub API rate limit low (%d/%d) — stopping issue creation early; "
+                    "remaining repos will be processed next run",
+                    remaining,
+                    limit,
+                )
+                stats.rate_limit_warning = True
+                break
+        except Exception:
+            pass
+
+        try:
+            repo = gh.get_repo(repo_name)
+            open_titles = {
+                issue.title: issue.html_url for issue in repo.get_issues(state="open", labels=[])
+            }
         except GithubException as exc:
-            logger.warning(
-                "Could not create GitHub issue for %s (%s): %s",
-                repo_name,
-                finding["cve_id"] or finding["ghsa_id"] or "no-id",
-                exc,
-            )
-            stats.issues_failed += 1
+            logger.warning("Could not access repo %s for issue creation: %s", repo_name, exc)
+            stats.issues_failed += len(repo_findings)
             if repo_name not in stats.failed_repos:
                 stats.failed_repos.append(repo_name)
+            continue
         except Exception as exc:
             logger.error(
-                "Unexpected error creating issue for %s: %s", repo_name, exc, exc_info=True
+                "Unexpected error accessing repo %s for issue creation: %s",
+                repo_name,
+                exc,
+                exc_info=True,
             )
-            stats.issues_failed += 1
+            stats.issues_failed += len(repo_findings)
             if repo_name not in stats.failed_repos:
                 stats.failed_repos.append(repo_name)
+            continue
+
+        for finding in repo_findings:
+            try:
+                url, was_created = _create_or_skip(repo, open_titles, finding)
+                db.set_finding_github_issue_url(conn, finding["id"], url)
+                if was_created:
+                    stats.issues_created += 1
+                    logger.info("GitHub issue created: %s", url)
+                    # Keep the in-memory title set current so a second new
+                    # finding in this same run for the same vuln+package
+                    # (already impossible by DB uniqueness, but cheap to be
+                    # consistent) doesn't re-create a duplicate.
+                    open_titles[_issue_title(finding)] = url
+                else:
+                    stats.issues_skipped += 1
+                    logger.debug("Existing GitHub issue found, URL stamped: %s", url)
+            except GithubException as exc:
+                logger.warning(
+                    "Could not create GitHub issue for %s (%s): %s",
+                    repo_name,
+                    finding["cve_id"] or finding["ghsa_id"] or "no-id",
+                    exc,
+                )
+                stats.issues_failed += 1
+                if repo_name not in stats.failed_repos:
+                    stats.failed_repos.append(repo_name)
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error creating issue for %s: %s", repo_name, exc, exc_info=True
+                )
+                stats.issues_failed += 1
+                if repo_name not in stats.failed_repos:
+                    stats.failed_repos.append(repo_name)
 
     return stats
 
@@ -216,25 +269,26 @@ def _ensure_label(repo: Any) -> None:
             pass  # label creation is best-effort
 
 
-def _create_or_skip(gh: Github, finding: sqlite3.Row) -> tuple[str, bool]:
+def _create_or_skip(
+    repo: Any, open_titles: dict[str, str], finding: sqlite3.Row
+) -> tuple[str, bool]:
     """Return (issue_url, was_created).
 
     was_created=True  → a new issue was opened.
     was_created=False → an open issue with the same title already existed;
                         its URL is returned so the caller can stamp the row
                         and avoid re-checking on every subsequent pipeline run.
+
+    `open_titles` is the repo's open-issue title→URL map, fetched once by
+    the caller for the whole repo rather than per finding.
     """
-    repo_name = finding["repo_full_name"]
     title = _issue_title(finding)
 
-    repo = gh.get_repo(repo_name)
-
-    # Deduplicate: return existing URL so the row gets stamped and skipped next run
-    issues = repo.get_issues(state="open", labels=[])
-    for issue in issues:
-        if issue.title == title:
-            logger.debug("Duplicate open issue found for %s in %s — stamping URL", title, repo_name)
-            return issue.html_url, False
+    if title in open_titles:
+        logger.debug(
+            "Duplicate open issue found for %s in %s — stamping URL", title, repo.full_name
+        )
+        return open_titles[title], False
 
     body = _build_issue_body(finding)
     _ensure_label(repo)

@@ -74,7 +74,7 @@ open http://localhost:8000   # log in with dashboard.username / dashboard.passwo
 - **KEV enrichment** — findings are cross-referenced with the CISA Known Exploited Vulnerabilities catalogue
 - **Priority scoring** — CVSS × 6 + KEV bonus + patch-availability penalty, clamped to 0–100
 - **Finding lifecycle** — New → Acknowledged → Resolved state machine with automatic resolution and regression detection
-- **Manifest coverage** — `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json`, GitHub Actions workflows
+- **Manifest coverage** — npm (`package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), Python (`requirements.txt`, `Pipfile`, `pyproject.toml`, `poetry.lock`, `uv.lock`), Go (`go.mod`), Rust (`Cargo.toml`, `Cargo.lock`), Java (`pom.xml`, `build.gradle`), Ruby (`Gemfile`, `Gemfile.lock`), PHP (`composer.json`, `composer.lock`), .NET (`*.csproj`, `packages.lock.json`), and GitHub Actions workflows
 - **Secrets scanning** — gitleaks-based scanning of shallow repo clones with permanent false-positive suppression
 - **GitHub issue auto-creation** — optional step that opens `[Security]`-prefixed issues in affected repos with deduplication against existing open issues
 - **AI next steps** — optional Ollama-powered remediation suggestions attached to each finding

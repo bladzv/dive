@@ -32,10 +32,12 @@ import sqlite3
 import tomllib
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import yaml
 from github import Github, GithubException, RateLimitExceededException
 
 try:
@@ -60,6 +62,9 @@ logger = logging.getLogger(__name__)
 _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 _OSV_VULN_URL = "https://api.osv.dev/v1/vulns"
 _OSV_BATCH_SIZE = 500  # max queries per OSV.dev batch request
+_OSV_BATCH_MAX_PAGES = 5  # safety cap on next_page_token pagination per query
+_OSV_DETAIL_FETCH_WORKERS = 8  # bounded concurrency for per-vuln detail fetches
+_LATEST_VERSION_WORKERS = 8  # bounded concurrency for latest-version enrichment
 _HTTP_TIMEOUT = 30.0
 _MAX_MANIFESTS_PER_REPO = 25  # guard against monorepos with hundreds of lockfiles
 _RATE_LIMIT_WARN_PCT = 0.10  # warn when < 10% of requests remain
@@ -70,9 +75,13 @@ _MAX_MANIFEST_BYTES = 20_000_000  # sanity cap on files fetched via the Git Blob
 _MANIFEST_FILENAMES: dict[str, str] = {
     "package.json": "npm",
     "package-lock.json": "npm",
+    "yarn.lock": "npm",
+    "pnpm-lock.yaml": "npm",
     "requirements.txt": "PyPI",
     "Pipfile": "PyPI",
     "pyproject.toml": "PyPI",
+    "poetry.lock": "PyPI",
+    "uv.lock": "PyPI",
     "go.mod": "Go",
     "Cargo.toml": "crates.io",
     "Cargo.lock": "crates.io",
@@ -80,7 +89,26 @@ _MANIFEST_FILENAMES: dict[str, str] = {
     "build.gradle": "Maven",
     "Gemfile": "RubyGems",
     "Gemfile.lock": "RubyGems",
+    "composer.json": "Packagist",
+    "composer.lock": "Packagist",
+    "packages.lock.json": "NuGet",
 }
+
+# Filename SUFFIX → ecosystem mapping, checked when the exact filename isn't
+# in _MANIFEST_FILENAMES (e.g. a .csproj can be named anything).
+_MANIFEST_SUFFIXES: dict[str, str] = {
+    ".csproj": "NuGet",
+}
+
+# (loose manifest, lockfiles in priority order — first present wins) — used
+# to drop the loose manifest, and all but one lockfile, when both exist.
+_LOCKFILE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("package.json", ("package-lock.json", "pnpm-lock.yaml", "yarn.lock")),
+    ("pyproject.toml", ("poetry.lock", "uv.lock")),
+    ("composer.json", ("composer.lock",)),
+    ("Cargo.toml", ("Cargo.lock",)),
+    ("Gemfile", ("Gemfile.lock",)),
+)
 
 # Severities that trigger AI next-steps generation
 _HIGH_SEVERITY = {"Critical", "High"}
@@ -286,19 +314,46 @@ def _scan_repo(repo) -> list[Package]:
             manifest_paths.append((path, _MANIFEST_FILENAMES[filename], element.sha, size))
         elif path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
             workflow_paths.append((path, element.sha, size))
+        else:
+            for suffix, ecosystem in _MANIFEST_SUFFIXES.items():
+                if filename.endswith(suffix):
+                    manifest_paths.append((path, ecosystem, element.sha, size))
+                    break
 
-    # Prefer lock files over loose manifests (exact pinned versions are more reliable)
-    for lockfile, loose in (
-        ("package-lock.json", "package.json"),
-        ("Cargo.lock", "Cargo.toml"),
-        ("Gemfile.lock", "Gemfile"),
-    ):
-        if any(p.endswith(lockfile) for p, _, _, _ in manifest_paths):
-            manifest_paths = [
-                (p, e, sha, sz) for p, e, sha, sz in manifest_paths if not p.endswith(loose)
-            ]
+    # Prefer lock files over loose manifests (exact pinned versions are more
+    # reliable). When multiple lockfiles for the same ecosystem are present
+    # (e.g. a repo mid-migration from Yarn to pnpm), pick exactly one in
+    # priority order so packages aren't double-counted, and log the choice.
+    for loose, lockfile_priority in _LOCKFILE_GROUPS:
+        present = [
+            lf for lf in lockfile_priority if any(p.endswith(lf) for p, _, _, _ in manifest_paths)
+        ]
+        if not present:
+            continue
+        chosen = present[0]
+        if len(present) > 1:
+            logger.info(
+                "%s: multiple %s lockfiles present (%s) — using %s",
+                repo.full_name,
+                loose,
+                ", ".join(present),
+                chosen,
+            )
+        drop = {loose} | (set(lockfile_priority) - {chosen})
+        manifest_paths = [
+            (p, e, sha, sz)
+            for p, e, sha, sz in manifest_paths
+            if not any(p.endswith(d) for d in drop)
+        ]
 
     all_paths = manifest_paths[:_MAX_MANIFESTS_PER_REPO]
+    if len(manifest_paths) > _MAX_MANIFESTS_PER_REPO:
+        logger.warning(
+            "%s: %d manifests found, capped at %d — some may be skipped this run",
+            repo.full_name,
+            len(manifest_paths),
+            _MAX_MANIFESTS_PER_REPO,
+        )
     all_paths += [(p, "Actions", sha, sz) for p, sha, sz in workflow_paths[:5]]
 
     if tree.truncated:
@@ -367,12 +422,22 @@ def _parse_manifest(path: str, content: str, ecosystem: str) -> list[Package]:
             return _parse_package_lock(content, path)
         if filename == "package.json":
             return _parse_package_json(content, path)
+        if filename == "yarn.lock":
+            return _parse_yarn_lock(content, path)
+        if filename == "pnpm-lock.yaml":
+            return _parse_pnpm_lock(content, path)
         if filename == "requirements.txt":
             return _parse_requirements_txt(content, path)
         if filename == "Pipfile":
             return _parse_pipfile(content, path)
         if filename == "pyproject.toml":
             return _parse_pyproject_toml(content, path)
+        if filename == "poetry.lock":
+            return _parse_poetry_lock(content, path)
+        if filename == "uv.lock":
+            return _parse_uv_lock(content, path)
+        # Must come after the specific "*.yaml" manifest checks above (e.g.
+        # pnpm-lock.yaml), which would otherwise never be reached.
         if filename.endswith((".yml", ".yaml")):
             return _parse_github_actions(content, path)
         if filename == "go.mod":
@@ -389,6 +454,14 @@ def _parse_manifest(path: str, content: str, ecosystem: str) -> list[Package]:
             return _parse_gemfile(content, path)
         if filename == "Gemfile.lock":
             return _parse_gemfile_lock(content, path)
+        if filename == "composer.json":
+            return _parse_composer_json(content, path)
+        if filename == "composer.lock":
+            return _parse_composer_lock(content, path)
+        if filename == "packages.lock.json":
+            return _parse_packages_lock_json(content, path)
+        if filename.endswith(".csproj"):
+            return _parse_csproj(content, path)
     except Exception as exc:
         logger.debug("Parse error for %s: %s", path, exc)
     return []
@@ -433,6 +506,131 @@ def _parse_package_json(content: str, path: str) -> list[Package]:
                     repo_full_name="",
                 )
             )
+    return packages
+
+
+def _npm_package_name_from_lockfile_spec(spec: str) -> str | None:
+    """Extract the package name from a yarn.lock header spec.
+
+    Specs look like "name@range" (v1, e.g. "lodash@^4.17.0") or
+    "name@protocol:range" (v2+/Berry, e.g. "lodash@npm:^4.17.0"). Scoped
+    packages start with their own "@": "@babel/core@npm:^7.20.0". Finding the
+    separating "@" (skipping index 0 for scoped names) handles both shapes
+    identically since only the version/protocol side ever changes.
+    """
+    if not spec:
+        return None
+    if spec.startswith("@"):
+        at_idx = spec.find("@", 1)
+        return spec[:at_idx] if at_idx > 0 else None
+    at_idx = spec.rfind("@")
+    return spec[:at_idx] if at_idx > 0 else None
+
+
+def _parse_yarn_lock(content: str, path: str) -> list[Package]:
+    """Parse yarn.lock — dispatches between the two incompatible formats.
+
+    v1 (classic) is a custom format; v2+ (Berry) is valid YAML with a
+    top-level __metadata key. Detect by looking for that key.
+    """
+    if re.search(r"^__metadata:", content, re.MULTILINE):
+        return _parse_yarn_lock_v2(content, path)
+    return _parse_yarn_lock_v1(content, path)
+
+
+def _parse_yarn_lock_v1(content: str, path: str) -> list[Package]:
+    """Parse yarn.lock v1 (classic): comma-separated header specs followed
+    by an indented `version "x.y.z"` line, e.g.:
+
+        "lodash@^4.17.0", "lodash@^4.17.20":
+          version "4.17.21"
+          resolved "..."
+    """
+    packages: list[Package] = []
+    pending_name: str | None = None
+    for line in content.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not line[0].isspace():
+            header = line.rstrip().rstrip(":")
+            first_spec = header.split(",")[0].strip().strip('"')
+            pending_name = _npm_package_name_from_lockfile_spec(first_spec)
+            continue
+        if pending_name is not None:
+            m = re.match(r'\s+version\s+"?([^"\s]+)"?\s*$', line)
+            if m:
+                packages.append(
+                    Package(
+                        name=pending_name,
+                        version=m.group(1),
+                        ecosystem="npm",
+                        manifest_path=path,
+                        repo_full_name="",
+                    )
+                )
+                pending_name = None  # only the first "version" line per block counts
+    return packages
+
+
+def _parse_yarn_lock_v2(content: str, path: str) -> list[Package]:
+    """Parse yarn.lock v2+ (Berry) — valid YAML; every top-level key besides
+    __metadata is a comma-separated list of "name@protocol:range" specs
+    sharing one resolved `version`."""
+    data = yaml.safe_load(content)
+    packages: list[Package] = []
+    if not isinstance(data, dict):
+        return packages
+    for key, info in data.items():
+        if key == "__metadata" or not isinstance(info, dict):
+            continue
+        version = info.get("version")
+        if not version:
+            continue
+        first_spec = str(key).split(",")[0].strip().strip('"')
+        name = _npm_package_name_from_lockfile_spec(first_spec)
+        if name:
+            packages.append(
+                Package(
+                    name=name,
+                    version=str(version),
+                    ecosystem="npm",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
+    return packages
+
+
+def _parse_pnpm_lock(content: str, path: str) -> list[Package]:
+    """Parse pnpm-lock.yaml. The `packages:` map key format changed between
+    lockfileVersion generations: older versions use "/name/version" (with an
+    extra leading path segment for scoped packages, e.g. "/@babel/core/7.20.0"),
+    newer ones use "name@version" directly (e.g. "@babel/core@7.20.0"). Peer
+    dependency suffixes ("_hash" or "(peer@ver)") are stripped from the version.
+    """
+    data = yaml.safe_load(content)
+    packages: list[Package] = []
+    if not isinstance(data, dict):
+        return packages
+    for raw_key in data.get("packages") or {}:
+        # Strip the peer-dependency suffix ("(react@18.2.0)") first — it can
+        # itself contain "@", which would otherwise confuse the name/version
+        # split below.
+        key = str(raw_key).split("(", 1)[0]
+        if key.startswith("/"):
+            name, _, version = key[1:].rpartition("/")
+        else:
+            name, sep, version = key.rpartition("@")
+            if not sep:
+                continue
+        if not name or not version:
+            continue
+        version = version.split("_", 1)[0].strip("'\"")
+        packages.append(
+            Package(
+                name=name, version=version, ecosystem="npm", manifest_path=path, repo_full_name=""
+            )
+        )
     return packages
 
 
@@ -507,6 +705,37 @@ def _parse_pyproject_toml(content: str, path: str) -> list[Package]:
             )
         )
     return packages
+
+
+def _parse_toml_package_array(content: str, path: str) -> list[Package]:
+    """Shared parser for TOML lockfiles using `[[package]]` array-of-tables
+    with name/version fields — poetry.lock and uv.lock share this shape."""
+    data = tomllib.loads(content)
+    packages: list[Package] = []
+    for pkg in data.get("package", []):
+        name = pkg.get("name")
+        version = pkg.get("version")
+        if name and version:
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="PyPI",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
+    return packages
+
+
+def _parse_poetry_lock(content: str, path: str) -> list[Package]:
+    """Parse poetry.lock — TOML [[package]] blocks with name/version."""
+    return _parse_toml_package_array(content, path)
+
+
+def _parse_uv_lock(content: str, path: str) -> list[Package]:
+    """Parse uv.lock — TOML [[package]] blocks, same shape as poetry.lock."""
+    return _parse_toml_package_array(content, path)
 
 
 _USES_RE = re.compile(r"uses:\s*([^@\s]+)@([^\s#]+)")
@@ -741,6 +970,110 @@ def _parse_gemfile_lock(content: str, path: str) -> list[Package]:
     return packages
 
 
+def _parse_composer_json(content: str, path: str) -> list[Package]:
+    """Parse composer.json require/require-dev. Platform requirements (php,
+    ext-mbstring, lib-curl, ...) have no vendor/package slash and are
+    skipped — they aren't real Packagist packages."""
+    data = json.loads(content)
+    packages: list[Package] = []
+    for section in ("require", "require-dev"):
+        for name, version_spec in (data.get(section) or {}).items():
+            if "/" not in name:
+                continue
+            packages.append(
+                Package(
+                    name=name,
+                    version=_extract_version(str(version_spec)),
+                    ecosystem="Packagist",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
+    return packages
+
+
+def _parse_composer_lock(content: str, path: str) -> list[Package]:
+    """Parse composer.lock packages + packages-dev arrays."""
+    data = json.loads(content)
+    packages: list[Package] = []
+    for section in ("packages", "packages-dev"):
+        for pkg in data.get(section) or []:
+            name = pkg.get("name")
+            if not name:
+                continue
+            packages.append(
+                Package(
+                    name=name,
+                    version=_extract_version(str(pkg.get("version", ""))),
+                    ecosystem="Packagist",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
+    return packages
+
+
+def _parse_packages_lock_json(content: str, path: str) -> list[Package]:
+    """Parse NuGet packages.lock.json. Dependencies are nested per target
+    framework moniker (net6.0, net8.0, ...) — the same package commonly
+    appears under several; dedup by (name, resolved version)."""
+    data = json.loads(content)
+    packages: list[Package] = []
+    seen: set[tuple[str, str]] = set()
+    for framework_deps in (data.get("dependencies") or {}).values():
+        if not isinstance(framework_deps, dict):
+            continue
+        for name, info in framework_deps.items():
+            if not isinstance(info, dict):
+                continue
+            version = info.get("resolved")
+            if not name or not version:
+                continue
+            key = (name, version)
+            if key in seen:
+                continue
+            seen.add(key)
+            packages.append(
+                Package(
+                    name=name,
+                    version=version,
+                    ecosystem="NuGet",
+                    manifest_path=path,
+                    repo_full_name="",
+                )
+            )
+    return packages
+
+
+def _parse_csproj(content: str, path: str) -> list[Package]:
+    """Parse a .csproj file's <PackageReference> elements. Modern SDK-style
+    projects have no XML namespace; older non-SDK projects do — handle both
+    the same way _parse_pom_xml does. Version can be the "Version" attribute
+    or a nested <Version> child element."""
+    packages: list[Package] = []
+    root = ET.fromstring(content)
+    ns_match = re.match(r"\{([^}]+)\}", root.tag)
+    ns = f"{{{ns_match.group(1)}}}" if ns_match else ""
+    for ref in root.iter(f"{ns}PackageReference"):
+        name = ref.get("Include") or ref.get("Update")
+        if not name:
+            continue
+        version = ref.get("Version")
+        if not version:
+            version_el = ref.find(f"{ns}Version")
+            version = version_el.text if version_el is not None else None
+        packages.append(
+            Package(
+                name=name,
+                version=_extract_version(version or ""),
+                ecosystem="NuGet",
+                manifest_path=path,
+                repo_full_name="",
+            )
+        )
+    return packages
+
+
 # ---------------------------------------------------------------------------
 # Version extraction
 # ---------------------------------------------------------------------------
@@ -801,6 +1134,19 @@ def _process_all_packages(
         _query_and_store_batch(conn, client, config, batch, kev_cves, stats)
 
 
+def _fetch_vuln_detail(client: httpx.Client, vuln_id: str) -> dict:
+    """Fetch one OSV vulnerability's full detail. Never raises — falls back
+    to a bare {"id": vuln_id} stub on failure so the finding is still stored,
+    just without a CVSS score."""
+    try:
+        r = client.get(f"{_OSV_VULN_URL}/{vuln_id}", timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+        logger.warning("OSV.dev vuln detail fetch failed for %s: %s", vuln_id, exc)
+        return {"id": vuln_id}
+
+
 def _query_and_store_batch(
     conn: sqlite3.Connection,
     client: httpx.Client,
@@ -809,50 +1155,73 @@ def _query_and_store_batch(
     kev_cves: set[str],
     stats: ScannerStats,
 ) -> None:
-    payload = {
-        "queries": [
-            {
-                "version": pkg.version,
-                "package": {"name": pkg.name, "ecosystem": pkg.ecosystem},
-            }
-            for pkg in batch
-        ]
-    }
-
-    try:
-        response = client.post(_OSV_BATCH_URL, json=payload, timeout=_HTTP_TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-    except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
-        logger.warning("OSV.dev batch query failed: %s", exc)
-        return
-
-    results = data.get("results", [])
-
     # The querybatch endpoint returns only {id, modified} — collect IDs so we
     # can fetch full details (severity, affected versions, etc.) per vuln.
+    #
+    # Pagination: a package with many advisories gets a next_page_token on
+    # its *own* result entry, independent of the other packages in the
+    # batch — so each round only re-queries the indices still paginating,
+    # carrying that index's page_token forward.
+    queries: dict[int, dict] = {
+        i: {"version": pkg.version, "package": {"name": pkg.name, "ecosystem": pkg.ecosystem}}
+        for i, pkg in enumerate(batch)
+    }
+    active = list(range(len(batch)))
     pkg_vuln_pairs: list[tuple[int, str]] = []
-    for i, result in enumerate(results):
-        if i >= len(batch):
+
+    for _page in range(_OSV_BATCH_MAX_PAGES):
+        if not active:
             break
-        for vuln in result.get("vulns") or []:
-            vuln_id = vuln.get("id")
-            if vuln_id:
-                pkg_vuln_pairs.append((i, vuln_id))
+        try:
+            payload = {"queries": [queries[i] for i in active]}
+            response = client.post(_OSV_BATCH_URL, json=payload, timeout=_HTTP_TIMEOUT)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+            logger.warning("OSV.dev batch query failed: %s", exc)
+            return
+
+        results = data.get("results", [])
+        still_active = []
+        for pos, i in enumerate(active):
+            if pos >= len(results):
+                continue
+            result = results[pos]
+            for vuln in result.get("vulns") or []:
+                vuln_id = vuln.get("id")
+                if vuln_id:
+                    pkg_vuln_pairs.append((i, vuln_id))
+            token = result.get("next_page_token")
+            if token:
+                queries[i]["page_token"] = token
+                still_active.append(i)
+        active = still_active
+    else:
+        if active:
+            logger.warning(
+                "OSV.dev: hit the %d-page pagination cap with %d package(s) "
+                "still paginating — some advisories may be missed this run",
+                _OSV_BATCH_MAX_PAGES,
+                len(active),
+            )
 
     if not pkg_vuln_pairs:
         return
 
     unique_ids = {vuln_id for _, vuln_id in pkg_vuln_pairs}
     vuln_details: dict[str, dict] = {}
-    for vuln_id in unique_ids:
-        try:
-            r = client.get(f"{_OSV_VULN_URL}/{vuln_id}", timeout=_HTTP_TIMEOUT)
-            r.raise_for_status()
-            vuln_details[vuln_id] = r.json()
-        except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
-            logger.warning("OSV.dev vuln detail fetch failed for %s: %s", vuln_id, exc)
-            vuln_details[vuln_id] = {"id": vuln_id}
+    # Each detail fetch is an independent GET with no shared state — a
+    # thread pool cuts this from one request-per-vuln sequentially to
+    # _OSV_DETAIL_FETCH_WORKERS in flight at once, which is the dominant
+    # wall-clock cost of a scan. httpx.Client is safe to share across
+    # threads for concurrent requests.
+    with ThreadPoolExecutor(max_workers=_OSV_DETAIL_FETCH_WORKERS) as executor:
+        future_to_id = {
+            executor.submit(_fetch_vuln_detail, client, vuln_id): vuln_id for vuln_id in unique_ids
+        }
+        for future in as_completed(future_to_id):
+            vuln_id = future_to_id[future]
+            vuln_details[vuln_id] = future.result()
 
     # Deduplicate: OSV batch results can include both the GHSA primary ID and the
     # aliased CVE ID for the same vulnerability. After fixing cve_id extraction both
@@ -1034,6 +1403,32 @@ def _check_latest_osv_vuln_count(
         return -1
 
 
+def _lookup_one_latest_version(
+    package: str, ecosystem: str, client: httpx.Client
+) -> tuple[str, str, str, int] | None:
+    """Network-only half of latest-version enrichment for one (package,
+    ecosystem) — returns (package, ecosystem, latest, vuln_count) or None to
+    skip. Kept separate from the DB write so it can run in a thread pool:
+    sqlite3 connections aren't safe for concurrent writes from multiple
+    threads, so all db.update_latest_version_for_package() calls happen back
+    on the caller's thread after every lookup has finished.
+    """
+    lookup_fn = _LATEST_VERSION_REGISTRIES.get(ecosystem)
+    if not lookup_fn:
+        return None
+    try:
+        latest = lookup_fn(package, client)
+        if not latest:
+            return None
+        vuln_count = _check_latest_osv_vuln_count(package, ecosystem, latest, client)
+        if vuln_count < 0:
+            return None
+        return (package, ecosystem, latest, vuln_count)
+    except Exception:
+        logger.debug("Failed to enrich %s/%s", ecosystem, package, exc_info=True)
+        return None
+
+
 def _enrich_latest_versions(
     conn: sqlite3.Connection,
     queue: set[tuple[str, str]],
@@ -1045,24 +1440,23 @@ def _enrich_latest_versions(
     next to the affected and patched ranges.
     """
     logger.info("Checking latest versions for %d package(s)", len(queue))
-    with httpx.Client(follow_redirects=True) as client:
-        for package, ecosystem in queue:
-            lookup_fn = _LATEST_VERSION_REGISTRIES.get(ecosystem)
-            if not lookup_fn:
-                continue
-            try:
-                latest = lookup_fn(package, client)
-                if not latest:
-                    continue
-                vuln_count = _check_latest_osv_vuln_count(package, ecosystem, latest, client)
-                if vuln_count < 0:
-                    continue
-                db.update_latest_version_for_package(conn, package, ecosystem, latest, vuln_count)
-                logger.debug(
-                    "Latest %s/%s: %s (%d known vuln(s))", ecosystem, package, latest, vuln_count
-                )
-            except Exception:
-                logger.debug("Failed to enrich %s/%s", ecosystem, package, exc_info=True)
+    results: list[tuple[str, str, str, int]] = []
+    with (
+        httpx.Client(follow_redirects=True) as client,
+        ThreadPoolExecutor(max_workers=_LATEST_VERSION_WORKERS) as executor,
+    ):
+        futures = [
+            executor.submit(_lookup_one_latest_version, package, ecosystem, client)
+            for package, ecosystem in queue
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+
+    for package, ecosystem, latest, vuln_count in results:
+        db.update_latest_version_for_package(conn, package, ecosystem, latest, vuln_count)
+        logger.debug("Latest %s/%s: %s (%d known vuln(s))", ecosystem, package, latest, vuln_count)
 
 
 # ---------------------------------------------------------------------------

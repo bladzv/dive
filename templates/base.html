@@ -114,12 +114,12 @@
     <div class="topbar-title">{% block topbar_title %}{{ self.title()|replace(' — DIVE','') }}{% endblock %}</div>
     <div class="topbar-spacer"></div>
 
-    <span class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
-          onclick="openPipelineDrawer()">
+    <button type="button" class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
+            onclick="openPipelineDrawer()">
       <span class="status-dot idle" id="status-dot"></span>
       <span class="topbar-meta-label">Last run</span>
       <strong id="status-text">—</strong>
-    </span>
+    </button>
 
     <span class="topbar-meta optional" title="Scheduled next run">
       <svg><use href="#i-clock"/></svg>

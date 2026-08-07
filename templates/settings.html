@@ -646,11 +646,11 @@ function renderModels(installed, suggested, current) {
       : m.isInstalled
         ? '<span style="color:var(--success)">Installed</span>'
         : '<span style="color:var(--text-dim)">Not installed</span>';
-    return `<div class="${cls}" data-model="${DIVE.escapeHtml(m.name)}" data-installed="${m.isInstalled}">
+    return `<button type="button" class="${cls}" data-model="${DIVE.escapeHtml(m.name)}" data-installed="${m.isInstalled}">
       <div class="model-name">${DIVE.escapeHtml(m.name)}</div>
       <div class="model-desc">${DIVE.escapeHtml(m.description || '')}</div>
       <div class="model-status">${statusHtml}</div>
-    </div>`;
+    </button>`;
   }).join('');
   _wireModelGrid();
 }

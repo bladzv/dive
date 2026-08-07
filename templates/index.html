@@ -246,13 +246,17 @@
     <table class="triage-table">
       <tbody>
         {% for f in recent_findings %}
-        <tr onclick="window.location='/findings?state=new'" style="cursor:pointer">
+        <tr class="clickable-row"
+            onclick="if (!event.target.closest('a,button')) window.location='/findings?state=new'"
+            style="cursor:pointer">
           <td class="triage-score {{ 'is-critical' if f.priority_score and f.priority_score >= 60 else ('is-high' if f.priority_score and f.priority_score >= 40 else 'is-low') }}">
             {{ '%d' % f.priority_score if f.priority_score else '—' }}
           </td>
           <td class="triage-pkg">
-            <strong>{{ f.package_name }}</strong>
-            <span>{{ f.repo_full_name.split('/')[-1] if '/' in f.repo_full_name else f.repo_full_name }}</span>
+            <a href="/findings?state=new" class="triage-pkg-link">
+              <strong>{{ f.package_name }}</strong>
+              <span>{{ f.repo_full_name.split('/')[-1] if '/' in f.repo_full_name else f.repo_full_name }}</span>
+            </a>
           </td>
           <td class="triage-badges">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>

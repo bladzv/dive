@@ -354,6 +354,23 @@ def test_base_template_has_run_now_button(client):
     assert "Run Now" in resp.text
 
 
+def test_drawer_failed_list_uses_delegated_listener_not_inline_onclick(client):
+    """Regression test: the drawer's failed-source/repo lists used to toggle
+    via an inline onclick on each rebuilt button, so expand state lived only
+    on DOM nodes that updatePipelineDrawer() destroys on every status poll —
+    expanding a list and waiting a few seconds collapsed it again. State now
+    lives in the _drawerExpanded Set and toggling goes through a single
+    listener delegated from #drawer-steps, registered once outside
+    updatePipelineDrawer(), keyed by a stable data-failkey attribute.
+    """
+    resp = client.get("/")
+    html = resp.text
+    assert "data-failkey" in html
+    assert "aria-expanded" in html
+    assert "_drawerExpanded" in html
+    assert "this.closest('.drawer-failed-wrap').classList.toggle('open')" not in html
+
+
 # ---------------------------------------------------------------------------
 # GET /api/news
 # ---------------------------------------------------------------------------

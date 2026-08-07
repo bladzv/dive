@@ -689,17 +689,30 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
   }
 
-  function failedList(items, label) {
+  function failedList(stepKey, items, label) {
     if (!items || !items.length) return '';
     const noun = items.length === 1 ? label : label + 's';
+    const key = `${stepKey}:${label}`;
+    const isOpen = _drawerExpanded.has(key);
     // Feed/repo names are user-controlled — escape before injecting as HTML.
-    return `<div class="drawer-failed-wrap">
-      <button class="drawer-failed-toggle" onclick="this.closest('.drawer-failed-wrap').classList.toggle('open')">
-        ▸ ${items.length} failed ${noun}
+    return `<div class="drawer-failed-wrap${isOpen ? ' open' : ''}">
+      <button class="drawer-failed-toggle" data-failkey="${key}" aria-expanded="${isOpen}">
+        ${isOpen ? '▾' : '▸'} ${items.length} failed ${noun}
       </button>
       <ul class="drawer-failed-list">${items.map(i => `<li>${DIVE.escapeHtml(i)}</li>`).join('')}</ul>
     </div>`;
   }
+
+  // Skip the innerHTML rebuild entirely when nothing that affects it has
+  // changed since the last render — this codebase targets a Raspberry Pi 4,
+  // and idle polling would otherwise rebuild identical DOM every 5s.
+  const _sig = JSON.stringify([
+    pipeline.step_history, pipeline.step_stats, pipeline.step_progress, pipeline.step_times,
+    pipeline.current_step, pipeline.running, pipeline.last_status, pipeline.last_completed,
+    pipeline.last_error, pipeline.run_duration_s,
+  ]);
+  if (_sig === _drawerRenderSig) return;
+  _drawerRenderSig = _sig;
 
   stepsList.innerHTML = stepDefs.filter(s => completed[s.key] !== 'skipped' && (completed[s.key] || current === s.key || !Object.keys(completed).length || pipeline.running)).map(s => {
     const status = completed[s.key];
@@ -740,9 +753,12 @@ function updatePipelineDrawer(stepDefs, pipeline) {
       if (stats.alerted != null) bits.push(`${stats.alerted} alerted`);
       if (stats.suppressed != null) bits.push(`${stats.suppressed} suppressed`);
       if (bits.length) subHtml += `<div class="drawer-step-sub">${bits.join(' · ')}</div>`;
-      subHtml += failedList(stats.failed_sources, 'source');
-      subHtml += failedList(stats.failed_repos,   'repo');
-      subHtml += failedList(stats.skipped_repos,  'skipped repo');
+      subHtml += failedList(s.key, stats.failed_sources, 'source');
+      subHtml += failedList(s.key, stats.failed_repos,   'repo');
+      subHtml += failedList(s.key, stats.skipped_repos,  'skipped repo');
+      if (stats.token_permission_warning) {
+        subHtml += `<div class="drawer-step-warn">⚠ ${DIVE.escapeHtml(stats.token_permission_warning)}</div>`;
+      }
     }
 
     const durHtml = dur ? `<span class="drawer-step-dur">${dur}</span>` : '';
@@ -790,6 +806,29 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 
 let _drawerUserClosed   = false;  // set when user explicitly closes the drawer
 let _prevPipelineRunning = null;   // null = first poll, then true/false
+let _drawerRenderSig = null;       // signature of last-rendered step list, to skip no-op re-renders
+
+// "<stepKey>:<label>" of expanded failed-item lists. Lives here instead of on
+// the DOM because updatePipelineDrawer() rebuilds #drawer-steps via innerHTML
+// on every poll (5s idle / 2s during a run), which would otherwise destroy
+// the "open" class the instant a new poll landed.
+const _drawerExpanded = new Set();
+
+// Registered once, here — not inside updatePipelineDrawer() — since that
+// function reruns on every poll and would otherwise stack a new listener
+// each time. #drawer-steps itself is rebuilt via innerHTML each render, but
+// event delegation from its stable parent survives that.
+document.getElementById('drawer-steps') && document.getElementById('drawer-steps').addEventListener('click', function (e) {
+  const btn = e.target.closest('.drawer-failed-toggle');
+  if (!btn) return;
+  const key = btn.dataset.failkey;
+  const wrap = btn.closest('.drawer-failed-wrap');
+  const nowOpen = !wrap.classList.contains('open');
+  wrap.classList.toggle('open', nowOpen);
+  btn.setAttribute('aria-expanded', String(nowOpen));
+  btn.textContent = btn.textContent.replace(/[▸▾]/, nowOpen ? '▾' : '▸');
+  if (nowOpen) _drawerExpanded.add(key); else _drawerExpanded.delete(key);
+});
 
 let _pollTimer = null;
 pollStatus();

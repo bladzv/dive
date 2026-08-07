@@ -506,6 +506,11 @@ html.sidebar-collapsed .workspace-topbar {
 }
 .drawer-failed-wrap.open .drawer-failed-list { display: block; }
 .drawer-failed-wrap.open .drawer-failed-toggle { opacity: 1; }
+.drawer-step-warn {
+  font-size: 0.72rem;
+  color: var(--warning);
+  margin-top: 0.25rem;
+}
 
 .drawer-summary {
   border-top: 1px solid var(--border);

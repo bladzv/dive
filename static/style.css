@@ -2758,7 +2758,16 @@ tbody td {
   color: var(--text-bright);
   font-size: 0.72rem;
   font-weight: 500;
-  white-space: nowrap;
+  /* Capped + wrapping rather than nowrap: a long message (e.g. the KEV
+     badge's) centered on a trigger near a table's right edge otherwise
+     produces a bubble wide enough to overflow the card's overflow:hidden
+     boundary on that side. Narrower + wrapped keeps it centered on the
+     trigger without needing edge-aware positioning (no JS here). */
+  max-width: 200px;
+  width: max-content;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.35;
   pointer-events: none;
   opacity: 0;
   box-shadow: var(--shadow);
@@ -2801,6 +2810,27 @@ thead [data-tip]::before {
 thead [data-tip]:hover::after,   thead [data-tip]:focus-visible::after,
 thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
   transform: translate(-50%, 0);
+}
+
+/* The KEV badge sits in one of the last couple of table columns, so a
+   centered bubble routinely overflows the card's right edge (confirmed
+   in testing down to ~1024px viewport width, where the table itself is
+   narrower). Anchor its right edge to the badge's right edge instead of
+   centering, so it only ever extends leftward — into the row, where
+   there's reliably room. */
+.badge-kev[data-tip]::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 4px);
+}
+.badge-kev[data-tip]::before {
+  left: auto;
+  right: 0.6rem;
+  transform: translate(0, 4px);
+}
+.badge-kev[data-tip]:hover::after,   .badge-kev[data-tip]:focus-visible::after,
+.badge-kev[data-tip]:hover::before,  .badge-kev[data-tip]:focus-visible::before {
+  transform: translate(0, 0);
 }
 
 /* ─── Badges ───────────────────────────────────────── */

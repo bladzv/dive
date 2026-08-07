@@ -262,21 +262,16 @@
 {% endif %}
 
 <!-- ── Annotation modal ──────────────────────────────── -->
-<div id="annotation-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
-     onclick="closeAnnotation()"></div>
-<div id="annotation-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
-     padding:1.25rem;width:min(440px,90vw);z-index:201;box-shadow:var(--shadow)">
-  <p style="font-weight:600;font-size:0.9rem;margin-bottom:0.75rem">Add / edit note</p>
-  <textarea id="annotation-input" rows="3"
-            style="width:100%;background:var(--surface-2);border:1px solid var(--border);
-                   color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
-                   font-size:0.875rem;font-family:inherit;resize:vertical"
-            placeholder="e.g. fixing in v2.1 · accepted risk · discussed with team"></textarea>
-  <p style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">Leave blank to clear the note.</p>
-  <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.85rem">
-    <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
-    <button class="btn btn-primary btn-sm" onclick="saveAnnotation()">Save</button>
+<div id="annotation-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="annotation-modal-title">
+  <div class="modal-panel form-modal" tabindex="-1">
+    <h2 id="annotation-modal-title">Add / edit note</h2>
+    <textarea id="annotation-input" rows="3" class="modal-textarea"
+              placeholder="e.g. fixing in v2.1 · accepted risk · discussed with team"></textarea>
+    <p class="modal-hint">Leave blank to clear the note.</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAnnotation()">Save</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -337,15 +332,12 @@ var _annotatingId = null;
 function openAnnotation(id, current) {
   _annotatingId = id;
   document.getElementById('annotation-input').value = current || '';
-  document.getElementById('annotation-backdrop').style.display = '';
-  document.getElementById('annotation-modal').style.display = '';
-  setTimeout(() => document.getElementById('annotation-input').focus(), 50);
+  DIVE.openModal('annotation-modal');
 }
 
 function closeAnnotation() {
   _annotatingId = null;
-  document.getElementById('annotation-backdrop').style.display = 'none';
-  document.getElementById('annotation-modal').style.display = 'none';
+  DIVE.closeModal('annotation-modal');
 }
 
 function saveAnnotation() {

@@ -64,19 +64,86 @@
       .then(r => r.json());
   }
 
-  /* Minimal confirm modal reusing the existing .modal-backdrop/.modal-panel
-   * classes (see static/style.css) — a fuller version with a focus trap and
-   * ARIA wiring lands in the modal-consolidation pass; this covers the
-   * common "sure you want to do X?" case that findings/secrets/settings
-   * each built inline with their own markup and no dialog semantics.
+  /* ── Shared modal component ────────────────────────────
+   * Every modal in the app is a `.modal-backdrop > .modal-panel` pair (see
+   * static/style.css), toggled via the `open` class. openModal()/closeModal()
+   * are the single place that: move focus into the panel, trap Tab inside it
+   * while open, and restore focus to whatever triggered it on close. State is
+   * stashed directly on the backdrop element (`_triggerEl`, `_trapHandler`)
+   * so this works for both static modals in base.html and ones created on
+   * the fly (confirmModal below).
+   */
+  function _focusableIn(panel) {
+    return Array.from(panel.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )).filter((el) => el.offsetParent !== null);
+  }
+
+  function _trapTab(panel, e) {
+    if (e.key !== 'Tab') return;
+    const items = _focusableIn(panel);
+    if (!items.length) { e.preventDefault(); return; }
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function openModal(idOrEl) {
+    const backdrop = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
+    if (!backdrop) return;
+    backdrop._triggerEl = document.activeElement;
+    backdrop.classList.add('open');
+    const panel = backdrop.querySelector('.modal-panel') || backdrop;
+    const focusable = _focusableIn(panel);
+    (focusable[0] || panel).focus();
+    backdrop._trapHandler = (e) => _trapTab(panel, e);
+    backdrop.addEventListener('keydown', backdrop._trapHandler);
+  }
+
+  function closeModal(idOrEl) {
+    const backdrop = typeof idOrEl === 'string' ? document.getElementById(idOrEl) : idOrEl;
+    if (!backdrop) return;
+    backdrop.classList.remove('open');
+    if (backdrop._trapHandler) {
+      backdrop.removeEventListener('keydown', backdrop._trapHandler);
+      backdrop._trapHandler = null;
+    }
+    const trigger = backdrop._triggerEl;
+    backdrop._triggerEl = null;
+    if (trigger && trigger.focus) trigger.focus();
+  }
+
+  /* Backdrop-click and Escape dismissal for every current and future
+   * .modal-backdrop, wired once here instead of per-page. */
+  document.addEventListener('click', function (e) {
+    if (e.target.classList && e.target.classList.contains('modal-backdrop') && e.target.classList.contains('open')) {
+      closeModal(e.target);
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    document.querySelectorAll('.modal-backdrop.open').forEach((m) => closeModal(m));
+  });
+
+  /* Minimal confirm modal reusing the shared component — covers the common
+   * "sure you want to do X?" case that findings/secrets/settings each used
+   * to build inline with their own markup and no dialog semantics.
    */
   function confirmModal(message, onConfirm, opts) {
     opts = opts || {};
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
+    const titleId = 'confirm-modal-title-' + Math.floor(Math.random() * 1e9);
     backdrop.innerHTML = `
-      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="${escapeHtml(opts.title || 'Confirm')}">
-        <p style="font-weight:600;margin-bottom:0.5rem">${escapeHtml(message)}</p>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="${titleId}" tabindex="-1">
+        <p id="${titleId}" style="font-weight:600;margin-bottom:0.5rem">${escapeHtml(message)}</p>
         <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem">
           <button type="button" class="btn btn-outline btn-sm" data-role="cancel">Cancel</button>
           <button type="button" class="btn btn-sm ${opts.dangerous ? 'btn-danger' : 'btn-primary'}" data-role="confirm">${escapeHtml(opts.confirmLabel || 'Confirm')}</button>
@@ -84,22 +151,21 @@
       </div>`;
     document.body.appendChild(backdrop);
 
-    const triggerEl = document.activeElement;
     const close = () => {
+      closeModal(backdrop);
       backdrop.remove();
-      if (triggerEl && triggerEl.focus) triggerEl.focus();
     };
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
     backdrop.querySelector('[data-role="cancel"]').addEventListener('click', close);
     backdrop.querySelector('[data-role="confirm"]').addEventListener('click', () => {
       close();
       onConfirm();
     });
+    openModal(backdrop);
     backdrop.querySelector('[data-role="confirm"]').focus();
   }
 
   window.DIVE = {
     apiFetch, showToast, timeAgo, timeUntil, escapeHtml,
-    setPageSize, toggleBookmark, confirmModal,
+    setPageSize, toggleBookmark, confirmModal, openModal, closeModal,
   };
 })();

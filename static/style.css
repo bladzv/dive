@@ -3103,6 +3103,61 @@ body:has(.login-card) {
   justify-content: flex-end;
 }
 
+/* Shared helpers for the form-style modals (annotation, confirm, resolve) —
+   they need more room than the 360px default confirmation dialog. */
+.modal-panel.form-modal {
+  max-width: min(440px, 90vw);
+}
+.modal-panel .modal-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+.modal-panel .modal-warning {
+  font-size: 0.82rem;
+  color: var(--high);
+  background: var(--high-bg);
+  border: 1px solid var(--high);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.7rem;
+  margin-bottom: 1rem;
+}
+.modal-textarea {
+  width: 100%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+/* ─── Resolve-secret modal ─────────────────────────── */
+.modal-panel.resolve-modal-panel {
+  max-width: min(560px, 92vw);
+}
+.resolve-repo-note {
+  font-size: 0.8rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 1rem;
+  color: var(--text-muted);
+}
+.resolve-steps {
+  font-size: 0.85rem;
+  line-height: 1.7;
+  padding-left: 1.25rem;
+  margin-bottom: 1.1rem;
+}
+.resolve-steps li:not(:last-child) {
+  margin-bottom: 0.6rem;
+}
+
 /* ─── Reveal-secret modal ──────────────────────────── */
 .modal-panel.reveal-modal {
   max-width: min(720px, 92vw);

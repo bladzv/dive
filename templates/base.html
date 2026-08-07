@@ -160,7 +160,7 @@
   </header>
 
   <!-- ── Pipeline progress drawer ── -->
-  <aside class="pipeline-drawer" id="pipeline-drawer" aria-hidden="true" aria-label="Pipeline progress">
+  <aside class="pipeline-drawer" id="pipeline-drawer" aria-hidden="true" inert aria-label="Pipeline progress">
     <div class="drawer-header">
       <h3 class="drawer-title">Pipeline</h3>
       <span class="drawer-state" id="drawer-state"></span>
@@ -238,29 +238,29 @@
 <div id="toast"></div>
 
 <div class="modal-backdrop" id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="logout-modal-title">Sign out?</h2>
     <p>You'll need to enter your credentials again to access DIVE.</p>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="document.getElementById('logout-modal').classList.remove('open')">Cancel</button>
+      <button class="btn btn-outline" onclick="DIVE.closeModal('logout-modal')">Cancel</button>
       <button class="btn btn-danger" onclick="window.location='/logout'">Sign out</button>
     </div>
   </div>
 </div>
 
 <div class="modal-backdrop" id="cancel-run-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-run-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="cancel-run-modal-title">Cancel running pipeline?</h2>
     <p>The pipeline will stop at the next step boundary.</p>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="document.getElementById('cancel-run-modal').classList.remove('open')">Keep running</button>
+      <button class="btn btn-outline" onclick="DIVE.closeModal('cancel-run-modal')">Keep running</button>
       <button class="btn btn-danger" onclick="_confirmCancelRun()">Cancel run</button>
     </div>
   </div>
 </div>
 
 <div class="modal-backdrop" id="unsaved-modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="unsaved-modal-title">Unsaved changes</h2>
     <p>You have unsaved changes on this page. Save them before leaving?</p>
     <div class="modal-actions">
@@ -276,20 +276,14 @@
 /* ── Sign-out confirmation ───────────────────────────── */
 function confirmSignOut(event) {
   event.preventDefault();
-  document.getElementById('logout-modal').classList.add('open');
+  DIVE.openModal('logout-modal');
 }
 
-/* Generic modal dismissal — applies to logout, cancel-run, and unsaved-changes
-   modals alike: click the backdrop or press Escape to close. */
-document.querySelectorAll('.modal-backdrop').forEach(function(modal) {
-  modal.addEventListener('click', function(e) {
-    if (e.target === modal) modal.classList.remove('open');
-  });
-});
-
+/* Backdrop-click/Escape dismissal and the focus trap/restore for every
+   .modal-backdrop (logout, cancel-run, unsaved-changes, and any modal a
+   page opens via DIVE.openModal) are wired once in static/app.js. */
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Escape') return;
-  document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
   const drawer = document.getElementById('pipeline-drawer');
   if (drawer && drawer.classList.contains('open')) closePipelineDrawer();
 });
@@ -503,11 +497,11 @@ function togglePause() {
 }
 
 function cancelRun() {
-  document.getElementById('cancel-run-modal').classList.add('open');
+  DIVE.openModal('cancel-run-modal');
 }
 
 function _confirmCancelRun() {
-  document.getElementById('cancel-run-modal').classList.remove('open');
+  DIVE.closeModal('cancel-run-modal');
   DIVE.apiFetch('/api/run/cancel', { method: 'POST' })
   .then(r => r.json())
   .then(() => DIVE.showToast('Cancellation requested', 'info'))
@@ -531,19 +525,19 @@ window.setUnsavedChanges = function(isDirty, opts) {
 
 function _openUnsavedModal(pendingNav) {
   _unsavedPendingNav = pendingNav;
-  document.getElementById('unsaved-modal').classList.add('open');
+  DIVE.openModal('unsaved-modal');
 }
 
 function _unsavedModalCancel() {
   _unsavedPendingNav = null;
-  document.getElementById('unsaved-modal').classList.remove('open');
+  DIVE.closeModal('unsaved-modal');
 }
 
 function _unsavedModalDiscard() {
   const nav = _unsavedPendingNav;
   _unsavedPendingNav = null;
   _unsavedDirty = false;
-  document.getElementById('unsaved-modal').classList.remove('open');
+  DIVE.closeModal('unsaved-modal');
   if (nav) nav();
 }
 
@@ -556,7 +550,7 @@ function _unsavedModalSave() {
       const nav = _unsavedPendingNav;
       _unsavedPendingNav = null;
       _unsavedDirty = false;
-      document.getElementById('unsaved-modal').classList.remove('open');
+      DIVE.closeModal('unsaved-modal');
       if (nav) nav();
     })
     // The page's own onSave handler is expected to toast its own error message;
@@ -576,7 +570,8 @@ function openPipelineDrawer() {
   const drawer = document.getElementById('pipeline-drawer');
   if (!drawer) return;
   drawer.classList.add('open');
-  drawer.setAttribute('aria-hidden', 'false');
+  drawer.removeAttribute('aria-hidden');
+  drawer.inert = false;
 }
 
 function closePipelineDrawer() {
@@ -584,6 +579,7 @@ function closePipelineDrawer() {
   if (!drawer) return;
   drawer.classList.remove('open');
   drawer.setAttribute('aria-hidden', 'true');
+  drawer.inert = true;
   _drawerUserClosed = true;
 }
 

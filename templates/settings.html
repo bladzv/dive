@@ -271,19 +271,14 @@
 </section>
 
 <!-- ── Confirm modal ─────────────────────────────────── -->
-<div id="confirm-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
-     onclick="closeConfirmModal()"></div>
-<div id="confirm-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
-     padding:1.5rem;width:min(420px,92vw);z-index:201;box-shadow:var(--shadow)">
-  <p id="confirm-message" style="font-size:0.9rem;font-weight:600;margin-bottom:0.5rem"></p>
-  <p id="confirm-warning" style="display:none;font-size:0.82rem;color:var(--high);
-     background:var(--high-bg);border:1px solid var(--high);border-radius:var(--radius);
-     padding:0.45rem 0.7rem;margin-bottom:1rem"></p>
-  <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:1rem">
-    <button class="btn btn-outline btn-sm" onclick="closeConfirmModal()">Cancel</button>
-    <button id="confirm-ok" class="btn btn-sm" style="background:var(--critical);color:#fff;border-color:var(--critical)"
-            onclick="_doConfirm()">Confirm</button>
+<div id="confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-message">
+  <div class="modal-panel form-modal" tabindex="-1">
+    <p id="confirm-message" style="font-size:0.9rem;font-weight:600;margin-bottom:0.5rem"></p>
+    <p id="confirm-warning" class="modal-warning is-hidden"></p>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeConfirmModal()">Cancel</button>
+      <button id="confirm-ok" class="btn btn-sm btn-danger" onclick="_doConfirm()">Confirm</button>
+    </div>
   </div>
 </div>
 
@@ -768,13 +763,12 @@ function showConfirm(message, warning, onConfirm) {
   const warnEl = document.getElementById('confirm-warning');
   if (warning) {
     warnEl.textContent = warning;
-    warnEl.style.display = '';
+    warnEl.classList.remove('is-hidden');
   } else {
-    warnEl.style.display = 'none';
+    warnEl.classList.add('is-hidden');
   }
   _confirmCallback = onConfirm;
-  document.getElementById('confirm-backdrop').style.display = '';
-  document.getElementById('confirm-modal').style.display   = '';
+  DIVE.openModal('confirm-modal');
 }
 
 function _doConfirm() {
@@ -785,8 +779,7 @@ function _doConfirm() {
 
 function closeConfirmModal() {
   _confirmCallback = null;
-  document.getElementById('confirm-backdrop').style.display = 'none';
-  document.getElementById('confirm-modal').style.display   = 'none';
+  DIVE.closeModal('confirm-modal');
 }
 
 /* ── Unsaved changes tracking ─────────────────────────

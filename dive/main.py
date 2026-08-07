@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar as _cal
+import copy
 import csv
 import io
 import json
@@ -26,6 +27,7 @@ import queue
 import re
 import secrets
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -267,13 +269,15 @@ def _enter_step(key: str) -> bool:
         # subsequent steps don't each wait another full timeout cycle.
         if not _pipeline_pause_event.is_set():
             _pipeline_pause_event.set()
-            _pipeline_control["pause_requested"] = False
+            with _pipeline_lock:
+                _pipeline_control["pause_requested"] = False
         with _pipeline_lock:
             _pipeline_status["paused"] = False
 
     # Cancel takes priority over starting the next step.
-    if _pipeline_control["cancel_requested"]:
-        return False
+    with _pipeline_lock:
+        if _pipeline_control["cancel_requested"]:
+            return False
 
     with _pipeline_lock:
         _pipeline_status["current_step"] = key
@@ -346,10 +350,10 @@ def _reset_pipeline_control() -> None:
     must NOT be called again once a run finishes. See
     _reset_pipeline_control_flags() for the finally-block equivalent.
     """
-    _pipeline_control["cancel_requested"] = False
-    _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
     with _pipeline_lock:
+        _pipeline_control["cancel_requested"] = False
+        _pipeline_control["pause_requested"] = False
         _pipeline_status["current_step"] = None
         _pipeline_status["step_history"] = []
         _pipeline_status["paused"] = False
@@ -366,10 +370,10 @@ def _reset_pipeline_control_flags() -> None:
     _reset_pipeline_control(), this preserves step_history/step_stats/etc.
     so the drawer can keep showing the just-finished run's detail.
     """
-    _pipeline_control["cancel_requested"] = False
-    _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
     with _pipeline_lock:
+        _pipeline_control["cancel_requested"] = False
+        _pipeline_control["pause_requested"] = False
         _pipeline_status["paused"] = False
 
 
@@ -957,6 +961,22 @@ def _make_session_token(data: dict) -> str:
     return _session_serializer.dumps(data)  # type: ignore[return-value]
 
 
+def _safe_next(value: str) -> str:
+    """Sanitize a `next` redirect target to same-origin paths only.
+
+    A naive `value.startswith("/")` check (as previously used in the login
+    POST handler, and not used at all in the GET handler) still lets
+    protocol-relative URLs through: "//evil.tld" and "/\\evil.tld" (which
+    browsers normalize to "//evil.tld") both start with "/" but navigate
+    off-site.
+    """
+    if not value.startswith("/"):
+        return "/"
+    if len(value) > 1 and value[1] in ("/", "\\"):
+        return "/"
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Auth dependency
 # ---------------------------------------------------------------------------
@@ -1349,11 +1369,41 @@ def _findings_summary() -> dict:
 # Login / logout routes (unauthenticated)
 # ---------------------------------------------------------------------------
 
+# Simple in-process brute-force deterrent on the login form. There is a
+# single shared dashboard password, so this exists to slow down credential
+# guessing — not to serve as a robust distributed rate limiter. State is
+# in-memory only and resets on restart; that's an accepted trade-off for a
+# single-process, self-hosted app rather than adding a dependency.
+_LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
+_LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+_login_attempts: dict[str, list[float]] = {}
+_login_attempts_lock = threading.Lock()
+
+
+def _login_rate_limit_retry_after(client_ip: str) -> int | None:
+    """Return seconds to wait before this client may try again, or None if
+    it's under the limit. Only failed attempts count (see _record_failed_login)
+    so a user who mistypes once and then logs in successfully isn't penalized.
+    """
+    now = time.monotonic()
+    cutoff = now - _LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    with _login_attempts_lock:
+        attempts = [t for t in _login_attempts.get(client_ip, []) if t > cutoff]
+        _login_attempts[client_ip] = attempts
+        if len(attempts) < _LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            return None
+        return int(attempts[0] + _LOGIN_RATE_LIMIT_WINDOW_SECONDS - now) + 1
+
+
+def _record_failed_login(client_ip: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts.setdefault(client_ip, []).append(time.monotonic())
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_get(request: Request, next: str = "/") -> HTMLResponse:
     if _get_session(request).get("authenticated"):
-        return RedirectResponse(url=next, status_code=302)  # type: ignore[return-value]
+        return RedirectResponse(url=_safe_next(next), status_code=302)  # type: ignore[return-value]
     return templates.TemplateResponse(request, "login.html", {"next_url": next, "error": None})
 
 
@@ -1364,6 +1414,15 @@ async def login_post(
     password: str = Form(...),
     next_url: str = Form(default="/"),
 ) -> HTMLResponse:
+    client_ip = request.client.host if request.client else "unknown"
+    retry_after = _login_rate_limit_retry_after(client_ip)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     cfg = _config
     valid = (
         cfg is not None
@@ -1371,6 +1430,7 @@ async def login_post(
         and secrets.compare_digest(password.encode(), cfg.dashboard.password.encode())
     )
     if not valid:
+        _record_failed_login(client_ip)
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -1378,13 +1438,17 @@ async def login_post(
             status_code=401,
         )
     token = _make_session_token({"authenticated": True, "username": username})
-    resp = RedirectResponse(url=next_url if next_url.startswith("/") else "/", status_code=303)
+    resp = RedirectResponse(url=_safe_next(next_url), status_code=303)
     resp.set_cookie(
         _SESSION_COOKIE,
         token,
         httponly=True,
         samesite="lax",
         max_age=_SESSION_MAX_AGE,
+        # Only require HTTPS for the cookie when the request itself arrived
+        # over HTTPS — plain HTTP must keep working for localhost/Tailscale
+        # access, which is the documented deployment model for this app.
+        secure=request.url.scheme == "https",
     )
     return resp  # type: ignore[return-value]
 
@@ -1736,14 +1800,22 @@ async def logs_page(
 
 @app.get("/api/health")
 async def health() -> JSONResponse:
-    """Health check — intentionally unauthenticated. Used by Docker HEALTHCHECK."""
+    """Minimal, unauthenticated health check for Docker HEALTHCHECK.
+
+    Deliberately returns nothing about pipeline state — that used to live
+    here and leaked private repo names (step_stats.scan/secrets.failed_repos)
+    and raw exception text (last_error) to anyone who could reach the port,
+    with no auth at all. See /api/status for the full, authenticated payload.
+    """
+    return JSONResponse({"status": "ok", "version": "0.1.0"})
+
+
+@app.get("/api/status")
+async def status(_user: Annotated[str, Depends(_require_auth)]) -> JSONResponse:
+    """Full pipeline/runtime status for the dashboard UI. Authenticated —
+    this is the endpoint /api/health used to be before it was split out."""
     with _pipeline_lock:
-        pipeline = dict(_pipeline_status)
-        # Copy mutable nested structures so callers can't mutate internal state.
-        pipeline["step_history"] = list(pipeline.get("step_history", []))
-        pipeline["step_progress"] = dict(pipeline.get("step_progress", {}))
-        pipeline["step_stats"] = dict(pipeline.get("step_stats", {}))
-        pipeline["step_times"] = dict(pipeline.get("step_times", {}))
+        pipeline = copy.deepcopy(_pipeline_status)
     next_run: str | None = None
     if _scheduler:
         job = _scheduler.get_job("pipeline")
@@ -1846,7 +1918,7 @@ async def cancel_run(
     with _pipeline_lock:
         if not _pipeline_status["running"]:
             raise HTTPException(status_code=409, detail="No pipeline is currently running")
-    _pipeline_control["cancel_requested"] = True
+        _pipeline_control["cancel_requested"] = True
     # Release any pause so the runner can observe the cancel flag and exit.
     _pipeline_pause_event.set()
     return JSONResponse({"status": "cancel_requested"})
@@ -1864,11 +1936,10 @@ async def pause_run(
     with _pipeline_lock:
         if not _pipeline_status["running"]:
             raise HTTPException(status_code=409, detail="No pipeline is currently running")
+        _pipeline_control["pause_requested"] = pause
     if pause:
-        _pipeline_control["pause_requested"] = True
         _pipeline_pause_event.clear()
     else:
-        _pipeline_control["pause_requested"] = False
         _pipeline_pause_event.set()
     return JSONResponse({"status": "paused" if pause else "resumed"})
 

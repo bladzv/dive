@@ -327,8 +327,10 @@ class TestFeatureToggles:
         settings.set_feature_toggle(conn, "github_scanning", False)
         assert settings.is_feature_enabled(conn, "github_scanning") is False
 
-    def test_unknown_feature_defaults_true(self, conn):
-        assert settings.is_feature_enabled(conn, "completely_unknown") is True
+    def test_unknown_feature_fails_closed(self, conn):
+        """An unknown toggle key (typo, or removed from FEATURE_TOGGLES) must
+        fail closed, not silently enable whatever it was meant to gate."""
+        assert settings.is_feature_enabled(conn, "completely_unknown") is False
 
 
 # ---------------------------------------------------------------------------

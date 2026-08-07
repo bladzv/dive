@@ -716,6 +716,10 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     Returns True if this is a brand-new finding (triggers notification in M4).
     For existing findings the last_seen_at and vulnerability data are updated;
     the state is NOT changed here — lifecycle.py (M4) owns state transitions.
+
+    Stamps the row's database id onto finding["id"] (insert or update) so
+    callers can act on the specific row afterward without a natural-key
+    re-query — which is fragile when cve_id is NULL for more than one row.
     """
     cve_id = finding.get("cve_id")
     ghsa_id = finding.get("ghsa_id")
@@ -778,7 +782,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     existing = conn.execute(lookup_sql, lookup_params).fetchone()
 
     if existing is None:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO findings (
                 repo_full_name, cve_id, ghsa_id,
@@ -809,6 +813,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
                 None,
             ),
         )
+        finding["id"] = cursor.lastrowid
         return True
 
     # Refresh mutable fields; leave state and first_seen_at alone.
@@ -845,6 +850,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             existing["id"],
         ),
     )
+    finding["id"] = existing["id"]
     return False
 
 

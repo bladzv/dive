@@ -526,6 +526,45 @@ def test_upsert_finding_does_not_change_state_on_update(db_conn):
     assert row["state"] == "acknowledged"
 
 
+def test_upsert_finding_stamps_id_on_insert(db_conn):
+    finding = _make_finding()
+    assert "id" not in finding
+    db.upsert_finding(db_conn, finding)
+    row = db_conn.execute(
+        "SELECT id FROM findings WHERE cve_id = ?", (finding["cve_id"],)
+    ).fetchone()
+    assert finding["id"] == row["id"]
+
+
+def test_upsert_finding_stamps_id_on_update(db_conn):
+    first = _make_finding()
+    db.upsert_finding(db_conn, first)
+    inserted_id = first["id"]
+
+    second = _make_finding(installed_version="2.28.1")
+    db.upsert_finding(db_conn, second)
+    assert second["id"] == inserted_id
+
+
+def test_upsert_finding_id_disambiguates_rows_sharing_null_cve_id(db_conn):
+    """Two findings for the same package with cve_id=NULL but different
+    ghsa_id are distinct rows. Threading finding["id"] through (rather than
+    re-querying by natural key on cve_id alone) must resolve to the correct
+    one for each — this is the scenario the old
+    _generate_next_steps_for_finding lookup got wrong.
+    """
+    first = _make_finding(cve_id=None, ghsa_id="GHSA-aaaa-aaaa-aaaa")
+    second = _make_finding(cve_id=None, ghsa_id="GHSA-bbbb-bbbb-bbbb")
+    db.upsert_finding(db_conn, first)
+    db.upsert_finding(db_conn, second)
+
+    assert first["id"] != second["id"]
+    row1 = db_conn.execute("SELECT ghsa_id FROM findings WHERE id = ?", (first["id"],)).fetchone()
+    row2 = db_conn.execute("SELECT ghsa_id FROM findings WHERE id = ?", (second["id"],)).fetchone()
+    assert row1["ghsa_id"] == "GHSA-aaaa-aaaa-aaaa"
+    assert row2["ghsa_id"] == "GHSA-bbbb-bbbb-bbbb"
+
+
 def test_get_kev_cve_ids_from_news_items(db_conn):
     db.insert_news_item(
         db_conn,
@@ -1131,7 +1170,7 @@ def test_query_and_store_batch_fetches_full_vuln_details(db_conn, tmp_path):
     client.post.return_value = batch_resp
     client.get.return_value = detail_resp
 
-    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
 
     # Full-detail GET must have been called with the vuln ID
     client.get.assert_called_once()
@@ -1177,7 +1216,7 @@ def test_query_and_store_batch_deduplicates_vuln_detail_requests(db_conn):
     client.post.return_value = batch_resp
     client.get.return_value = detail_resp
 
-    _query_and_store_batch(db_conn, client, config, pkgs, set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, pkgs, set(), stats)
 
     # Only one detail fetch despite two packages matching the same vuln
     assert client.get.call_count == 1
@@ -1203,7 +1242,7 @@ def test_query_and_store_batch_detail_fetch_failure_stores_with_null_cvss(db_con
     client.get.side_effect = httpx.RequestError("timeout")
 
     # Must not raise
-    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
 
     # Finding is stored but with NULL cvss_score (unknown severity)
     row = db_conn.execute("SELECT cvss_score FROM findings").fetchone()
@@ -1256,7 +1295,7 @@ def test_below_threshold_finding_is_stored_but_not_notified(db_conn):
         "npm",
     )
 
-    _store_osv_finding(db_conn, config, pkg, vuln, set(), stats, severity_threshold="high")
+    _store_osv_finding(db_conn, config, pkg, vuln, set(), stats)
 
     # Row is stored despite being below the high threshold.
     count = db_conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]

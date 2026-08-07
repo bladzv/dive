@@ -110,8 +110,10 @@ def get_feeds(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return all feeds, bootstrapping defaults if the table is empty."""
     rows = conn.execute("SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC").fetchall()
     if not rows:
+        # No explicit commit needed here — the caller's own `with db.get_conn()`
+        # block commits on exit, and this connection sees its own uncommitted
+        # writes immediately, so the SELECT below already reflects the insert.
         _bootstrap_default_feeds(conn)
-        conn.connection.commit() if hasattr(conn, "connection") else None
         rows = conn.execute("SELECT * FROM rss_feeds ORDER BY is_default DESC, name ASC").fetchall()
     return rows
 
@@ -297,10 +299,20 @@ def set_feature_toggle(conn: sqlite3.Connection, key: str, enabled: bool) -> Non
 
 
 def is_feature_enabled(conn: sqlite3.Connection, key: str) -> bool:
-    """Return whether a feature is currently enabled."""
+    """Return whether a feature is currently enabled.
+
+    Unknown keys (not present in FEATURE_TOGGLES) fail closed rather than
+    defaulting to enabled. Every real call site passes a hardcoded key from
+    FEATURE_TOGGLES, so this only matters for a typo'd or removed key — and
+    silently enabling whatever behavior that key gates would be the worse
+    failure mode for a security tool.
+    """
+    if key not in FEATURE_TOGGLES:
+        logger.warning("is_feature_enabled() called with unknown toggle key: %s", key)
+        return False
     stored = db.get_setting(conn, f"toggle.{key}", "")
     if stored == "":
-        return FEATURE_TOGGLES.get(key, {}).get("default", True)
+        return FEATURE_TOGGLES[key]["default"]
     return stored == "1"
 
 

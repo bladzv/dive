@@ -92,6 +92,109 @@ def test_protected_routes_require_auth():
 
 
 # ---------------------------------------------------------------------------
+# _safe_next() — open redirect prevention
+# ---------------------------------------------------------------------------
+
+
+def test_safe_next_allows_relative_path():
+    assert main._safe_next("/settings") == "/settings"
+
+
+def test_safe_next_allows_root():
+    assert main._safe_next("/") == "/"
+
+
+def test_safe_next_rejects_absolute_url():
+    assert main._safe_next("https://evil.tld") == "/"
+
+
+def test_safe_next_rejects_protocol_relative_double_slash():
+    """ "//evil.tld" starts with "/" but browsers treat it as protocol-relative
+    and navigate off-site — a naive startswith("/") check lets it through."""
+    assert main._safe_next("//evil.tld") == "/"
+
+
+def test_safe_next_rejects_backslash_variant():
+    """Some browsers normalize "/\\evil.tld" to "//evil.tld"."""
+    assert main._safe_next("/\\evil.tld") == "/"
+
+
+def test_login_get_redirect_is_sanitized_when_already_authenticated(monkeypatch):
+    """GET /login?next=//evil.tld while already logged in must not redirect
+    off-site. The GET handler previously had no sanitization at all (only
+    the POST handler guarded next_url, with a weaker startswith("/") check).
+    """
+    from itsdangerous import URLSafeTimedSerializer
+
+    monkeypatch.setattr(main, "_session_serializer", URLSafeTimedSerializer("test-secret"))
+    token = main._make_session_token({"authenticated": True, "username": "admin"})
+
+    c = TestClient(app, raise_server_exceptions=True, follow_redirects=False)
+    c.cookies.set(main._SESSION_COOKIE, token)
+    resp = c.get("/login?next=//evil.tld")
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/"
+
+
+# ---------------------------------------------------------------------------
+# POST /login — credential check + rate limiting
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_rate_limit():
+    """The rate limiter's state is module-level and in-memory — clear it
+    between tests so one test's failed attempts don't bleed into another's."""
+    main._login_attempts.clear()
+    yield
+    main._login_attempts.clear()
+
+
+def test_login_post_succeeds_with_valid_credentials(client, monkeypatch):
+    from itsdangerous import URLSafeTimedSerializer
+
+    monkeypatch.setattr(main, "_session_serializer", URLSafeTimedSerializer("test-secret"))
+    resp = client.post(
+        "/login",
+        data={"username": "admin", "password": "secret"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+
+def test_login_post_fails_with_invalid_credentials(client):
+    resp = client.post("/login", data={"username": "admin", "password": "wrong"})
+    assert resp.status_code == 401
+
+
+def test_login_rate_limit_blocks_after_max_failed_attempts(client):
+    for _ in range(main._LOGIN_RATE_LIMIT_MAX_ATTEMPTS):
+        resp = client.post("/login", data={"username": "admin", "password": "wrong"})
+        assert resp.status_code == 401
+
+    resp = client.post("/login", data={"username": "admin", "password": "wrong"})
+    assert resp.status_code == 429
+    assert "Retry-After" in resp.headers
+    assert int(resp.headers["Retry-After"]) > 0
+
+
+def test_login_rate_limit_does_not_count_successful_attempts(client, monkeypatch):
+    """A user who logs in successfully several times must never be locked
+    out — only failed attempts count toward the limit."""
+    from itsdangerous import URLSafeTimedSerializer
+
+    monkeypatch.setattr(main, "_session_serializer", URLSafeTimedSerializer("test-secret"))
+    for _ in range(main._LOGIN_RATE_LIMIT_MAX_ATTEMPTS + 5):
+        resp = client.post(
+            "/login",
+            data={"username": "admin", "password": "secret"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+
+
+# ---------------------------------------------------------------------------
 # GET /api/health
 # ---------------------------------------------------------------------------
 
@@ -102,11 +205,54 @@ def test_health_returns_ok(client):
     data = resp.json()
     assert data["status"] == "ok"
     assert "version" in data
-    assert "pipeline" in data
 
 
-def test_health_pipeline_shape(client):
+def test_health_does_not_leak_pipeline_state(client):
+    """Regression test: /api/health is unauthenticated and used to return the
+    full pipeline status, including step_stats.scan/secrets.failed_repos
+    (private repo names) and last_error (raw exception text). That payload
+    now lives behind auth at /api/status.
+    """
     data = client.get("/api/health").json()
+    assert "pipeline" not in data
+    assert "pipeline_steps" not in data
+    assert "active_model" not in data
+    assert set(data.keys()) == {"status", "version"}
+
+
+def test_health_is_accessible_without_auth():
+    app.dependency_overrides.clear()
+    c = TestClient(app, raise_server_exceptions=True)
+    resp = c.get("/api/health")
+    assert resp.status_code == 200
+    app.dependency_overrides[_require_auth] = lambda: "admin"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/status
+# ---------------------------------------------------------------------------
+
+
+def test_status_requires_auth():
+    app.dependency_overrides.clear()
+    c = TestClient(app, raise_server_exceptions=True)
+    resp = c.get("/api/status")
+    assert resp.status_code == 401
+    app.dependency_overrides[_require_auth] = lambda: "admin"
+
+
+def test_status_returns_full_payload(client):
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert "version" in data
+    assert "pipeline" in data
+    assert "pipeline_steps" in data
+
+
+def test_status_pipeline_shape(client):
+    data = client.get("/api/status").json()
     pipeline = data["pipeline"]
     assert "running" in pipeline
     assert "last_status" in pipeline

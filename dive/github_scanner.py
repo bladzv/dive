@@ -133,14 +133,6 @@ class _RepoTreeUnavailable(Exception):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-_SEVERITY_ALLOW: dict[str, set[str]] = {
-    "critical": {"Critical", "Unknown"},
-    "high": {"Critical", "High", "Unknown"},
-    "medium": {"Critical", "High", "Medium", "Unknown"},
-    "low": {"Critical", "High", "Medium", "Low", "Unknown"},
-    "all": {"Critical", "High", "Medium", "Low", "Info", "Unknown"},
-}
-
 
 def run(
     conn: sqlite3.Connection,
@@ -155,7 +147,6 @@ def run(
     """
     stats = ScannerStats()
     kev_cves = db.get_kev_cve_ids(conn)
-    severity_threshold = st.get_severity_threshold(conn)
     _excluded = set(excluded_repos or [])
 
     g = Github(config.github.token)
@@ -244,9 +235,7 @@ def run(
 
     # Query OSV.dev and process findings
     with _make_http_client() as client:
-        _process_all_packages(
-            conn, client, config, all_packages, kev_cves, stats, severity_threshold
-        )
+        _process_all_packages(conn, client, config, all_packages, kev_cves, stats)
 
     # For findings with no known fix, look up the latest package version and
     # check whether it is clean so the UI can suggest an upgrade path.
@@ -799,7 +788,6 @@ def _process_all_packages(
     packages: list[Package],
     kev_cves: set[str],
     stats: ScannerStats,
-    severity_threshold: str = "high",
 ) -> None:
     """Query OSV.dev in batches and process findings."""
     # Filter: only query packages with a known version
@@ -810,7 +798,7 @@ def _process_all_packages(
     # Process in batches
     for batch_start in range(0, len(queryable), _OSV_BATCH_SIZE):
         batch = queryable[batch_start : batch_start + _OSV_BATCH_SIZE]
-        _query_and_store_batch(conn, client, config, batch, kev_cves, stats, severity_threshold)
+        _query_and_store_batch(conn, client, config, batch, kev_cves, stats)
 
 
 def _query_and_store_batch(
@@ -820,7 +808,6 @@ def _query_and_store_batch(
     batch: list[Package],
     kev_cves: set[str],
     stats: ScannerStats,
-    severity_threshold: str = "high",
 ) -> None:
     payload = {
         "queries": [
@@ -894,7 +881,7 @@ def _query_and_store_batch(
             seen_pkg_cve.add((pkg_i, vcve))
         if vghsa:
             seen_pkg_ghsa.add((pkg_i, vghsa))
-        _store_osv_finding(conn, config, batch[pkg_i], vuln, kev_cves, stats, severity_threshold)
+        _store_osv_finding(conn, config, batch[pkg_i], vuln, kev_cves, stats)
 
 
 # ---------------------------------------------------------------------------
@@ -1090,7 +1077,6 @@ def _store_osv_finding(
     vuln: dict,
     kev_cves: set[str],
     stats: ScannerStats,
-    severity_threshold: str = "high",
 ) -> None:
     """Map one OSV vulnerability to a finding and upsert it."""
     osv_id = vuln.get("id", "")
@@ -1129,9 +1115,7 @@ def _store_osv_finding(
     # main.py::_apply_severity_threshold). It does NOT gate storage — every
     # finding the scanner discovers is persisted so the operator can see the
     # full inventory on the Vulnerabilities page regardless of how loud they
-    # want their alert channels. severity_threshold is kept as a parameter
-    # for backward-compatible callers but is no longer used here.
-    _ = severity_threshold  # intentionally unused; kept on the signature
+    # want their alert channels.
 
     finding = {
         "repo_full_name": pkg.repo_full_name,
@@ -1159,7 +1143,7 @@ def _store_osv_finding(
     if is_new:
         stats.findings_new += 1
         if severity_text in _HIGH_SEVERITY and st.is_feature_enabled(conn, "llm_ai_next_steps"):
-            _generate_next_steps_for_finding(conn, config, finding, vuln)
+            _generate_next_steps_for_finding(conn, config, finding["id"], finding, vuln)
     else:
         stats.findings_updated += 1
 
@@ -1355,32 +1339,21 @@ def _priority_score(
 def _generate_next_steps_for_finding(
     conn: sqlite3.Connection,
     config: AppConfig,
+    finding_id: int,
     finding: dict,
     vuln: dict,
 ) -> None:
     """Call Ollama to generate plain-English next steps for a new finding.
 
+    finding_id is the row id stamped onto `finding["id"]` by db.upsert_finding
+    — the caller threads it straight through rather than this function
+    re-deriving it via a natural-key lookup. The old lookup matched on
+    cve_id alone (ignoring ghsa_id), so a package with two advisories that
+    differ only in GHSA and share cve_id=NULL could attach next-steps to the
+    wrong row.
+
     Failures are logged but never propagate — the scan result is still stored.
     """
-    # Look up the DB id of the finding we just inserted
-    row = conn.execute(
-        """
-        SELECT id FROM findings
-        WHERE repo_full_name = ? AND package_name = ?
-          AND package_ecosystem = ?
-          AND COALESCE(cve_id, '') = COALESCE(?, '')
-        """,
-        (
-            finding["repo_full_name"],
-            finding["package_name"],
-            finding["package_ecosystem"],
-            finding.get("cve_id"),
-        ),
-    ).fetchone()
-    if not row:
-        return
-    finding_id = row["id"]
-
     prompt = _build_next_steps_prompt(finding, vuln)
     url = f"{config.ollama.host.rstrip('/')}/api/generate"
     active_model = db.get_setting(conn, "active_model") or config.ollama.model

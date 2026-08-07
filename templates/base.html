@@ -485,7 +485,7 @@ function escapeHtml(value) {
 
 function pollStatus() {
   refreshNavBadges();
-  fetch('/api/health')
+  fetch('/api/status')
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (!data) return;  // transient non-200 — keep last known state, retry next tick

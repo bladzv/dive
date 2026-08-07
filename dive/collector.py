@@ -146,8 +146,14 @@ def run(
 # ---------------------------------------------------------------------------
 
 
-# Some feeds (e.g. Dark Reading) reject non-browser User-Agents with HTTP 403,
-# so present a common browser UA. Accept advertises feed/XML content types.
+# Identify honestly by default. A spoofed browser UA can backfire: some WAFs
+# fingerprint the TLS handshake and flag a request claiming to be Chrome that
+# doesn't match Chrome's real fingerprint as bot impersonation — this is
+# exactly why Bleeping Computer's feed returned HTTP 403 while every other
+# default feed (including Dark Reading, which this UA was originally added
+# for) worked fine with an honest UA. Kept as a one-shot fallback in
+# _safe_get for any host that genuinely rejects non-browser agents.
+_DEFAULT_UA = "DIVE-security-monitor/1.0 (+https://github.com/bladzv/dive)"
 _BROWSER_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -160,7 +166,7 @@ def _make_client() -> httpx.Client:
         max_redirects=5,
         timeout=_HTTP_TIMEOUT,
         headers={
-            "User-Agent": _BROWSER_UA,
+            "User-Agent": _DEFAULT_UA,
             "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
         },
     )
@@ -174,14 +180,20 @@ def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None
     """GET with size cap, HTTP warning, retry-on-transient-error, and error logging.
 
     Returns None on failure. Retries on connection errors and on status codes
-    that typically indicate a transient upstream issue (429/5xx) — not on 403/404,
-    which mean "not going to happen" regardless of retry.
+    that typically indicate a transient upstream issue (429/5xx) — not on 404,
+    which means "not going to happen" regardless of retry. A single 403 is
+    retried once with a browser User-Agent (some hosts, e.g. Bleeping Computer,
+    block non-browser agents outright); a second 403 after that is treated the
+    same as any other non-retryable failure. The browser-UA retry is tracked
+    separately from the transient-error retry budget so it can fire
+    regardless of how many transient retries have already happened.
     """
     if url.startswith("http://"):
         logger.warning("Fetching non-TLS URL: %s", url)
 
-    attempts = len(_RETRY_BACKOFF_SECONDS) + 1
-    for attempt in range(attempts):
+    tried_browser_ua = False
+    retry_count = 0
+    while True:
         try:
             response = client.get(url, **kwargs)
             response.raise_for_status()
@@ -193,30 +205,36 @@ def _safe_get(client: httpx.Client, url: str, **kwargs) -> httpx.Response | None
             return response
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            if status in _RETRYABLE_STATUS_CODES and attempt < attempts - 1:
+            if status in _RETRYABLE_STATUS_CODES and retry_count < len(_RETRY_BACKOFF_SECONDS):
                 logger.debug(
                     "HTTP %s from %s — retrying in %.0fs",
                     status,
                     url,
-                    _RETRY_BACKOFF_SECONDS[attempt],
+                    _RETRY_BACKOFF_SECONDS[retry_count],
                 )
-                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                time.sleep(_RETRY_BACKOFF_SECONDS[retry_count])
+                retry_count += 1
+                continue
+            if status == 403 and not tried_browser_ua:
+                tried_browser_ua = True
+                logger.debug("HTTP 403 from %s — retrying once with a browser User-Agent", url)
+                kwargs["headers"] = {**(kwargs.get("headers") or {}), "User-Agent": _BROWSER_UA}
                 continue
             logger.warning("HTTP %s from %s", status, url)
             return None
         except httpx.RequestError as exc:
-            if attempt < attempts - 1:
+            if retry_count < len(_RETRY_BACKOFF_SECONDS):
                 logger.debug(
                     "Request failed for %s: %s — retrying in %.0fs",
                     url,
                     exc,
-                    _RETRY_BACKOFF_SECONDS[attempt],
+                    _RETRY_BACKOFF_SECONDS[retry_count],
                 )
-                time.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                time.sleep(_RETRY_BACKOFF_SECONDS[retry_count])
+                retry_count += 1
                 continue
             logger.warning("Request failed for %s: %s", url, exc)
             return None
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +369,11 @@ def _fetch_nvd(
         "pubEndDate": now.strftime("%Y-%m-%dT%H:%M:%S.000"),
         "resultsPerPage": 2000,
     }
-    if config.nvd.api_key:
-        params["apiKey"] = config.nvd.api_key
+    # NVD requires the API key as a request header, not a query parameter —
+    # passing it as a query param returns HTTP 404 on every request (verified
+    # against the live API). Header placement also keeps the key out of any
+    # URL-based logging (e.g. httpx's own request-URL log line).
+    nvd_headers = {"apiKey": config.nvd.api_key} if config.nvd.api_key else {}
 
     # Delay between requests: NVD rate limits are 5/30s (no key) or 50/30s (with key)
     delay = 0.7 if config.nvd.api_key else 6.5
@@ -361,7 +382,7 @@ def _fetch_nvd(
 
     for page in range(_NVD_MAX_PAGES):
         params["startIndex"] = start_index
-        response = _safe_get(client, _NVD_BASE, params=params)
+        response = _safe_get(client, _NVD_BASE, params=params, headers=nvd_headers)
         if response is None:
             stats.failed_sources.append("NIST NVD")
             return

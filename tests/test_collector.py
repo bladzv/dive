@@ -66,15 +66,68 @@ def test_safe_get_does_not_retry_on_404(mock_sleep):
 
 
 @patch("dive.collector.time.sleep")
-def test_safe_get_does_not_retry_on_403(mock_sleep):
+def test_safe_get_retries_once_with_browser_ua_on_403(mock_sleep):
+    """A 403 gets exactly one retry with a browser User-Agent (some hosts,
+    e.g. Bleeping Computer, block non-browser agents outright)."""
     client = MagicMock()
-    client.get.side_effect = [_response(403)]
+    client.get.side_effect = [_response(403), _response(200)]
+
+    result = _safe_get(client, "https://example.com/feed")
+
+    assert result is not None
+    assert result.status_code == 200
+    assert client.get.call_count == 2
+    mock_sleep.assert_not_called()  # the browser-UA retry is immediate, not backed off
+    # the second call must carry the browser UA
+    second_call_kwargs = client.get.call_args_list[1].kwargs
+    from dive.collector import _BROWSER_UA
+
+    assert second_call_kwargs["headers"]["User-Agent"] == _BROWSER_UA
+
+
+@patch("dive.collector.time.sleep")
+def test_safe_get_gives_up_after_browser_ua_retry_also_403s(mock_sleep):
+    client = MagicMock()
+    client.get.side_effect = [_response(403), _response(403)]
 
     result = _safe_get(client, "https://example.com/feed")
 
     assert result is None
-    assert client.get.call_count == 1
+    assert client.get.call_count == 2
     mock_sleep.assert_not_called()
+
+
+@patch("dive.collector.time.sleep")
+def test_safe_get_403_retry_preserves_existing_headers(mock_sleep):
+    """The browser-UA fallback must merge into existing headers (e.g. GHSA's
+    Authorization), not replace them — losing Authorization would turn an
+    authenticated request into an anonymous (and likely still-failing) one."""
+    client = MagicMock()
+    client.get.side_effect = [_response(403), _response(200)]
+
+    result = _safe_get(
+        client, "https://api.github.com/advisories", headers={"Authorization": "Bearer tok"}
+    )
+
+    assert result is not None
+    second_call_kwargs = client.get.call_args_list[1].kwargs
+    assert second_call_kwargs["headers"]["Authorization"] == "Bearer tok"
+    from dive.collector import _BROWSER_UA
+
+    assert second_call_kwargs["headers"]["User-Agent"] == _BROWSER_UA
+
+
+@patch("dive.collector.time.sleep")
+def test_safe_get_403_fallback_available_after_transient_retries(mock_sleep):
+    """The browser-UA retry must not be starved by the transient-retry budget:
+    a 503 retry followed by a 403 must still get its one browser-UA retry."""
+    client = MagicMock()
+    client.get.side_effect = [_response(503), _response(403), _response(200)]
+
+    result = _safe_get(client, "https://example.com/feed")
+
+    assert result is not None
+    assert client.get.call_count == 3
 
 
 @patch("dive.collector.time.sleep")
@@ -160,6 +213,39 @@ def test_fetch_nvd_stops_normally_when_total_reached(mock_safe_get, mock_sleep, 
 
     assert mock_safe_get.call_count == 1
     assert stats.items_fetched == 1
+
+
+@patch("dive.collector.time.sleep")
+@patch("dive.collector._safe_get")
+def test_fetch_nvd_sends_api_key_as_header_not_query_param(mock_safe_get, mock_sleep, tmp_db):
+    """NVD returns HTTP 404 if apiKey is passed as a query param — it must be
+    a request header instead (verified against the live NVD API)."""
+    mock_safe_get.return_value = _nvd_response([], 0)
+    config = MagicMock()
+    config.nvd.api_key = "test-nvd-key-12345"
+    stats = CollectorStats()
+
+    with db.get_conn(tmp_db) as conn:
+        _fetch_nvd(MagicMock(), conn, config, stats)
+
+    call_kwargs = mock_safe_get.call_args.kwargs
+    assert call_kwargs["headers"] == {"apiKey": "test-nvd-key-12345"}
+    assert "apiKey" not in call_kwargs["params"]
+
+
+@patch("dive.collector.time.sleep")
+@patch("dive.collector._safe_get")
+def test_fetch_nvd_no_api_key_sends_empty_headers(mock_safe_get, mock_sleep, tmp_db):
+    mock_safe_get.return_value = _nvd_response([], 0)
+    config = MagicMock()
+    config.nvd.api_key = ""
+    stats = CollectorStats()
+
+    with db.get_conn(tmp_db) as conn:
+        _fetch_nvd(MagicMock(), conn, config, stats)
+
+    call_kwargs = mock_safe_get.call_args.kwargs
+    assert call_kwargs["headers"] == {}
 
 
 def _ghsa_advisory(ghsa_id, updated_at=None):

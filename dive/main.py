@@ -70,6 +70,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# httpx logs every request URL at INFO. The SQLite log handler captures INFO+,
+# so that wrote ~162 rows per pipeline run into log_entries — and any
+# credential carried in a URL (as the NVD apiKey once was, before it moved to
+# a request header) landed in the database in plaintext. Warnings and errors
+# still come through.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # BASE_DIR points to the project root (one level above this package directory)
 # so we can find static/ and templates/ regardless of how Python was invoked.
 BASE_DIR = Path(__file__).resolve().parent.parent

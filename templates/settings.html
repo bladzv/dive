@@ -307,7 +307,10 @@ var _toggleState = {};
 
 function loadToggles() {
   fetch('/api/config/toggles', { credentials: 'same-origin' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Request failed');
+      return r.json();
+    })
     .then(data => {
       _toggleState = {};
       const list = document.getElementById('toggles-list');
@@ -342,26 +345,33 @@ function savePipelineSection() {
   } else {
     hours = parseFloat(sel.value);
   }
+  const _asJson = r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+    return r.json();
+  };
   return Promise.all([
     DIVE.apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ run_interval_hours: hours }),
-    }).then(r => r.json()),
+    }).then(_asJson),
     DIVE.apiFetch('/api/config/toggles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(_toggleState),
-    }).then(r => r.json()),
+    }).then(_asJson),
   ])
   .then(() => { DIVE.showToast('Pipeline settings saved', 'success'); clearDirty('pipeline'); })
-  .catch(err => { DIVE.showToast('Failed to save pipeline settings', 'error'); throw err; });
+  .catch(err => { DIVE.showToast(err.message || 'Failed to save pipeline settings', 'error'); throw err; });
 }
 
 /* ── RSS Feeds ─────────────────────────────────────── */
 function loadFeeds() {
   fetch('/api/config/feeds', { credentials: 'same-origin' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Request failed');
+      return r.json();
+    })
     .then(renderFeedsTable)
     .catch(() => {
       document.getElementById('feeds-table-wrap').innerHTML =
@@ -477,9 +487,12 @@ function toggleFeed(id, enabled) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled })
   })
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+    return r.json();
+  })
   .then(() => DIVE.showToast(enabled ? 'Feed enabled' : 'Feed disabled', 'success'))
-  .catch(() => { DIVE.showToast('Failed to update feed', 'error'); loadFeeds(); });
+  .catch(err => { DIVE.showToast(err.message || 'Failed to update feed', 'error'); loadFeeds(); });
 }
 
 function deleteFeed(id) {
@@ -524,7 +537,10 @@ function addFeed(btn) {
 /* ── Keywords ──────────────────────────────────────── */
 function loadKeywords() {
   fetch('/api/config/keywords', { credentials: 'same-origin' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Request failed');
+      return r.json();
+    })
     .then(renderKeywords)
     .catch(() => {
       document.getElementById('keywords-list').innerHTML =
@@ -578,7 +594,10 @@ function deleteKeyword(id) {
 /* ── Scanner Settings ──────────────────────────────── */
 function loadScannerSettings() {
   fetch('/api/config/scanner', { credentials: 'same-origin' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Request failed');
+      return r.json();
+    })
     .then(data => {
       document.getElementById('severity-select').value = data.severity_threshold || 'high';
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
@@ -645,15 +664,21 @@ function saveCategorizeSettings() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ categorize_batch_size: batchSize })
   })
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
+    return r.json();
+  })
   .then(() => { DIVE.showToast('Categorization settings saved', 'success'); clearDirty('ai'); })
-  .catch(err => { DIVE.showToast('Failed to save categorization settings', 'error'); throw err; });
+  .catch(err => { DIVE.showToast(err.message || 'Failed to save categorization settings', 'error'); throw err; });
 }
 
 /* ── Ollama Model ──────────────────────────────────── */
 function loadModels() {
   fetch('/api/ollama/models', { credentials: 'same-origin' })
-    .then(r => r.json())
+    .then(r => {
+      if (!r.ok) throw new Error('Request failed');
+      return r.json();
+    })
     .then(data => renderModels(data.installed || [], data.suggested || [], data.current))
     .catch(() => {
       document.getElementById('model-grid').innerHTML =
@@ -721,14 +746,17 @@ function selectModel(name, isInstalled) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ active_model: name })
   })
-  .then(r => r.json())
+  .then(r => {
+    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
+    return r.json();
+  })
   .then(() => {
     document.getElementById('active-model-label').textContent = name;
     document.getElementById('model-chip').textContent = name;
     DIVE.showToast('Model changed to ' + name, 'success');
     loadModels();
   })
-  .catch(() => DIVE.showToast('Failed to save model', 'error'));
+  .catch(err => DIVE.showToast(err.message || 'Failed to save model', 'error'));
 }
 
 /* ── Clear Data ────────────────────────────────────── */

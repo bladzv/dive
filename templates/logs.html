@@ -27,7 +27,7 @@
   <form method="get" action="/logs" style="display:contents">
     {% if level_filter %}<input type="hidden" name="level" value="{{ level_filter }}">{% endif %}
     <input type="search" name="search" value="{{ search_filter or '' }}"
-           placeholder="Search messages…" class="filter-search"
+           placeholder="Search messages…" class="filter-search" aria-label="Search log messages"
            style="margin-left:auto"
            onkeydown="if(event.key==='Enter'){this.form.submit()}">
     {% if search_filter %}
@@ -112,7 +112,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page">
+    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page" aria-label="Rows per page">
       {% for s in pagination.page_size_options %}
       <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
       {% endfor %}

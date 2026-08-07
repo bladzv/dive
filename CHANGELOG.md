@@ -47,11 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Several missing indexes on `findings`/`secret_findings` columns used in every list/export query's `ORDER BY`
 - OSV.dev query pagination and `github_issue_creator`'s N+1 repo/issue-list fetch pattern
 - A tooltip on the KEV badge could clip past the table card's right edge
+- NIST NVD collector returned HTTP 404 on every request — the API key must be sent as a request header (`apiKey`), not a query parameter, so zero CVEs were ever ingested from NVD
+- Bleeping Computer's feed returned HTTP 403 — the collector's spoofed browser User-Agent was getting flagged by TLS-fingerprint WAF checks; the collector now identifies honestly by default and falls back to a browser UA only if a host actually rejects that
+- The Slack alert for secret findings could silently fail with `invalid_payload` once enough secrets were found to push a single section block past Slack's 3000-character limit — findings/secrets are now packed across as many blocks as needed
+- `git clone failed for <repo>` gave no reason — `secrets_scanner` now surfaces git's stderr (with the embedded access token unconditionally redacted first)
+- A fine-grained GitHub PAT missing the `Contents: Read-only` scope produced a cryptic 403 per private repo in both scanners with no explanation; a single preflight check now reports the cause once per run
+- Expanding a "N failed sources/repos" list in the pipeline drawer collapsed itself a few seconds later — expand state now lives outside the DOM nodes that the drawer's per-poll re-render destroys
 
 ### Security
 - `/api/health` no longer leaks private repository names, raw exception text, or the active Ollama model to unauthenticated callers
 - Open redirect on `GET /login?next=...` (the `POST /login` handler already guarded this; `GET` did not)
 - `settings.is_feature_enabled()` now fails closed (was fail-open) for an unrecognised toggle key
+- `httpx`/`httpcore` request logging pinned to `WARNING` — their `INFO`-level per-request URL logs were writing ~160 rows per pipeline run into `log_entries`, including any credential embedded in a URL
 
 #### M10 — GitHub issue auto-creation & release pipeline
 - `github_issue_creator.py` — creates `[Security]`-prefixed GitHub issues for new findings; deduplicates against open issues with matching title; stamps `github_issue_url` on the finding row; off by default (`github_issue_creation` feature toggle)

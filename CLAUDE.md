@@ -232,6 +232,52 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 
 **Kinetic easing** — `cubic-bezier(0.34, 1.56, 0.64, 1)` (bouncy overshoot, row hover / drawer slide) and `cubic-bezier(0.16, 1, 0.3, 1)` (gentle decel, modal entrance) replace flat `ease`/`linear` transitions in a few places. These are bare numeric values (not copyrightable expression), inspired by `designs/kinetics` but not copied from it (that repo has no LICENSE file either).
 
+## M12 — Pipeline reliability and notifier hardening
+
+**NVD API key placement:** `collector._fetch_nvd()` sends `config.nvd.api_key` as the `apiKey`
+**request header**, never a query parameter — the live NVD API returns HTTP 404 on every request
+when the key is passed as `?apiKey=...` instead. Header placement also keeps the key out of any
+URL-based logging.
+
+**Collector User-Agent:** `_make_client()` identifies honestly by default
+(`_DEFAULT_UA = "DIVE-security-monitor/1.0 ..."`). A spoofed browser UA is not used as the default —
+some WAFs fingerprint the TLS handshake and flag a UA claiming to be Chrome that doesn't match
+Chrome's real fingerprint as bot impersonation (this is why Bleeping Computer's feed 403'd under the
+old default UA while every other feed worked fine either way). `_safe_get()` retries a `403` exactly
+once with `_BROWSER_UA` as a fallback (merged into, not replacing, any caller-supplied headers such
+as GHSA's `Authorization`), for the rare host that actually rejects non-browser agents.
+
+**`httpx`/`httpcore` logging:** pinned to `WARNING` in `main.py` (right after `logging.basicConfig`).
+Both log every request URL at `INFO`, which the SQLite log handler captures — that wrote ~160 rows
+per pipeline run into `log_entries`, and would carry any credential embedded in a URL into the
+database in plaintext.
+
+**Slack section-block chunking:** `notifier._section_blocks()` packs finding/secret lines across as
+many `section` blocks as needed instead of one unbounded block. Slack caps a section's `text.text`
+at 3000 characters and a message at 50 blocks; a single oversized block silently fails delivery with
+`invalid_payload`. Both `_build_slack_blocks()` and `_build_secrets_slack_blocks()` call this helper
+— never reassemble the single-block form, and never "fix" an over-limit alert by lowering
+`MAX_FINDINGS_PER_ALERT` (the limit is a function of line length, not count).
+
+**Token-permission diagnostics:** `github_scanner.probe_private_repo_access()` checks read access on
+one private repo (skipped entirely if the account has none) and returns a single actionable message
+on a 403 — a fine-grained PAT can read a private repo's metadata while lacking the separate
+`Contents: Read-only` scope needed for its file tree, which otherwise surfaces as a bare 403 per repo
+with no explanation. Both `github_scanner.run()` and `secrets_scanner.run()` call it once per run and
+store the result on `ScannerStats.token_permission_warning` / `ScanStats.token_permission_warning`,
+rendered in the pipeline drawer. `secrets_scanner._clone()` also returns git's stderr on failure (the
+embedded access token redacted unconditionally before it can reach a log line) instead of discarding it.
+
+**Drawer failed-list expand state:** lives in the client-side `_drawerExpanded` Set (keyed by
+`"<stepKey>:<label>"`), not the DOM — `updatePipelineDrawer()` rebuilds `#drawer-steps` via
+`innerHTML` on every status poll (5s idle / 2s during a run), which would otherwise destroy an
+`open` class the instant the next poll landed. Toggling goes through one delegated `click` listener
+registered once on `#drawer-steps`, never re-registered inside `updatePipelineDrawer()`. A
+`_drawerRenderSig` guard also skips the `innerHTML` rebuild entirely when nothing in
+`step_history`/`step_stats`/`step_progress`/`step_times`/`current_step`/`running`/`last_status`/
+`last_completed`/`last_error`/`run_duration_s` changed since the last render — placed after the
+state-label and drawer open/close logic, which must run unconditionally on every poll.
+
 ## Deployment targets
 
 Designed to run on low-power hardware (Raspberry Pi 4, 8 GB). The default Ollama model (`qwen2.5:3b`, ~2 GB) is chosen for Pi compatibility. See `docs/models.md` for alternatives and `docs/` for platform-specific setup guides.

@@ -50,6 +50,7 @@ class _FakeScannerStats:
     packages_checked: int = 0
     failed_repos: list = field(default_factory=list)
     skipped_repos: list = field(default_factory=list)
+    token_permission_warning: str | None = None
 
 
 @dataclass
@@ -57,6 +58,7 @@ class _FakeSecretsStats:
     repos_scanned: int = 0
     secrets_new: int = 0
     failed_repos: list = field(default_factory=list)
+    token_permission_warning: str | None = None
 
 
 @pytest.fixture(autouse=True)

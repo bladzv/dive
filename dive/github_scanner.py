@@ -142,6 +142,7 @@ class ScannerStats:
     failed_repos: list[str] = field(default_factory=list)
     skipped_repos: list[str] = field(default_factory=list)
     rate_limit_warning: bool = False
+    token_permission_warning: str | None = None
     finding_keys: set = field(default_factory=set)
     scanned_repos: set[str] = field(default_factory=set)
     _enrich_queue: set = field(
@@ -199,6 +200,10 @@ def run(
     except GithubException as exc:
         logger.error("Failed to list repositories: %s", exc)
         return stats
+
+    stats.token_permission_warning = probe_private_repo_access(repos)
+    if stats.token_permission_warning:
+        logger.warning(stats.token_permission_warning)
 
     total_repos = len(repos)
     logger.info("Scanning %d repositories", total_repos)
@@ -286,6 +291,42 @@ def run(
 # ---------------------------------------------------------------------------
 # Repo scanning
 # ---------------------------------------------------------------------------
+
+
+def probe_private_repo_access(repos: list) -> str | None:
+    """Return an actionable warning if the token can't read private repos, else None.
+
+    A fine-grained PAT can read a private repo's metadata (200 on the repos
+    list) while lacking the separate Contents: Read-only scope needed to read
+    its file tree — that gap surfaces as a 403 on every private repo in both
+    scanners, with no indication of why. This costs at most one extra API
+    call (skipped entirely when the account has no private repos) so the
+    cause is reported once, up front, instead of once per private repo.
+    """
+    private_repo = next((r for r in repos if getattr(r, "private", False)), None)
+    if private_repo is None:
+        return None
+
+    try:
+        private_repo.get_git_tree(private_repo.default_branch or "HEAD", recursive=True)
+    except GithubException as exc:
+        if exc.status != 403:
+            return None
+        return (
+            "GitHub token cannot read private repository contents "
+            f"(403 on {private_repo.full_name}). Private repos will be skipped by "
+            "both scanners. Fix: fine-grained PAT → Repository permissions → "
+            "Contents: Read-only, and ensure those repos are in the token's "
+            "repository access."
+        )
+    except Exception as exc:
+        # This probe is a diagnostic nicety, not core scanning logic — it must
+        # never take down the whole run over an unrelated transient error.
+        # Genuine per-repo failures are still caught and reported by the
+        # real scan loop below.
+        logger.debug("Private-repo access probe failed non-fatally: %s", exc)
+        return None
+    return None
 
 
 def _scan_repo(repo) -> list[Package]:

@@ -572,6 +572,7 @@ def _run_pipeline() -> None:
                     findings_new=scan_stats.findings_new or None,
                     failed_repos=scan_stats.failed_repos or None,
                     skipped_repos=scan_stats.skipped_repos or None,
+                    token_permission_warning=scan_stats.token_permission_warning,
                 )
             except Exception as exc:
                 logger.error("Scanner failed: %s", exc, exc_info=True)
@@ -662,6 +663,7 @@ def _run_pipeline() -> None:
                     repos_scanned=sec_stats.repos_scanned,
                     secrets_new=sec_stats.secrets_new or None,
                     failed_repos=sec_stats.failed_repos or None,
+                    token_permission_warning=sec_stats.token_permission_warning,
                 )
         else:
             logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")

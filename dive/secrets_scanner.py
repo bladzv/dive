@@ -32,6 +32,7 @@ from github import Github, GithubException
 
 from . import db
 from .config import AppConfig
+from .github_scanner import probe_private_repo_access
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class ScanStats:
     secrets_new: int = 0
     failed_repos: list[str] = field(default_factory=list)
     gitleaks_missing: bool = False
+    token_permission_warning: str | None = None
 
 
 def run(
@@ -81,6 +83,10 @@ def run(
     except GithubException as exc:
         logger.error("Failed to list repos for secrets scan: %s", exc)
         return stats
+
+    stats.token_permission_warning = probe_private_repo_access(repos)
+    if stats.token_permission_warning:
+        logger.warning(stats.token_permission_warning)
 
     scannable = [r for r in repos if r.full_name not in _excluded]
     total = len(scannable)
@@ -129,8 +135,9 @@ def _scan_repo(
     clone_url = f"https://x-access-token:{token}@github.com/{repo.full_name}.git"
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        if not _clone(clone_url, tmpdir, depth):
-            raise RuntimeError(f"git clone failed for {repo.full_name}")
+        ok, detail = _clone(clone_url, tmpdir, depth, token)
+        if not ok:
+            raise RuntimeError(f"git clone failed for {repo.full_name}: {detail}")
 
         raw_findings = _run_gitleaks(tmpdir)
 
@@ -158,14 +165,26 @@ def _scan_repo(
     return new_count
 
 
-def _clone(url: str, dest: str, depth: int) -> bool:
-    """Shallow-clone at most depth+1 commits. Returns True on success."""
+def _clone(url: str, dest: str, depth: int, token: str) -> tuple[bool, str]:
+    """Shallow-clone at most depth+1 commits. Returns (success, detail).
+
+    On failure, detail is git's stderr — e.g. "Write access to repository not
+    granted" for a token-permission gap, which was previously discarded,
+    leaving only a bare "git clone failed for X" with no reason. The clone
+    URL embeds the access token; git normally strips credentials from the
+    URLs it echoes back, but that's not a guarantee worth trusting for a live
+    PAT that would otherwise land in log_entries and get rendered on /logs,
+    so the token is redacted unconditionally.
+    """
     result = subprocess.run(
         ["git", "clone", "--depth", str(depth + 1), "--quiet", url, dest],
         capture_output=True,
         timeout=_CLONE_TIMEOUT,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, ""
+    detail = result.stderr.decode(errors="replace")[:300].replace(token, "<TOKEN>")
+    return False, detail
 
 
 def _run_gitleaks(source_dir: str) -> list[dict]:

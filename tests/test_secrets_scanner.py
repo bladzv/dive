@@ -137,7 +137,7 @@ def test_scan_repo_inserts_new_finding(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
         patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
@@ -155,7 +155,7 @@ def test_scan_repo_deduplicates_same_fingerprint(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
         patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         first = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
@@ -173,7 +173,7 @@ def test_scan_repo_skips_false_positive_fingerprints(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
         patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, fp_fingerprints)
@@ -188,7 +188,7 @@ def test_scan_repo_skips_finding_without_fingerprint(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
         patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         count = ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
@@ -201,10 +201,60 @@ def test_scan_repo_raises_on_clone_failure(in_memory_db):
     mock_repo.full_name = "user/myrepo"
 
     with (
-        patch("dive.secrets_scanner._clone", return_value=False),
+        patch("dive.secrets_scanner._clone", return_value=(False, "fatal: repository not found")),
         pytest.raises(RuntimeError, match="git clone failed"),
     ):
         ss._scan_repo(in_memory_db, mock_repo, "token", 30, set())
+
+
+def test_clone_redacts_token_from_stderr(tmp_path):
+    token = "ghp_supersecrettoken1234567890"
+    fake_result = MagicMock()
+    fake_result.returncode = 128
+    fake_result.stderr = (
+        f"fatal: unable to access 'https://x-access-token:{token}@github.com/u/r.git/': "
+        "The requested URL returned error: 403"
+    ).encode()
+
+    with patch("dive.secrets_scanner.subprocess.run", return_value=fake_result):
+        ok, detail = ss._clone(
+            f"https://x-access-token:{token}@github.com/u/r.git", str(tmp_path), 30, token
+        )
+
+    assert ok is False
+    assert token not in detail
+    assert "<TOKEN>" in detail
+    assert "403" in detail
+
+
+def test_clone_succeeds_returns_empty_detail(tmp_path):
+    fake_result = MagicMock()
+    fake_result.returncode = 0
+
+    with patch("dive.secrets_scanner.subprocess.run", return_value=fake_result):
+        ok, detail = ss._clone(
+            "https://x-access-token:tok@github.com/u/r.git", str(tmp_path), 30, "tok"
+        )
+
+    assert ok is True
+    assert detail == ""
+
+
+def test_scan_repo_clone_failure_message_excludes_token(in_memory_db):
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/myrepo"
+
+    with (
+        patch(
+            "dive.secrets_scanner._clone",
+            return_value=(False, "remote: Write access to repository not granted."),
+        ),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        ss._scan_repo(in_memory_db, mock_repo, "super-secret-token", 30, set())
+
+    assert "super-secret-token" not in str(exc_info.value)
+    assert "Write access to repository not granted" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +284,7 @@ def test_run_returns_stats_on_success(in_memory_db):
     with (
         patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
         patch("dive.secrets_scanner.Github") as MockGithub,
-        patch("dive.secrets_scanner._clone", return_value=True),
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
         patch("dive.secrets_scanner._run_gitleaks", return_value=[finding]),
     ):
         MockGithub.return_value.get_user.return_value = mock_gh_user
@@ -288,6 +338,26 @@ def test_run_records_failed_repo(in_memory_db):
 
     assert stats.repos_scanned == 0
     assert "user/broken" in stats.failed_repos
+
+
+def test_run_sets_token_permission_warning_from_probe(in_memory_db):
+    config = _make_config()
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = []
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner.probe_private_repo_access",
+            return_value="GitHub token cannot read private repository contents (403 on org/x).",
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert stats.token_permission_warning is not None
+    assert "403" in stats.token_permission_warning
 
 
 # ---------------------------------------------------------------------------

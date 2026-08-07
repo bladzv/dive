@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from github import GithubException
 
 import dive.db as db
 import dive.github_scanner as gs
@@ -657,6 +658,79 @@ def test_run_lists_repos_via_authenticated_user_with_type_all(db_conn):
 
     MockGithub.return_value.get_user.assert_called_once_with()
     mock_user.get_repos.assert_called_once_with(type="all")
+
+
+# ---------------------------------------------------------------------------
+# probe_private_repo_access
+# ---------------------------------------------------------------------------
+
+
+def test_probe_private_repo_access_no_private_repos_makes_no_extra_call():
+    public_repo = MagicMock()
+    public_repo.private = False
+
+    result = gs.probe_private_repo_access([public_repo])
+
+    assert result is None
+    public_repo.get_git_tree.assert_not_called()
+
+
+def test_probe_private_repo_access_403_returns_actionable_message():
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.full_name = "org/secret-repo"
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(403, "Forbidden", None)
+
+    result = gs.probe_private_repo_access([private_repo])
+
+    assert result is not None
+    assert "Contents" in result
+    assert "org/secret-repo" in result
+
+
+def test_probe_private_repo_access_success_returns_none():
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.return_value = MagicMock()
+
+    assert gs.probe_private_repo_access([private_repo]) is None
+
+
+def test_probe_private_repo_access_non_403_error_returns_none():
+    """A 404 or 5xx must not be misdiagnosed as a permission problem."""
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(500, "Server Error", None)
+
+    assert gs.probe_private_repo_access([private_repo]) is None
+
+
+def test_run_sets_token_permission_warning_from_probe(db_conn):
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.full_name = "org/secret-repo"
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(403, "Forbidden", None)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [private_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert stats.token_permission_warning is not None
+    assert "Contents" in stats.token_permission_warning
 
 
 # ---------------------------------------------------------------------------

@@ -372,7 +372,7 @@ html.sidebar-collapsed .workspace-topbar {
   background: var(--panel);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  transition: right 0.22s ease;
+  transition: right 0.32s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
 }
 .pipeline-drawer.open { right: 0; }
@@ -2141,7 +2141,7 @@ html.sidebar-collapsed .page-footer {
 }
 .triage-table tbody tr {
   border-bottom: 1px solid var(--border);
-  transition: background 0.1s;
+  transition: background 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .triage-table tbody tr:last-child { border-bottom: none; }
 .triage-table tbody tr:hover { background: var(--hover); }
@@ -2471,8 +2471,27 @@ html.sidebar-collapsed .page-footer {
 
 .btn-theme svg { width: 15px; height: 15px; }
 
-.btn-run { gap: 0.45rem; }
+/* The single most primary action in the app gets a deliberate departure
+   from every other button: uppercase mono, wider letter-spacing, and a
+   lift-on-hover — a pattern designs/colorion-animated-buttons uses
+   throughout (no verifiable LICENSE there, so written from scratch
+   rather than copied), applied here ONLY to Run, per the plan's own
+   "use restraint" instruction. Every other button stays as-is. */
+.btn-run {
+  gap: 0.45rem;
+  font-family: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: background 0.12s, border-color 0.12s, color 0.12s,
+              transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
 .btn-run svg { width: 12px; height: 12px; }
+.btn-run:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 -2px color-mix(in srgb, var(--text-bright) 30%, transparent);
+}
+.btn-run:active:not(:disabled) { transform: translateY(0); }
 
 /* Mobile pipeline status button — hidden on desktop, shown on small screens */
 .btn-pipeline-mobile {
@@ -2685,7 +2704,11 @@ thead th {
 
 tbody tr {
   border-bottom: 1px solid var(--border);
-  transition: background 0.1s ease;
+  /* Spring easing (designs/kinetics' --spring token, cubic-bezier(0.34,
+     1.56, 0.64, 1) — a plain numeric easing curve, not copyrightable
+     expression, so used directly rather than rewritten) over the flat
+     `ease` this used to be. */
+  transition: background 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 tbody tr:last-child { border-bottom: none; }
 
@@ -3034,7 +3057,10 @@ thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
   box-shadow: var(--shadow-lg);
   opacity: 0;
   transform: translateY(0.8rem);
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  /* Overshoot entrance (designs/kinetics' "Toast Overshoot" curve) —
+     numeric easing values only, not copyrightable expression, used
+     directly — over the flat `ease` this used to be. */
+  transition: opacity 0.2s ease, transform 0.4s cubic-bezier(0.18, 1.25, 0.4, 1);
   pointer-events: none;
 }
 
@@ -3362,6 +3388,16 @@ body:has(.login-card) {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+  /* An `animation` (rather than a `transition`) plays cleanly the instant
+     .modal-backdrop flips from display:none to flex — a transition would
+     need a "before" state to interpolate from, which display:none never
+     provides. Gentle decel curve (designs/kinetics' "Stagger Entrance"
+     easing — a plain numeric value, not copyrightable expression). */
+  animation: modal-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
 }
 .modal-panel h2 {
   margin: 0 0 0.4rem;

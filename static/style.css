@@ -926,6 +926,21 @@ html.sidebar-collapsed .page-footer {
    .style.display mutation (e.g. the pipeline pause/cancel/run buttons). */
 .is-hidden { display: none !important; }
 
+/* Visually hidden but still announced by screen readers — used for the
+   page-level <h1> on pages where the topbar already shows the title
+   visibly, so a sighted user doesn't see it duplicated. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ─── Page heading ─────────────────────────────────── */
 .page-heading {
   display: flex;

@@ -5,6 +5,7 @@
 {% block content %}
 <section class="page-heading">
   <div>
+    <h1 class="sr-only">Weekly report</h1>
     {% if digest %}
     <p class="heading-copy">{{ digest.week_label }} · Generated {{ digest.generated_at[:16].replace('T', ' ') }} UTC</p>
     {% else %}

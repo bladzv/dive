@@ -300,6 +300,10 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   localStorage.setItem('theme', next);
   _applyTheme(next);
+  // Anything with colours baked into a canvas (Chart.js) or otherwise
+  // computed once at render time — rather than left as live CSS var()
+  // references — needs to know to redraw. history.html listens for this.
+  document.dispatchEvent(new CustomEvent('dive:themechange', { detail: { theme: next } }));
 }
 
 _applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');

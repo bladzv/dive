@@ -85,9 +85,11 @@
     </div>
 
     {% set repo_total = top_repos | sum(attribute='total') %}
-    {# Six perceptually distinct, theme-matched colours so adjacent slices and
-       legend rows are easy to tell apart against the dark panel. #}
-    {% set palette = ['#818cf8','#34d399','#fb923c','#60a5fa','#f472b6','#facc15'] %}
+    {# Six perceptually distinct categorical colours, one per theme in
+       static/style.css (--chart-cat-0..5) so this SVG re-colours itself on
+       theme toggle for free — no JS re-render needed, unlike the Chart.js
+       canvases in history.html. #}
+    {% set palette = ['var(--chart-cat-0)','var(--chart-cat-1)','var(--chart-cat-2)','var(--chart-cat-3)','var(--chart-cat-4)','var(--chart-cat-5)'] %}
     {% if repo_total > 0 %}
     {% set C = 263.894 %}
     <div class="donut-wrap">
@@ -106,8 +108,8 @@
                   transform="rotate(-90 60 60)"/>
           {% set ns.off = ns.off + seg %}
         {% endfor %}
-        <text x="60" y="56" text-anchor="middle" fill="#f1f4fb" font-size="22" font-weight="600" font-family="Inter, sans-serif">{{ repo_total }}</text>
-        <text x="60" y="72" text-anchor="middle" fill="#8a93ad" font-size="9" font-weight="600" letter-spacing="2" font-family="Inter, sans-serif">FINDINGS</text>
+        <text x="60" y="56" text-anchor="middle" fill="var(--text-bright)" font-size="22" font-weight="600" font-family="Inter, sans-serif">{{ repo_total }}</text>
+        <text x="60" y="72" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-weight="600" letter-spacing="2" font-family="Inter, sans-serif">FINDINGS</text>
       </svg>
 
       <ul class="donut-legend">

@@ -4,12 +4,14 @@ DIVE — main entrypoint.
 FastAPI application with:
   • APScheduler BackgroundScheduler — runs the full pipeline on a
     configurable interval (default 6h, stored in settings table).
-  • HTTP Basic Auth — all non-health routes require credentials from
-    config.yaml dashboard.username / dashboard.password.
+  • Signed session-cookie auth (itsdangerous, 7-day expiry) — all
+    non-health routes require a session established via POST /login
+    against config.yaml dashboard.username / dashboard.password.
   • POST /api/run — trigger an immediate pipeline run (X-Run-Token header
     required as CSRF protection).
   • File-based lock (filelock) — prevents concurrent pipeline runs.
-  • GET /api/health — unauthenticated; includes live pipeline status.
+  • GET /api/health — unauthenticated, minimal (Docker healthcheck target).
+    GET /api/status — authenticated; the full live pipeline status.
   • Jinja2 dashboard — /, /findings, /settings served as HTML.
 """
 

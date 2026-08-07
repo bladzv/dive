@@ -17,9 +17,12 @@ Manifest formats (npm and Python first, as the most common; Actions workflows):
   Python:  requirements.txt, Pipfile (TOML), pyproject.toml [project.dependencies]
   Actions: .github/workflows/*.yml  (uses: owner/action@version)
 
-GitHub API rate limit: remaining budget is checked at start. Repos are scanned
-until the budget drops below 10% of the hourly limit, at which point a warning
-is logged (no repos are silently skipped — the warning makes the gap explicit).
+GitHub API rate limit: checked before each repo. Once remaining budget drops
+below 10% of the hourly limit (or a RateLimitExceededException is raised
+mid-scan), the run stops early — any repos not yet reached ARE skipped this
+run (picked up on the next scheduled run). This isn't silent: a warning is
+logged and `ScannerStats.rate_limit_warning` is set, so the gap is visible
+in the pipeline drawer rather than looking like a clean, complete scan.
 """
 
 from __future__ import annotations

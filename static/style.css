@@ -3078,22 +3078,58 @@ body:has(.login-card) {
 
   .exposure-item, .news-item { flex-direction: column; }
 
-  /* ── Tables: horizontal scroll replaces stacked cards ── */
+  /* ── Tables: horizontal scroll for tables that opt out of stacking ── */
   table { min-width: 0; font-size: 0.75rem; }
   tbody td { padding: 0.4rem 0.55rem; }
   .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-  /* Findings: drop affected-range (6) and latest-version (8) to trim width */
-  .page-findings thead th:nth-child(6),
-  .page-findings tbody  td:nth-child(6),
-  .page-findings thead th:nth-child(8),
-  .page-findings tbody  td:nth-child(8) { display: none; }
+  /* ── Card-stacking, the one responsive-table strategy ──
+     Previously three competing approaches coexisted: this data-label
+     card-stacking pattern (markup already present in history.html/
+     logs.html but with zero matching CSS, so it did nothing), the settings
+     feeds table's own bespoke grid below, and silently `display: none`-ing
+     specific findings/secrets columns by position — which dropped Affected
+     range, Latest version, Line, and Commit with no disclosure and no
+     visible sign anything was hidden. Standardise on this one: every <td>
+     needs a matching data-label attribute (see findings.html, secrets.html,
+     history.html, logs.html, weekly.html, personal.html). */
+  /* Grid/flex items default to min-width: auto — i.e. never shrink below
+     their content's max-content size — so a card containing a wide,
+     unshrinkable badge/pill pushes .telemetry-grid/.ops-grid wider than
+     the viewport regardless of any width/max-width set on the card or
+     table itself. This is what actually caused the horizontal body
+     scroll; the width/max-width below are cheap insurance on top of it. */
+  .card, .panel { min-width: 0; }
 
-  /* Secrets: drop line (5) and commit (6) columns */
-  .page-secrets thead th:nth-child(5),
-  .page-secrets tbody  td:nth-child(5),
-  .page-secrets thead th:nth-child(6),
-  .page-secrets tbody  td:nth-child(6) { display: none; }
+  .table-stack,
+  .table-wrap:has(.table-stack) {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  .table-stack thead { display: none; }
+  .table-stack tr {
+    display: grid;
+    gap: var(--sp-1);
+    padding: var(--sp-3);
+    border-bottom: 1px solid var(--border);
+  }
+  .table-stack td {
+    display: grid;
+    grid-template-columns: 40% 1fr;
+    gap: var(--sp-2);
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+  /* Grid items default to min-width: auto, so a wide badge/pill in the
+     value column would rather overflow than shrink. */
+  .table-stack td > * { min-width: 0; max-width: 100%; }
+  .table-stack td::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+  }
 
   /* Dashboard triage: drop advisory + fix, keep score / package / severity */
   .triage-table .triage-advisory,

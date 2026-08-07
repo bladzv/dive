@@ -52,7 +52,7 @@
 {% if findings %}
 <div class="card" style="padding:0;overflow:hidden">
   <div class="table-wrap">
-    <table>
+    <table class="table-stack">
       <thead>
         <tr>
           <th style="width:2rem;padding-right:0">
@@ -81,14 +81,14 @@
             title="Open vulnerability page">
 
           <!-- Checkbox -->
-          <td onclick="event.stopPropagation()" style="padding-right:0">
+          <td data-label="Select" onclick="event.stopPropagation()" style="padding-right:0">
             <input type="checkbox" class="row-check" value="{{ f.id }}"
                    onchange="toggleRow({{ f.id }}, this.checked)"
                    style="cursor:pointer">
           </td>
 
           <!-- Priority score -->
-          <td style="font-weight:600;
+          <td data-label="Priority" style="font-weight:600;
             {% if f.priority_score and f.priority_score >= 60 %}color:var(--critical)
             {% elif f.priority_score and f.priority_score >= 40 %}color:var(--high)
             {% else %}color:var(--text-dim){% endif %}">
@@ -96,11 +96,11 @@
           </td>
 
           <!-- Repo -->
-          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          <td data-label="Repo" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
               title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
 
           <!-- Package + manifest + annotation -->
-          <td>
+          <td data-label="Package">
             <span style="font-weight:500">{{ f.package_name }}</span>
             {% if f.manifest_path %}
             <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
@@ -111,13 +111,13 @@
           </td>
 
           <!-- Installed version -->
-          <td style="font-size:0.82rem">
+          <td data-label="Installed" style="font-size:0.82rem">
             {% if f.installed_version %}<code>{{ f.installed_version }}</code>
             {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
           </td>
 
           <!-- Affected versions -->
-          <td style="font-size:0.78rem;max-width:180px"
+          <td data-label="Affected" style="font-size:0.78rem;max-width:180px"
               title="{{ f.affected_versions or 'No affected range provided by advisory' }}">
             {% if f.affected_versions %}
             <code style="display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom">{{ f.affected_versions }}</code>
@@ -127,7 +127,7 @@
           </td>
 
           <!-- Patched version -->
-          <td style="font-size:0.82rem">
+          <td data-label="Patched" style="font-size:0.82rem">
             {% if f.fixed_version %}
               <code>{{ f.fixed_version }}</code>
             {% else %}
@@ -136,7 +136,7 @@
           </td>
 
           <!-- Latest version + vulnerability badge -->
-          <td style="font-size:0.82rem">
+          <td data-label="Latest" style="font-size:0.82rem">
             {% if f.latest_version %}
               <code>{{ f.latest_version }}</code>
               {% if f.latest_version_vuln_count is not none %}
@@ -154,7 +154,7 @@
           </td>
 
           <!-- CVE / GHSA — show all available source links -->
-          <td onclick="event.stopPropagation()">
+          <td data-label="CVE / GHSA" onclick="event.stopPropagation()">
             {% if f.cve_id or f.ghsa_id %}
             <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:flex-start">
               {% if f.cve_id %}
@@ -178,7 +178,7 @@
           </td>
 
           <!-- Severity -->
-          <td>
+          <td data-label="Severity">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
             {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem">KEV</span>{% endif %}
             {% if f.cvss_score is not none %}
@@ -187,7 +187,7 @@
           </td>
 
           <!-- State -->
-          <td>
+          <td data-label="State">
             <span class="badge
               {% if f.state == 'new' %}badge-new
               {% elif f.state == 'acknowledged' %}badge-ack
@@ -195,7 +195,7 @@
           </td>
 
           <!-- Actions -->
-          <td onclick="event.stopPropagation()">
+          <td data-label="Actions" onclick="event.stopPropagation()">
             <div class="td-actions">
               {% if f.state == 'new' %}
                 <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Ack</button>

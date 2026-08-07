@@ -48,30 +48,30 @@
     </div>
     {% if digest.top_findings %}
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Repo</th><th>ID</th><th>Package</th><th>CVSS</th><th>Flags</th><th>State</th>
         </tr></thead>
         <tbody>
           {% for f in digest.top_findings %}
           <tr>
-            <td>{{ f.repo }}</td>
-            <td style="font-family:monospace">{{ f.id }}</td>
-            <td>{{ f.package }}</td>
-            <td>
+            <td data-label="Repo">{{ f.repo }}</td>
+            <td data-label="ID" style="font-family:monospace">{{ f.id }}</td>
+            <td data-label="Package">{{ f.package }}</td>
+            <td data-label="CVSS">
               {% if f.cvss is not none %}
               <span class="{{ 'text-critical' if f.cvss >= 9 else ('text-high' if f.cvss >= 7 else ('text-medium' if f.cvss >= 4 else 'text-low')) }}">{{ "%.1f"|format(f.cvss) }}</span>
               {% else %}
               <span style="color:var(--muted)">—</span>
               {% endif %}
             </td>
-            <td>
+            <td data-label="Flags">
               <div class="meta-line" style="margin-top:0">
                 {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
                 {% if f.has_patch %}<span class="badge badge-resolved">patch</span>{% endif %}
               </div>
             </td>
-            <td><span class="badge badge-{{ f.state if f.state != 'acknowledged' else 'ack' }}">{{ f.state }}</span></td>
+            <td data-label="State"><span class="badge badge-{{ f.state if f.state != 'acknowledged' else 'ack' }}">{{ f.state }}</span></td>
           </tr>
           {% endfor %}
         </tbody>

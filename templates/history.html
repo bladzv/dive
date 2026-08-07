@@ -208,7 +208,7 @@ function renderSources(rows) {
   }
   document.getElementById('sources-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Source</th><th>Last 7 days</th><th>Total items</th>
           <th>Last fetched</th><th>Status</th>
@@ -237,7 +237,7 @@ function renderRuns(rows) {
   }
   document.getElementById('runs-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Started</th><th>Duration</th><th>Status</th>
           <th>Items</th><th>Categorized</th><th>New Findings</th>
@@ -404,12 +404,12 @@ function renderFeedChart(rows) {
 
   document.getElementById('feed-table-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr><th>Source</th><th>Items in window</th></tr></thead>
         <tbody>${totals.map(s => `
           <tr>
             <td data-label="Source" style="font-size:0.85rem">${DIVE.escapeHtml(s.name)}</td>
-            <td data-label="Items" style="font-size:0.85rem">${s.total}</td>
+            <td data-label="Items in window" style="font-size:0.85rem">${s.total}</td>
           </tr>`).join('')}
         </tbody>
       </table>

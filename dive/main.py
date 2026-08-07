@@ -26,6 +26,7 @@ import logging.handlers
 import queue
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -81,16 +82,45 @@ _log_listener: logging.handlers.QueueListener | None = None
 
 
 class _SQLiteLogHandler(logging.Handler):
-    """Write log records to the log_entries table via a fresh DB connection."""
+    """Write log records to the log_entries table via one long-lived
+    connection, reused across calls.
+
+    Safe because QueueListener runs every emit() on a single dedicated
+    thread, never concurrently — unlike request handlers, which each open
+    their own connection precisely because they run on different threads.
+    A fresh connection per record was measurable overhead at normal INFO
+    log volume, and could contend with the pipeline holding a long write
+    transaction open during a scan.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._conn: sqlite3.Connection | None = None
+        self._dropped = 0
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = db._make_connection(db._DEFAULT_DB_PATH)
+        return self._conn
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             ts = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S")
             msg = self.format(record)
-            with db.get_conn() as conn:
-                db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
+            conn = self._get_conn()
+            db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
+            conn.commit()
         except Exception:
-            pass  # never raise from a log handler
+            # Never raise from a log handler. Drop the (possibly broken)
+            # connection so the next record gets a fresh one instead of
+            # repeating the same failure forever.
+            self._dropped += 1
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
 
 def _setup_sqlite_logging() -> None:
@@ -1130,6 +1160,19 @@ def _validate_ollama_model(model: str) -> None:
         )
 
 
+def _fetch_installed_ollama_models(ollama_host: str) -> list[str]:
+    """Blocking HTTP call — always run via asyncio.to_thread from a route."""
+    try:
+        with httpx.Client(timeout=8) as client:
+            resp = client.get(f"{ollama_host}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+        return [m["name"] for m in data.get("models", [])]
+    except Exception as exc:
+        logger.warning("Could not reach Ollama for model list: %s", exc)
+        return []
+
+
 def _check_ollama_status() -> bool:
     """Return True if Ollama is reachable and the configured model is loaded."""
     if _config is None:
@@ -1146,20 +1189,28 @@ def _check_ollama_status() -> bool:
         return False
 
 
-def _get_run_token() -> str:
+def _get_run_token(conn: sqlite3.Connection | None = None) -> str:
+    """Reads the run_token setting. Pass an open `conn` (e.g. a route's own
+    request-scoped connection) to avoid opening a second one; otherwise
+    opens its own — every call site keeps working either way."""
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             return db.get_setting(conn, "run_token", "")
+        with db.get_conn() as c:
+            return db.get_setting(c, "run_token", "")
     except Exception:
         return ""
 
 
-def _get_current_model() -> str:
+def _get_current_model(conn: sqlite3.Connection | None = None) -> str:
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             stored = db.get_setting(conn, "active_model")
-            if stored:
-                return stored
+        else:
+            with db.get_conn() as c:
+                stored = db.get_setting(c, "active_model")
+        if stored:
+            return stored
     except Exception:
         pass
     return _config.ollama.model if _config else "—"
@@ -1183,163 +1234,187 @@ def _paginate(page: int, per_page: int, total: int) -> dict:
     }
 
 
-def _secrets_summary() -> dict:
+def _secrets_summary(conn: sqlite3.Connection | None = None) -> dict:
     """Return per-state counts from secret_findings."""
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             return db.get_secret_findings_summary(conn)
+        with db.get_conn() as c:
+            return db.get_secret_findings_summary(c)
     except Exception:
         return {"new": 0, "false_positive": 0, "resolved": 0}
 
 
-def _nav_badges() -> dict:
-    """Counts shown next to sidebar nav items."""
+def _nav_badges_query(conn: sqlite3.Connection) -> dict:
+    findings_open = conn.execute(
+        "SELECT COUNT(*) AS c FROM findings WHERE state IN ('new','acknowledged')"
+    ).fetchone()["c"]
+    secrets_open = conn.execute(
+        "SELECT COUNT(*) AS c FROM secret_findings WHERE state = 'new'"
+    ).fetchone()["c"]
+    news_recent = conn.execute(
+        "SELECT COUNT(*) AS c FROM news_items WHERE fetched_at >= datetime('now', '-1 day')"
+    ).fetchone()["c"]
+    return {
+        "findings": int(findings_open or 0),
+        "secrets": int(secrets_open or 0),
+        "news": int(news_recent or 0),
+    }
+
+
+def _nav_badges(conn: sqlite3.Connection | None = None) -> dict:
+    """Counts shown next to sidebar nav items. Also registered as a Jinja
+    global (called with no args on every template render), so it must keep
+    working standalone in addition to accepting a route's own connection."""
     try:
-        with db.get_conn() as conn:
-            findings_open = conn.execute(
-                "SELECT COUNT(*) AS c FROM findings WHERE state IN ('new','acknowledged')"
-            ).fetchone()["c"]
-            secrets_open = conn.execute(
-                "SELECT COUNT(*) AS c FROM secret_findings WHERE state = 'new'"
-            ).fetchone()["c"]
-            news_recent = conn.execute(
-                "SELECT COUNT(*) AS c FROM news_items "
-                "WHERE fetched_at >= datetime('now', '-1 day')"
-            ).fetchone()["c"]
-        return {
-            "findings": int(findings_open or 0),
-            "secrets": int(secrets_open or 0),
-            "news": int(news_recent or 0),
-        }
+        if conn is not None:
+            return _nav_badges_query(conn)
+        with db.get_conn() as c:
+            return _nav_badges_query(c)
     except Exception:
         return {"findings": 0, "secrets": 0, "news": 0}
 
 
-def _dashboard_extras() -> dict:
-    """Top affected repos, top CVEs, and activity heatmap for the dashboard."""
+def _dashboard_extras(conn: sqlite3.Connection | None = None) -> dict:
+    """Top affected repos, top CVEs, and activity heatmap for the dashboard.
+
+    Pass an open `conn` to reuse the caller's connection instead of opening
+    a new one — the dashboard route already has one open for its other
+    queries.
+    """
     out: dict = {"top_repos": [], "top_cves": [], "heatmap_weeks": [], "heatmap_max": 0}
     try:
-        with db.get_conn() as conn:
-            # Top affected repos by open finding count, with severity breakdown
-            rows = conn.execute("""
-                SELECT
-                    repo_full_name AS repo,
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END) AS crit,
-                    SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
-                    SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS med,
-                    SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low
-                FROM findings
-                WHERE state IN ('new','acknowledged')
-                GROUP BY repo_full_name
-                ORDER BY total DESC
-                LIMIT 6
-            """).fetchall()
-            out["top_repos"] = [
-                {
-                    "repo": r["repo"],
-                    "total": int(r["total"] or 0),
-                    "crit": int(r["crit"] or 0),
-                    "high": int(r["high"] or 0),
-                    "med": int(r["med"] or 0),
-                    "low": int(r["low"] or 0),
-                }
-                for r in rows
-            ]
-
-            # Top CVEs by priority score (or CVSS), open only
-            cve_rows = conn.execute("""
-                SELECT id, repo_full_name, package_name, cve_id, ghsa_id,
-                       cvss_score, priority_score, is_kev, patch_available,
-                       fixed_version, installed_version
-                FROM findings
-                WHERE state IN ('new','acknowledged')
-                ORDER BY COALESCE(priority_score, 0) DESC,
-                         COALESCE(cvss_score, 0) DESC
-                LIMIT 6
-            """).fetchall()
-            out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
-
-            # 3-month GitHub-style activity heatmap — news items per day
-            hm_rows = conn.execute("""
-                SELECT DATE(fetched_at) AS d, COUNT(*) AS c
-                FROM news_items
-                WHERE fetched_at >= datetime('now', '-95 days')
-                GROUP BY DATE(fetched_at)
-            """).fetchall()
-            counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
-
-            today = date.today()
-            max_count = max(counts.values(), default=1) or 1
-
-            # Align start to the Sunday on or before (today - 90 days)
-            # isoweekday(): Mon=1 … Sun=7 → Sunday offset = isoweekday() % 7
-            start_raw = today - timedelta(days=90)
-            start = start_raw - timedelta(days=start_raw.isoweekday() % 7)
-
-            weeks = []
-            current = start
-            prev_month: str | None = None
-            while current <= today:
-                days = []
-                for i in range(7):
-                    d = current + timedelta(days=i)
-                    if d > today:
-                        days.append(None)
-                    else:
-                        c = counts.get(d.isoformat(), 0)
-                        ratio = c / max_count
-                        lvl = (
-                            0
-                            if c == 0
-                            else (
-                                1
-                                if ratio < 0.25
-                                else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4))
-                            )
-                        )
-                        days.append(
-                            {
-                                "d": d.isoformat(),
-                                "c": c,
-                                "level": lvl,
-                                "label": _cal.month_abbr[d.month] + " " + str(d.day),
-                            }
-                        )
-                month_label = None
-                first = next((x for x in days if x is not None), None)
-                if first:
-                    m = first["d"][:7]
-                    if m != prev_month:
-                        month_label = _cal.month_abbr[int(m[5:7])]
-                        prev_month = m
-                weeks.append({"days": days, "month_label": month_label})
-                current += timedelta(days=7)
-
-            out["heatmap_weeks"] = weeks
-            out["heatmap_max"] = max_count
+        if conn is not None:
+            _dashboard_extras_query(conn, out)
+        else:
+            with db.get_conn() as c:
+                _dashboard_extras_query(c, out)
         return out
     except Exception:
         return out
 
 
-def _findings_summary() -> dict:
+def _dashboard_extras_query(conn: sqlite3.Connection, out: dict) -> None:
+    # Top affected repos by open finding count, with severity breakdown
+    rows = conn.execute("""
+        SELECT
+            repo_full_name AS repo,
+            COUNT(*) AS total,
+            SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END) AS crit,
+            SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS med,
+            SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low
+        FROM findings
+        WHERE state IN ('new','acknowledged')
+        GROUP BY repo_full_name
+        ORDER BY total DESC
+        LIMIT 6
+    """).fetchall()
+    out["top_repos"] = [
+        {
+            "repo": r["repo"],
+            "total": int(r["total"] or 0),
+            "crit": int(r["crit"] or 0),
+            "high": int(r["high"] or 0),
+            "med": int(r["med"] or 0),
+            "low": int(r["low"] or 0),
+        }
+        for r in rows
+    ]
+
+    # Top CVEs by priority score (or CVSS), open only
+    cve_rows = conn.execute("""
+        SELECT id, repo_full_name, package_name, cve_id, ghsa_id,
+               cvss_score, priority_score, is_kev, patch_available,
+               fixed_version, installed_version
+        FROM findings
+        WHERE state IN ('new','acknowledged')
+        ORDER BY COALESCE(priority_score, 0) DESC,
+                 COALESCE(cvss_score, 0) DESC
+        LIMIT 6
+    """).fetchall()
+    out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
+
+    # 3-month GitHub-style activity heatmap — news items per day
+    hm_rows = conn.execute("""
+        SELECT DATE(fetched_at) AS d, COUNT(*) AS c
+        FROM news_items
+        WHERE fetched_at >= datetime('now', '-95 days')
+        GROUP BY DATE(fetched_at)
+    """).fetchall()
+    counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
+
+    today = date.today()
+    max_count = max(counts.values(), default=1) or 1
+
+    # Align start to the Sunday on or before (today - 90 days)
+    # isoweekday(): Mon=1 … Sun=7 → Sunday offset = isoweekday() % 7
+    start_raw = today - timedelta(days=90)
+    start = start_raw - timedelta(days=start_raw.isoweekday() % 7)
+
+    weeks = []
+    current = start
+    prev_month: str | None = None
+    while current <= today:
+        days = []
+        for i in range(7):
+            d = current + timedelta(days=i)
+            if d > today:
+                days.append(None)
+            else:
+                c = counts.get(d.isoformat(), 0)
+                ratio = c / max_count
+                lvl = (
+                    0
+                    if c == 0
+                    else (1 if ratio < 0.25 else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4)))
+                )
+                days.append(
+                    {
+                        "d": d.isoformat(),
+                        "c": c,
+                        "level": lvl,
+                        "label": _cal.month_abbr[d.month] + " " + str(d.day),
+                    }
+                )
+        month_label = None
+        first = next((x for x in days if x is not None), None)
+        if first:
+            m = first["d"][:7]
+            if m != prev_month:
+                month_label = _cal.month_abbr[int(m[5:7])]
+                prev_month = m
+        weeks.append({"days": days, "month_label": month_label})
+        current += timedelta(days=7)
+
+    out["heatmap_weeks"] = weeks
+    out["heatmap_max"] = max_count
+
+
+def _findings_summary_query(conn: sqlite3.Connection) -> sqlite3.Row:
+    return conn.execute("""
+        SELECT
+            SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END)                     AS critical,
+            SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS medium,
+            SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low,
+            SUM(CASE WHEN state = 'new'          THEN 1 ELSE 0 END)                 AS new,
+            SUM(CASE WHEN state = 'acknowledged'  THEN 1 ELSE 0 END)                AS acknowledged,
+            SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved,
+            SUM(CASE WHEN is_kev = 1 AND state != 'resolved' THEN 1 ELSE 0 END)     AS kev,
+            SUM(CASE WHEN patch_available = 1 AND state != 'resolved' THEN 1 ELSE 0 END) AS patchable
+        FROM findings
+    """).fetchone()
+
+
+def _findings_summary(conn: sqlite3.Connection | None = None) -> dict:
     """Return per-severity and per-state counts from the database."""
     try:
-        with db.get_conn() as conn:
-            row = conn.execute("""
-                SELECT
-                    SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END)                     AS critical,
-                    SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
-                    SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS medium,
-                    SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low,
-                    SUM(CASE WHEN state = 'new'          THEN 1 ELSE 0 END)                 AS new,
-                    SUM(CASE WHEN state = 'acknowledged'  THEN 1 ELSE 0 END)                AS acknowledged,
-                    SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved,
-                    SUM(CASE WHEN is_kev = 1 AND state != 'resolved' THEN 1 ELSE 0 END)     AS kev,
-                    SUM(CASE WHEN patch_available = 1 AND state != 'resolved' THEN 1 ELSE 0 END) AS patchable
-                FROM findings
-            """).fetchone()
+        if conn is not None:
+            row = _findings_summary_query(conn)
+        else:
+            with db.get_conn() as c:
+                row = _findings_summary_query(c)
         return {
             "critical": int(row["critical"] or 0),
             "high": int(row["high"] or 0),
@@ -1471,31 +1546,43 @@ async def dashboard(
     _user: Annotated[str, Depends(_require_auth)],
 ) -> HTMLResponse:
     """Main dashboard — recent news + open findings summary."""
-    with db.get_conn() as conn:
-        findings_rows = db.get_findings(conn, state="new", limit=10)
-        news_rows = db.get_recent_items(conn, hours=24, limit=15)
-        bookmarked_ids = db.get_bookmarked_ids(conn)
-
-    extras = _dashboard_extras()
+    d = await asyncio.to_thread(_dashboard_data)
 
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "nav_active": "dashboard",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "recent_findings": [_enrich_finding(r) for r in findings_rows],
-            "news_items": [_enrich_news(r) for r in news_rows],
-            "summary": _findings_summary(),
-            "secrets_summary": _secrets_summary(),
-            "bookmarked_ids": list(bookmarked_ids),
-            "top_repos": extras["top_repos"],
-            "top_cves": extras["top_cves"],
-            "heatmap_weeks": extras["heatmap_weeks"],
-            "heatmap_max": extras["heatmap_max"],
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "recent_findings": [_enrich_finding(r) for r in d["findings_rows"]],
+            "news_items": [_enrich_news(r) for r in d["news_rows"]],
+            "summary": d["summary"],
+            "secrets_summary": d["secrets_summary"],
+            "bookmarked_ids": list(d["bookmarked_ids"]),
+            "top_repos": d["extras"]["top_repos"],
+            "top_cves": d["extras"]["top_cves"],
+            "heatmap_weeks": d["extras"]["heatmap_weeks"],
+            "heatmap_max": d["extras"]["heatmap_max"],
         },
     )
+
+
+def _dashboard_data() -> dict:
+    """All of the dashboard route's DB work, run via asyncio.to_thread so a
+    slow query (e.g. WAL lock contention while the pipeline is running)
+    doesn't block the event loop for every other concurrent request."""
+    with db.get_conn() as conn:
+        return {
+            "findings_rows": db.get_findings(conn, state="new", limit=10),
+            "news_rows": db.get_recent_items(conn, hours=24, limit=15),
+            "bookmarked_ids": db.get_bookmarked_ids(conn),
+            "extras": _dashboard_extras(conn),
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+            "summary": _findings_summary(conn),
+            "secrets_summary": _secrets_summary(conn),
+        }
 
 
 @app.get("/findings", response_class=HTMLResponse)
@@ -1511,6 +1598,26 @@ async def findings_page(
     if state is None:
         state = "unresolved"
 
+    d = await asyncio.to_thread(_findings_page_data, state, repo, page, per_page)
+
+    return templates.TemplateResponse(
+        request,
+        "findings.html",
+        {
+            "nav_active": "findings",
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "findings": [_enrich_finding(r) for r in d["rows"]],
+            "state_filter": state,
+            "repo_filter": repo,
+            "repos": [r["repo_full_name"] for r in d["repo_rows"]],
+            "pagination": d["pagination"],
+        },
+    )
+
+
+def _findings_page_data(state: str, repo: str | None, page: int, per_page: int) -> dict:
+    """All of the /findings route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
         last_run = db.get_last_successful_run(conn)
         last_started = last_run["started_at"] if last_run else None
@@ -1538,21 +1645,13 @@ async def findings_page(
             f"SELECT DISTINCT repo_full_name FROM findings {repo_where} ORDER BY repo_full_name",
             repo_params,
         ).fetchall()
-
-    return templates.TemplateResponse(
-        request,
-        "findings.html",
-        {
-            "nav_active": "findings",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "findings": [_enrich_finding(r) for r in rows],
-            "state_filter": state,
-            "repo_filter": repo,
-            "repos": [r["repo_full_name"] for r in repo_rows],
+        return {
+            "rows": rows,
+            "repo_rows": repo_rows,
             "pagination": pg,
-        },
-    )
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+        }
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -1713,6 +1812,42 @@ async def news_page(
     """All news items with category/severity/source/search filters and pagination."""
     if sort not in ("published_desc", "published_asc"):
         sort = "published_desc"
+
+    d = await asyncio.to_thread(
+        _news_page_data, category, severity, source, search, sort, page, per_page
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "news.html",
+        {
+            "nav_active": "news",
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "news_items": [_enrich_news(r) for r in d["rows"]],
+            "bookmarked_ids": list(d["bookmarked_ids"]),
+            "categories": [r["category"] for r in d["cat_rows"]],
+            "sources": [r["source"] for r in d["src_rows"]],
+            "category_filter": category,
+            "severity_filter": severity,
+            "source_filter": source,
+            "search_filter": search,
+            "sort": sort,
+            "pagination": d["pagination"],
+        },
+    )
+
+
+def _news_page_data(
+    category: str | None,
+    severity: str | None,
+    source: str | None,
+    search: str | None,
+    sort: str,
+    page: int,
+    per_page: int,
+) -> dict:
+    """All of the /news route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
         total = db.get_news_items_count(
             conn, category=category, severity=severity, source=source, search=search
@@ -1735,26 +1870,15 @@ async def news_page(
         src_rows = conn.execute(
             "SELECT DISTINCT source FROM news_items WHERE source IS NOT NULL ORDER BY source"
         ).fetchall()
-
-    return templates.TemplateResponse(
-        request,
-        "news.html",
-        {
-            "nav_active": "news",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "news_items": [_enrich_news(r) for r in rows],
-            "bookmarked_ids": list(bookmarked_ids),
-            "categories": [r["category"] for r in cat_rows],
-            "sources": [r["source"] for r in src_rows],
-            "category_filter": category,
-            "severity_filter": severity,
-            "source_filter": source,
-            "search_filter": search,
-            "sort": sort,
+        return {
+            "rows": rows,
+            "bookmarked_ids": bookmarked_ids,
+            "cat_rows": cat_rows,
+            "src_rows": src_rows,
             "pagination": pg,
-        },
-    )
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+        }
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -2020,16 +2144,8 @@ async def get_ollama_models(
             "current":   "qwen2.5:3b"
         }
     """
-    installed: list[str] = []
     ollama_host = _config.ollama.host if _config else "http://localhost:11434"
-    try:
-        with httpx.Client(timeout=8) as client:
-            resp = client.get(f"{ollama_host}/api/tags")
-            resp.raise_for_status()
-            data = resp.json()
-        installed = [m["name"] for m in data.get("models", [])]
-    except Exception as exc:
-        logger.warning("Could not reach Ollama for model list: %s", exc)
+    installed = await asyncio.to_thread(_fetch_installed_ollama_models, ollama_host)
 
     return JSONResponse(
         {
@@ -2649,7 +2765,7 @@ async def update_settings(
     if "active_model" in body:
         model = str(body["active_model"]).strip()
         if model:
-            _validate_ollama_model(model)
+            await asyncio.to_thread(_validate_ollama_model, model)
             with db.get_conn() as conn:
                 db.set_setting(conn, "active_model", model)
             logger.info("Active model changed to: %s", model)

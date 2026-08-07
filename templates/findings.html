@@ -47,7 +47,6 @@
   </span>
 </div>
 
-<div id="action-msg" style="display:none;margin-bottom:0.75rem"></div>
 
 <!-- ── Table ────────────────────────────────────────── -->
 {% if findings %}
@@ -271,7 +270,7 @@
     <p class="modal-hint">Leave blank to clear the note.</p>
     <div class="modal-actions">
       <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
-      <button class="btn btn-primary btn-sm" onclick="saveAnnotation()">Save</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAnnotation(this)">Save</button>
     </div>
   </div>
 </div>
@@ -291,7 +290,7 @@ function openBestSource(cveId, ghsaId) {
 /* Bulk selection helpers (_selected, toggleRow, toggleAll, _updateBulkBar,
    applyRepoFilter, setPageSize) live in /static/bulk-selection.js. */
 function bulkAction(action) {
-  if (!_selected.size) return;
+  if (!_selected.size) { DIVE.showToast('No rows selected', 'info'); return; }
   DIVE.apiFetch('/api/findings/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -303,13 +302,14 @@ function bulkAction(action) {
   })
   .then(d => {
     DIVE.showToast(d.updated + ' finding(s) updated', 'success');
-    setTimeout(() => location.reload(), 700);
+    setTimeout(() => DIVE.refreshPage(), 700);
   })
   .catch(err => DIVE.showToast(err.message, 'error'));
 }
 
 function doAction(btn, id, action) {
   btn.disabled = true;
+  btn.classList.add('is-loading');
   DIVE.apiFetch('/api/findings/' + id + '/' + action, {
     method: 'POST',
   })
@@ -319,11 +319,12 @@ function doAction(btn, id, action) {
   })
   .then(() => {
     DIVE.showToast('Finding ' + action + 'd', 'success');
-    setTimeout(() => location.reload(), 700);
+    setTimeout(() => DIVE.refreshPage(), 700);
   })
   .catch(err => {
     DIVE.showToast(err.message, 'error');
     btn.disabled = false;
+    btn.classList.remove('is-loading');
   });
 }
 
@@ -341,8 +342,10 @@ function closeAnnotation() {
   DIVE.closeModal('annotation-modal');
 }
 
-function saveAnnotation() {
+function saveAnnotation(btn) {
   const text = document.getElementById('annotation-input').value.trim();
+  btn.disabled = true;
+  btn.classList.add('is-loading');
   DIVE.apiFetch('/api/findings/' + _annotatingId + '/annotate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -355,9 +358,13 @@ function saveAnnotation() {
   .then(() => {
     DIVE.showToast('Note saved', 'success');
     closeAnnotation();
-    setTimeout(() => location.reload(), 500);
+    setTimeout(() => DIVE.refreshPage(), 500);
   })
-  .catch(err => DIVE.showToast(err.message, 'error'));
+  .catch(err => {
+    DIVE.showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+  });
 }
 
 initBulkSelection();

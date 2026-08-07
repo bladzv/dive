@@ -26,6 +26,10 @@
     if (!t) return;
     t.textContent = msg;
     t.className = 'show toast-' + type;
+    // role="alert" (implicit assertive live region) for errors so screen
+    // readers interrupt with them immediately; role="status" (polite) is
+    // the default set once in base.html's markup for everything else.
+    t.setAttribute('role', type === 'error' ? 'alert' : 'status');
     clearTimeout(t._timer);
     t._timer = setTimeout(() => { t.className = ''; }, 3500);
   }

@@ -235,7 +235,7 @@
   </section>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <div class="modal-backdrop" id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title">
   <div class="modal-panel" tabindex="-1">
@@ -438,12 +438,40 @@ function fallbackCopy(text, done) {
 
 window.copyCodeBlock = copyCodeBlock;
 
+/* Poll cadence: _pollDelay is the "normal" interval (dropped to 2s for a
+   minute after the operator triggers a run, see triggerRun()). On a failed
+   request it backs off exponentially up to POLL_MAX_DELAY instead of
+   hammering a backend that's already down, and shows a "Disconnected"
+   state after a couple of consecutive misses rather than silently freezing
+   on the last known value. Polling pauses entirely while the tab is
+   hidden and resumes (with an immediate poll) when it becomes visible. */
+const POLL_BASE_DELAY = 5000;
+const POLL_MAX_DELAY = 60000;
+let _pollDelay = POLL_BASE_DELAY;
+let _pollFailures = 0;
+let _pollInFlight = false;
+
+function _setDisconnected(isDisconnected) {
+  const text = document.getElementById('status-text');
+  const dot = document.getElementById('status-dot');
+  const dotMob = document.getElementById('status-dot-mobile');
+  if (isDisconnected) {
+    if (dot) dot.className = 'status-dot offline';
+    if (dotMob) dotMob.className = 'status-dot offline';
+    if (text) text.textContent = 'Disconnected';
+  }
+  // Recovery just lets the next successful poll's updateStatusBadge()
+  // overwrite the dot/text with the real pipeline state — nothing to do here.
+}
+
 function pollStatus() {
+  if (document.hidden || _pollInFlight) return;
+  _pollInFlight = true;
   refreshNavBadges();
   fetch('/api/status')
-    .then(r => r.ok ? r.json() : null)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
     .then(data => {
-      if (!data) return;  // transient non-200 — keep last known state, retry next tick
+      _pollFailures = 0;
       updateStatusBadge(data.pipeline);
       updatePipelineControls(data.pipeline);
       updatePipelineDrawer(data.pipeline_steps, data.pipeline);
@@ -464,8 +492,23 @@ function pollStatus() {
         if (chip) chip.textContent = 'AI offline';
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      _pollFailures += 1;
+      if (_pollFailures >= 2) _setDisconnected(true);
+    })
+    .finally(() => {
+      _pollInFlight = false;
+      const delay = _pollFailures > 0
+        ? Math.min(POLL_MAX_DELAY, POLL_BASE_DELAY * Math.pow(2, _pollFailures))
+        : _pollDelay;
+      clearTimeout(_pollTimer);
+      _pollTimer = setTimeout(pollStatus, delay);
+    });
 }
+
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) pollStatus();
+});
 
 /* ── Pipeline pause / cancel controls ────────────────── */
 function updatePipelineControls(pipeline) {
@@ -744,7 +787,7 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 let _drawerUserClosed   = false;  // set when user explicitly closes the drawer
 let _prevPipelineRunning = null;   // null = first poll, then true/false
 
-let _pollTimer = setInterval(pollStatus, 5000);
+let _pollTimer = null;
 pollStatus();
 
 /* ── Pjax router ─────────────────────────────────────── */
@@ -849,35 +892,67 @@ pollStatus();
     }
     navigate(location.href);
   });
+
+  /* Re-fetch and swap the current page in place — same mechanism as
+     navigate(), minus the history entry (the URL isn't changing). Used
+     after row-mutating actions (ack/resolve/reopen, mark FP, annotate)
+     instead of location.reload(), which otherwise drops the pjax session
+     and resets scroll to the top on every single click. */
+  async function refreshCurrentPage() {
+    if (busy) return;
+    busy = true;
+    const scrollY = window.scrollY;
+    try {
+      const res = await fetch(currentUrl, { credentials: 'same-origin' });
+      if (!res.ok) { location.reload(); return; }
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const nm = doc.querySelector('.page-main');
+      const cm = document.querySelector('.page-main');
+      if (!nm || !cm) { location.reload(); return; }
+      cm.innerHTML = nm.innerHTML;
+      runPageScripts(doc);
+      window.scrollTo(0, scrollY);
+    } catch (_) {
+      location.reload();
+    } finally {
+      busy = false;
+    }
+  }
+  window.DIVE = window.DIVE || {};
+  DIVE.refreshPage = refreshCurrentPage;
 })();
 
 /* ── Run Now ─────────────────────────────────────────── */
 function triggerRun() {
   const btn = document.getElementById('run-now-btn');
   btn.disabled = true;
+  btn.classList.add('is-loading');
   DIVE.apiFetch('/api/run', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
     if (data.status === 'started') {
       DIVE.showToast('Pipeline started', 'success');
       openPipelineDrawer();
-      clearInterval(_pollTimer);
-      _pollTimer = setInterval(pollStatus, 2000);
-      setTimeout(() => {
-        clearInterval(_pollTimer);
-        _pollTimer = setInterval(pollStatus, 5000);
-      }, 60000);
+      _pollDelay = 2000;
+      pollStatus();
+      setTimeout(() => { _pollDelay = POLL_BASE_DELAY; }, 60000);
+      // Left disabled/loading — updatePipelineControls() hides this button
+      // as soon as the next poll confirms the run is underway.
     } else if (data.status === 'already_running') {
       DIVE.showToast('Pipeline is already running', 'info');
       btn.disabled = false;
+      btn.classList.remove('is-loading');
     } else {
       DIVE.showToast(data.message || 'Unknown response', 'info');
       btn.disabled = false;
+      btn.classList.remove('is-loading');
     }
   })
   .catch(() => {
     DIVE.showToast('Failed to trigger run', 'error');
     btn.disabled = false;
+    btn.classList.remove('is-loading');
   });
 }
 </script>

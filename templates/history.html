@@ -280,6 +280,25 @@ function _panelError(id, msg) {
     `<p style="color:var(--error);font-size:0.84rem;margin:0.5rem 0">${msg}</p>`;
 }
 
+/* Chart.js-dependent renders used to remove their skeleton first and only
+   then call `new Chart(...)` — if the vendored script failed to load (or
+   anything else inside the render throws), the skeleton was already gone
+   and the card stayed permanently blank with no indication why. Route
+   every chart render through this so a failure becomes a visible message
+   in the same slot instead of silence. */
+function _renderChartOrFail(wrapIds, renderFn) {
+  const ids = Array.isArray(wrapIds) ? wrapIds : [wrapIds];
+  if (typeof Chart === 'undefined') {
+    ids.forEach(id => _panelError(id, 'Chart library failed to load — try refreshing the page.'));
+    return;
+  }
+  try {
+    renderFn();
+  } catch (e) {
+    ids.forEach(id => _panelError(id, 'Could not render chart.'));
+  }
+}
+
 function loadAll() {
   const days = getDays();
 
@@ -301,10 +320,10 @@ function loadAll() {
       const runs         = get(3);
       const feedAnalytics = get(4);
 
-      if (news)          renderNewsChart(news);
+      if (news)          _renderChartOrFail('news-chart-wrap', () => renderNewsChart(news));
       else               _panelError('news-chart-wrap', 'Could not load news trend data.');
 
-      if (findings)      renderFindingsChart(findings);
+      if (findings)      _renderChartOrFail('findings-chart-wrap', () => renderFindingsChart(findings));
       else               _panelError('findings-chart-wrap', 'Could not load findings trend data.');
 
       if (sources)       renderSources(sources);
@@ -313,7 +332,7 @@ function loadAll() {
       if (runs)          renderRuns(runs);
       else               _panelError('runs-wrap', 'Could not load pipeline run data.');
 
-      if (feedAnalytics) renderFeedChart(feedAnalytics);
+      if (feedAnalytics) _renderChartOrFail(['feed-chart-wrap', 'feed-table-wrap'], () => renderFeedChart(feedAnalytics));
       else               _panelError('feed-table-wrap', 'Could not load feed analytics data.');
     });
 }

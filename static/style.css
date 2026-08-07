@@ -2272,6 +2272,31 @@ html.sidebar-collapsed .page-footer {
 
 .btn svg { width: 14px; height: 14px; }
 
+/* Loading state for buttons awaiting a network round trip — a small ring
+   spinner next to the (still-visible) label, so the button keeps its size
+   and text instead of flashing to a blank disabled state. The global
+   prefers-reduced-motion rule above already collapses the animation to a
+   single near-instant frame, which is enough to still read as "busy". */
+.btn.is-loading {
+  position: relative;
+  padding-right: 1.9rem;
+}
+.btn.is-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 0.65rem;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  opacity: 0.75;
+  animation: btn-spin 0.6s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+
 /* Primary CTA — solid bright slate on dark, dark on light */
 .btn-primary {
   color: var(--text-on-accent);
@@ -2617,6 +2642,7 @@ tbody td {
 .status-dot.error,
 .ollama-dot.ollama-err { background: var(--error); animation: dot-pulse 1.6s ease-in-out infinite; }
 .status-dot.idle { background: var(--text-subtle); }
+.status-dot.offline { background: var(--text-dim); opacity: 0.6; }
 
 @keyframes dot-pulse {
   0%, 100% { opacity: 1; }

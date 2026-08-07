@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -186,6 +186,15 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_item ON bookmarks(news_item_id);
+
+-- Persistent, retention-independent record of CISA KEV membership. Kept
+-- separate from news_items so is_kev scoring never regresses when a user
+-- prunes old news (news.retention_days) or clears news data.
+CREATE TABLE IF NOT EXISTS kev_entries (
+    cve_id        TEXT PRIMARY KEY,
+    added_at      TEXT,
+    first_seen_at TEXT NOT NULL
+);
 """
 
 
@@ -941,7 +950,18 @@ def get_new_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def get_kev_cve_ids(conn: sqlite3.Connection) -> set[str]:
-    """Return the set of CVE IDs present in the CISA KEV (from news_items)."""
+    """Return the set of CVE IDs present in the CISA KEV.
+
+    Reads from the persistent `kev_entries` table so `is_kev` scoring is
+    unaffected by news retention/pruning. Falls back to deriving the set from
+    `news_items` (the pre-kev_entries behaviour) when the table is empty —
+    e.g. immediately after upgrading, before the next collector run has had a
+    chance to populate it.
+    """
+    rows = conn.execute("SELECT cve_id FROM kev_entries").fetchall()
+    if rows:
+        return {row["cve_id"] for row in rows}
+
     rows = conn.execute("SELECT url FROM news_items WHERE source = 'CISA KEV'").fetchall()
     result = set()
     for row in rows:
@@ -949,6 +969,27 @@ def get_kev_cve_ids(conn: sqlite3.Connection) -> set[str]:
         if "#" in url:
             result.add(url.split("#")[-1].upper())
     return result
+
+
+def upsert_kev_entries(conn: sqlite3.Connection, entries: Iterable[tuple[str, str | None]]) -> None:
+    """Upsert (cve_id, added_at) pairs into the persistent KEV table.
+
+    Never touched by retention/clear-data operations, so `is_kev` scoring
+    survives news pruning. Safe to call with the full current KEV catalog on
+    every collector run — existing rows just get their `added_at` refreshed.
+    """
+    now = _now()
+    for cve_id, added_at in entries:
+        if not cve_id:
+            continue
+        conn.execute(
+            """
+            INSERT INTO kev_entries (cve_id, added_at, first_seen_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cve_id) DO UPDATE SET added_at = excluded.added_at
+            """,
+            (cve_id.upper(), added_at, now),
+        )
 
 
 def get_unnotified_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:

@@ -542,6 +542,44 @@ def test_get_kev_cve_ids_empty_when_no_kev(db_conn):
     assert db.get_kev_cve_ids(db_conn) == set()
 
 
+def test_kev_survives_news_pruning(db_conn):
+    """is_kev must not regress when news.retention_days prunes the KEV news item."""
+    db.insert_news_item(
+        db_conn,
+        {
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog#CVE-2024-9999",
+            "title": "CVE-2024-9999 — KEV entry",
+            "source": "CISA KEV",
+            "fetched_at": "2024-01-15T00:00:00+00:00",
+        },
+    )
+    db.upsert_kev_entries(db_conn, [("CVE-2024-9999", "2024-01-10")])
+
+    # Simulate retention pruning away the news item entirely.
+    db.clear_news_items(db_conn)
+    assert db_conn.execute("SELECT COUNT(*) FROM news_items").fetchone()[0] == 0
+
+    kev_ids = db.get_kev_cve_ids(db_conn)
+    assert "CVE-2024-9999" in kev_ids
+
+
+def test_upsert_kev_entries_is_idempotent_and_updates_added_at(db_conn):
+    db.upsert_kev_entries(db_conn, [("CVE-2024-1111", "2024-01-01")])
+    db.upsert_kev_entries(db_conn, [("CVE-2024-1111", "2024-02-01")])
+    row = db_conn.execute(
+        "SELECT added_at FROM kev_entries WHERE cve_id = ?", ("CVE-2024-1111",)
+    ).fetchone()
+    assert row["added_at"] == "2024-02-01"
+    count = db_conn.execute("SELECT COUNT(*) FROM kev_entries").fetchone()[0]
+    assert count == 1
+
+
+def test_upsert_kev_entries_uppercases_cve_id(db_conn):
+    db.upsert_kev_entries(db_conn, [("cve-2024-2222", None)])
+    kev_ids = db.get_kev_cve_ids(db_conn)
+    assert "CVE-2024-2222" in kev_ids
+
+
 # ---------------------------------------------------------------------------
 # _parse_go_mod
 # ---------------------------------------------------------------------------

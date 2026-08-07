@@ -150,6 +150,25 @@ def test_findings_page_state_filter(client):
     assert resp.status_code == 200
 
 
+def test_logs_page_returns_html(client):
+    resp = client.get("/logs")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+
+def test_logs_page_script_is_after_pjax_fence(client):
+    """Regression test: setPageSize() used to live inside {% block content %},
+    so the pjax router (which only re-executes scripts after
+    <script id="page-scripts-fence">) never ran it on in-app navigation. The
+    script must now appear after the fence.
+    """
+    resp = client.get("/logs")
+    html = resp.text
+    fence_index = html.index('id="page-scripts-fence"')
+    script_index = html.index("function setPageSize")
+    assert script_index > fence_index
+
+
 def test_settings_page_returns_html(client):
     resp = client.get("/settings")
     assert resp.status_code == 200

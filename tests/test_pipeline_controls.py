@@ -236,3 +236,78 @@ def test_enter_step_timeout_self_resumes_subsequent_steps():
     # Second step must return immediately without blocking
     result2 = main._enter_step("categorize")
     assert result2 is True
+
+
+# ---------------------------------------------------------------------------
+# POST /api/run
+# ---------------------------------------------------------------------------
+
+
+def test_run_starts_pipeline_and_returns_200(client, monkeypatch):
+    monkeypatch.setattr(main, "_run_pipeline", lambda: None)
+    resp = client.post("/api/run", headers={"X-Run-Token": "test-token"})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "started"
+
+
+def test_run_marks_running_before_returning(client, monkeypatch):
+    """The route itself must claim `running` synchronously, not leave it to
+    the spawned thread — otherwise two near-simultaneous requests can both
+    observe running=False and both report "started"."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_pipeline():
+        started.set()
+        release.wait(timeout=2)
+
+    monkeypatch.setattr(main, "_run_pipeline", _slow_pipeline)
+
+    resp = client.post("/api/run", headers={"X-Run-Token": "test-token"})
+    assert resp.status_code == 200
+    # By the time the HTTP response comes back, running must already be True
+    # — the route sets it under the lock before starting the thread.
+    assert main._pipeline_status["running"] is True
+
+    release.set()
+    started.wait(timeout=2)
+
+
+def test_run_returns_409_when_already_running(running_client):
+    resp = running_client.post("/api/run", headers={"X-Run-Token": "test-token"})
+    assert resp.status_code == 409
+    assert resp.json()["status"] == "already_running"
+
+
+def test_run_rejects_missing_csrf_token(client, monkeypatch):
+    monkeypatch.setattr(main, "_run_pipeline", lambda: None)
+    resp = client.post("/api/run")
+    assert resp.status_code == 403
+
+
+def test_run_pipeline_resets_running_flag_when_file_lock_unavailable(tmp_path, monkeypatch):
+    """Exercises _run_pipeline()'s own early-exit path: if another process
+    already holds data/.pipeline.lock, FileLock.acquire() raises Timeout
+    before the function's main try/finally is even entered. The route now
+    sets running=True before starting the thread (see test_run_marks_running_
+    before_returning above), so _run_pipeline must undo that itself here —
+    otherwise the status stays stuck reporting a run that never started.
+    """
+    from filelock import FileLock
+
+    lock_path = tmp_path / "pipeline.lock"
+    monkeypatch.setattr(main, "_LOCK_FILE", lock_path)
+
+    # Simulate the route having already claimed "running" before spawning
+    # the thread that calls _run_pipeline().
+    with main._pipeline_lock:
+        main._pipeline_status["running"] = True
+
+    holder = FileLock(str(lock_path), timeout=0)
+    holder.acquire()
+    try:
+        main._run_pipeline()
+    finally:
+        holder.release()
+
+    assert main._pipeline_status["running"] is False

@@ -381,11 +381,18 @@ def _run_pipeline() -> None:
     """
     global _config
 
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(_LOCK_FILE), timeout=0)
     try:
         lock.acquire()
     except Timeout:
         logger.warning("Pipeline already running — skipping this trigger")
+        # /api/run may have already flipped "running" to True (to close a
+        # race between two near-simultaneous trigger requests) before this
+        # thread got here and lost the file lock — undo that so the status
+        # doesn't get stuck reporting a run that never actually started.
+        with _pipeline_lock:
+            _pipeline_status["running"] = False
         return
 
     run_id: int | None = None
@@ -397,7 +404,6 @@ def _run_pipeline() -> None:
             _pipeline_status["last_started"] = _pipeline_start_time.isoformat()
             _pipeline_status["last_error"] = None
 
-        _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Pipeline run starting")
 
         if _config:
@@ -574,6 +580,7 @@ def _run_pipeline() -> None:
         secrets_new_total = 0
         if _secrets_scanning_on:
             secrets_status = "ok"
+            sec_stats = None
             try:
                 with db.get_conn() as conn:
                     sec_stats = ss.run(
@@ -602,12 +609,13 @@ def _run_pipeline() -> None:
             except Exception as exc:
                 logger.error("Secrets notifier failed: %s", exc, exc_info=True)
             _finish_step("secrets", secrets_status)
-            _set_step_stats(
-                "secrets",
-                repos_scanned=sec_stats.repos_scanned,
-                secrets_new=sec_stats.secrets_new or None,
-                failed_repos=sec_stats.failed_repos or None,
-            )
+            if sec_stats is not None:
+                _set_step_stats(
+                    "secrets",
+                    repos_scanned=sec_stats.repos_scanned,
+                    secrets_new=sec_stats.secrets_new or None,
+                    failed_repos=sec_stats.failed_repos or None,
+                )
         else:
             logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")
             _finish_step("secrets", "skipped")
@@ -1864,29 +1872,24 @@ async def pause_run(
 
 @app.post("/api/run")
 async def trigger_run(
-    request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Trigger an immediate pipeline run.
 
-    Requires HTTP Basic Auth + X-Run-Token header (CSRF protection).
+    Requires an authenticated session + X-Run-Token header (CSRF protection).
     """
-    run_token = request.headers.get("X-Run-Token", "")
-    try:
-        with db.get_conn() as conn:
-            stored_token = db.get_setting(conn, "run_token")
-    except Exception:
-        stored_token = ""
-
-    if not stored_token or not secrets.compare_digest(run_token, stored_token):
-        raise HTTPException(status_code=403, detail="Invalid or missing X-Run-Token")
-
     with _pipeline_lock:
         if _pipeline_status["running"]:
             return JSONResponse(
                 {"status": "already_running", "message": "Pipeline is already in progress"},
                 status_code=409,
             )
+        # Claim "running" here, under the lock, rather than leaving it to
+        # _run_pipeline() itself — otherwise two near-simultaneous requests
+        # can both observe running=False and both report "started", with the
+        # second silently dying on the pipeline file lock.
+        _pipeline_status["running"] = True
 
     thread = threading.Thread(target=_run_pipeline, daemon=True, name="pipeline-manual")
     thread.start()

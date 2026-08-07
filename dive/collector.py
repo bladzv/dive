@@ -44,6 +44,8 @@ _MAX_CONTENT_CHARS = 2000  # truncate article body before storing / sending to O
 _MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap on any HTTP response
 _HTTP_TIMEOUT = 30.0
 _COLLECTION_WINDOW_DAYS = 7  # how far back to fetch from structured APIs
+_NVD_MAX_PAGES = 50  # backstop against runaway pagination
+_GHSA_MAX_PAGES = 10  # backstop against runaway pagination
 
 _CVSS_SEVERITY_MAP = [
     (9.0, "Critical"),
@@ -355,8 +357,9 @@ def _fetch_nvd(
     # Delay between requests: NVD rate limits are 5/30s (no key) or 50/30s (with key)
     delay = 0.7 if config.nvd.api_key else 6.5
     start_index = 0
+    total = 0
 
-    while True:
+    for page in range(_NVD_MAX_PAGES):
         params["startIndex"] = start_index
         response = _safe_get(client, _NVD_BASE, params=params)
         if response is None:
@@ -366,6 +369,11 @@ def _fetch_nvd(
         data = response.json()
         vulnerabilities = data.get("vulnerabilities", [])
         total = data.get("totalResults", 0)
+
+        if not vulnerabilities:
+            # NVD can return an empty page while totalResults > 0 under load.
+            # There's nothing left to advance on, so stop rather than spin.
+            break
 
         for vuln in vulnerabilities:
             cve = vuln.get("cve", {})
@@ -401,6 +409,14 @@ def _fetch_nvd(
             break
 
         time.sleep(delay)
+    else:
+        logger.warning(
+            "NVD: hit the %d-page pagination cap with %d/%d results fetched — "
+            "remaining CVEs will be picked up on a later run",
+            _NVD_MAX_PAGES,
+            start_index,
+            total,
+        )
 
     logger.debug("NVD: %d CVEs in window", total)
 
@@ -450,6 +466,18 @@ def _fetch_kev(
     data = response.json()
     cutoff = datetime.now(UTC) - timedelta(days=_COLLECTION_WINDOW_DAYS)
     new_kev = 0
+
+    # The persistent kev_entries table is the source of truth for is_kev
+    # scoring, so it's populated from the FULL catalog every run — independent
+    # of the news collection window below, which only controls what shows up
+    # as a news item (we don't want to flood the feed with years of history).
+    all_entries = [
+        (vuln.get("cveID", ""), vuln.get("dateAdded") or None)
+        for vuln in data.get("vulnerabilities", [])
+        if vuln.get("cveID")
+    ]
+    if all_entries:
+        db.upsert_kev_entries(conn, all_entries)
 
     for vuln in data.get("vulnerabilities", []):
         date_added_str = vuln.get("dateAdded", "")
@@ -531,75 +559,100 @@ def _fetch_github_advisories(
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    params = {
+    params: dict | None = {
         "per_page": 100,
         "sort": "updated",
         "direction": "desc",
     }
-    response = _safe_get(client, _GHSA_URL, headers=headers, params=params)
-    if response is None:
-        stats.failed_sources.append("GitHub Security Advisories")
-        return
-
-    advisories = response.json()
-    if not isinstance(advisories, list):
-        logger.warning("Unexpected GitHub SA response shape")
-        stats.failed_sources.append("GitHub Security Advisories")
-        return
-
     cutoff = datetime.now(UTC) - timedelta(days=_COLLECTION_WINDOW_DAYS)
 
-    for adv in advisories:
-        updated_str = adv.get("updated_at") or adv.get("published_at", "")
-        try:
-            updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            updated = None
+    url = _GHSA_URL
+    total_processed = 0
+    stopped_early = False
 
-        if updated and updated < cutoff:
-            break  # results are sorted newest-first, so we can stop early
+    for page in range(_GHSA_MAX_PAGES):
+        response = _safe_get(client, url, headers=headers, params=params)
+        if response is None:
+            stats.failed_sources.append("GitHub Security Advisories")
+            return
 
-        adv_url = adv.get("html_url", "")
-        ghsa_id = adv.get("ghsa_id", "")
-        title = adv.get("summary") or ghsa_id or "GitHub Security Advisory"
-        cve_ids = [c.get("cve_id") for c in adv.get("cve_ids", []) if c.get("cve_id")]
-        content = (
-            f"{adv.get('description', '')}\n"
-            f"Severity: {adv.get('severity', '')} | "
-            f"CVEs: {', '.join(cve_ids) if cve_ids else 'none'}"
+        advisories = response.json()
+        if not isinstance(advisories, list):
+            logger.warning("Unexpected GitHub SA response shape")
+            stats.failed_sources.append("GitHub Security Advisories")
+            return
+
+        for adv in advisories:
+            updated_str = adv.get("updated_at") or adv.get("published_at", "")
+            try:
+                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                updated = None
+
+            if updated and updated < cutoff:
+                # Results are sorted newest-first, so we can stop entirely —
+                # every advisory on later pages would also be out of window.
+                stopped_early = True
+                break
+
+            adv_url = adv.get("html_url", "")
+            ghsa_id = adv.get("ghsa_id", "")
+            title = adv.get("summary") or ghsa_id or "GitHub Security Advisory"
+            cve_ids = [c.get("cve_id") for c in adv.get("cve_ids", []) if c.get("cve_id")]
+            content = (
+                f"{adv.get('description', '')}\n"
+                f"Severity: {adv.get('severity', '')} | "
+                f"CVEs: {', '.join(cve_ids) if cve_ids else 'none'}"
+            )
+
+            if not adv_url or not title:
+                continue
+
+            sev = _GHSA_SEVERITY_MAP.get((adv.get("severity") or "").lower())
+            cluster = cve_ids[0] if cve_ids else ghsa_id or None
+            tags = ([ghsa_id] if ghsa_id else []) + cve_ids[:3]
+            item = {
+                "url": adv_url,
+                "title": _truncate(title, 200),
+                "source": "GitHub Security Advisories",
+                "published_at": adv.get("published_at"),
+                "fetched_at": _utcnow(),
+                "content": _truncate(content, _MAX_CONTENT_CHARS),
+                "raw_entry": {
+                    "ghsa_id": ghsa_id,
+                    "cve_ids": cve_ids,
+                    "severity": adv.get("severity"),
+                },
+                # Pre-classified from GitHub advisory structured data — skips Ollama
+                "category": "Vulnerability",
+                "severity": sev,  # None when severity field is absent → shows as Unknown
+                "summary": _truncate(title, 160),
+                "affected_products": [],
+                "tags": tags,
+                "cluster_id": cluster,
+            }
+            stats.items_fetched += 1
+            if db.insert_news_item(conn, item):
+                stats.items_new += 1
+            total_processed += 1
+
+        if stopped_early:
+            break
+
+        next_link = response.links.get("next")
+        if not next_link:
+            break
+        # The "next" Link URL already carries its own query string.
+        url = next_link["url"]
+        params = None
+    else:
+        logger.info(
+            "GitHub SA: hit the %d-page pagination cap — older advisories in "
+            "this window will be picked up on a later run",
+            _GHSA_MAX_PAGES,
         )
 
-        if not adv_url or not title:
-            continue
-
-        sev = _GHSA_SEVERITY_MAP.get((adv.get("severity") or "").lower())
-        cluster = cve_ids[0] if cve_ids else ghsa_id or None
-        tags = ([ghsa_id] if ghsa_id else []) + cve_ids[:3]
-        item = {
-            "url": adv_url,
-            "title": _truncate(title, 200),
-            "source": "GitHub Security Advisories",
-            "published_at": adv.get("published_at"),
-            "fetched_at": _utcnow(),
-            "content": _truncate(content, _MAX_CONTENT_CHARS),
-            "raw_entry": {
-                "ghsa_id": ghsa_id,
-                "cve_ids": cve_ids,
-                "severity": adv.get("severity"),
-            },
-            # Pre-classified from GitHub advisory structured data — skips Ollama
-            "category": "Vulnerability",
-            "severity": sev,  # None when severity field is absent → shows as Unknown
-            "summary": _truncate(title, 160),
-            "affected_products": [],
-            "tags": tags,
-            "cluster_id": cluster,
-        }
-        stats.items_fetched += 1
-        if db.insert_news_item(conn, item):
-            stats.items_new += 1
-
-    logger.debug("GitHub SA: processed %d advisories", len(advisories))
+    logger.info("GitHub SA: processed %d advisories across %d page(s)", total_processed, page + 1)
 
 
 # ---------------------------------------------------------------------------

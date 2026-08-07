@@ -63,10 +63,10 @@
           <th>Priority</th>
           <th>Repo</th>
           <th>Package</th>
-          <th title="Version in the repository's manifest">Installed</th>
-          <th title="Vulnerable version range">Affected</th>
-          <th title="First release that includes the patch">Patched</th>
-          <th title="Latest release on the package registry">Latest</th>
+          <th data-tip="Version in the repository's manifest">Installed</th>
+          <th data-tip="Vulnerable version range">Affected</th>
+          <th data-tip="First release that includes the patch">Patched</th>
+          <th data-tip="Latest release on the package registry">Latest</th>
           <th>CVE / GHSA</th>
           <th>Severity</th>
           <th>State</th>
@@ -88,15 +88,14 @@
           </td>
 
           <!-- Priority score -->
-          <td data-label="Priority" style="font-weight:600;
-            {% if f.priority_score and f.priority_score >= 60 %}color:var(--critical)
-            {% elif f.priority_score and f.priority_score >= 40 %}color:var(--high)
-            {% else %}color:var(--text-dim){% endif %}">
+          <td data-label="Priority" class="priority-score
+            {% if f.priority_score and f.priority_score >= 60 %}is-critical
+            {% elif f.priority_score and f.priority_score >= 40 %}is-high{% endif %}">
             {{ '%d' % f.priority_score if f.priority_score else '—' }}
           </td>
 
           <!-- Repo -->
-          <td data-label="Repo" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          <td data-label="Repo" class="truncate" style="max-width:180px"
               title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
 
           <!-- Package + manifest + annotation -->
@@ -106,7 +105,7 @@
             <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
             {% endif %}
             {% if f.annotation %}
-            <br><span class="annotation-text" title="{{ f.annotation }}">Note · {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
+            <br><span class="annotation-text" data-tip="{{ f.annotation }}">Note · {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
             {% endif %}
           </td>
 
@@ -120,7 +119,7 @@
           <td data-label="Affected" style="font-size:0.78rem;max-width:180px"
               title="{{ f.affected_versions or 'No affected range provided by advisory' }}">
             {% if f.affected_versions %}
-            <code style="display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom">{{ f.affected_versions }}</code>
+            <code class="truncate" style="display:inline-block;max-width:100%;vertical-align:bottom">{{ f.affected_versions }}</code>
             {% else %}
             <span style="color:var(--text-dim)">—</span>
             {% endif %}
@@ -142,10 +141,10 @@
               {% if f.latest_version_vuln_count is not none %}
                 {% if f.latest_version_vuln_count == 0 %}
                 <br><span style="font-size:0.7rem;color:var(--success);font-weight:600"
-                          title="Registry latest has no known OSV vulnerabilities">clean</span>
+                          data-tip="Registry latest has no known OSV vulnerabilities">clean</span>
                 {% else %}
                 <br><span style="font-size:0.7rem;color:var(--high);font-weight:600"
-                          title="Latest release still has known vulnerabilities">{{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }}</span>
+                          data-tip="Latest release still has known vulnerabilities">{{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }}</span>
                 {% endif %}
               {% endif %}
             {% else %}
@@ -180,9 +179,9 @@
           <!-- Severity -->
           <td data-label="Severity">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
-            {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem">KEV</span>{% endif %}
+            {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
             {% if f.cvss_score is not none %}
-            <br><span style="font-size:0.7rem;color:var(--text-dim)" title="CVSS score">CVSS {{ '%.1f' % f.cvss_score }}</span>
+            <br><span style="font-size:0.7rem;color:var(--text-dim)" data-tip="CVSS score">CVSS {{ '%.1f' % f.cvss_score }}</span>
             {% endif %}
           </td>
 

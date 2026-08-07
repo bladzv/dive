@@ -1073,7 +1073,10 @@ html.sidebar-collapsed .page-footer {
 .exposure-stack-seg {
   position: absolute;
   top: 0;
+  left: var(--seg-start, 0%);
+  width: var(--seg-width, 0%);
   height: 100%;
+  transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1), left 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .exposure-stack-seg.is-critical { background: var(--critical); }
@@ -1573,6 +1576,13 @@ html.sidebar-collapsed .page-footer {
 .stat-resolved .stat-number::before { background: var(--success); }
 
 /* ─── Cards / panels ───────────────────────────────── */
+/* .panel and .card are intentional aliases of the same base box, not an
+   accidental duplicate: templates use whichever name reads better for that
+   section (.panel for a page's major regions — dashboard widgets, the
+   settings sections; .card for a smaller/repeated box — a findings/secrets
+   table wrapper, a single stat tile). Both stay valid indefinitely; add
+   real visual differentiation here (not by forking the base rule per
+   template) if the two ever need to look different. */
 .panel,
 .card {
   position: relative;
@@ -1838,6 +1848,55 @@ html.sidebar-collapsed .page-footer {
   accent-color: var(--accent);
 }
 
+/* Track+thumb switch for .toggle-list — replaces the raw checkbox above.
+   "Hidden checkbox behind a styled sibling" is a generic, decades-old CSS
+   technique with no single origin, not code adapted from designs/
+   colorion-toggles (which has no verifiable LICENSE file — its README
+   claims MIT but nothing backs it up, unlike colorion-css-tooltips below).
+   Written from scratch against DIVE's own tokens. */
+.dive-switch {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 2.15rem;
+  height: 1.2rem;
+}
+.dive-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.dive-switch .track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  transition: background 0.25s ease, border-color 0.25s ease;
+}
+.dive-switch .thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), background 0.25s ease;
+}
+.dive-switch input:checked + .track { background: var(--brand-mark); border-color: var(--brand-mark); }
+.dive-switch input:checked + .track .thumb { transform: translateX(0.95rem); background: var(--text-on-accent); }
+/* The input itself is opacity:0, so a focus ring on the input (the global
+   :focus-visible rule already covers <input>) would be invisible too —
+   put it on the visible .track sibling instead, same two-layer treatment. */
+.dive-switch input:focus-visible + .track {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+.dive-switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+.dive-switch input:disabled { cursor: not-allowed; }
+
 .chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -2099,6 +2158,24 @@ html.sidebar-collapsed .page-footer {
 }
 .triage-score.is-critical { color: var(--critical); }
 .triage-score.is-high     { color: var(--high); }
+
+/* Same severity-by-priority-score colouring as .triage-score above, for
+   the findings table — extracted from a per-row inline conditional style
+   attribute (font-weight:600 + a three-way if/elif/else on color). */
+.priority-score { font-weight: 600; color: var(--text-dim); }
+.priority-score.is-critical { color: var(--critical); }
+.priority-score.is-high     { color: var(--high); }
+
+/* Truncate-with-ellipsis utility — was duplicated as a full inline style
+   (max-width + overflow + text-overflow + white-space) across findings.html
+   and secrets.html; max-width is left to the caller since it varies by
+   column (set style="max-width:180px" etc. alongside this class). */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .triage-pkg {
   min-width: 0;
 }
@@ -2628,6 +2705,77 @@ tbody td {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
+}
+
+/* ─── Tooltip (data-tip) ─────────────────────────────
+   Adapted from designs/colorion-css-tooltips (MIT-licensed — confirmed via
+   its LICENSE file, unlike the other four designs/ libraries) "Top"
+   variant: a top-anchored bubble + arrow revealed via ::after/::before on
+   hover/focus. Stripped of that repo's own trigger-button chrome (it's a
+   standalone `.tip` button there; here it's layered onto elements that
+   already have their own visual style — badges, swatches) and re-themed
+   onto DIVE's tokens. Use on elements whose meaning is otherwise
+   conveyed only by a bare title="" attribute AND that aren't inside an
+   overflow:hidden ancestor (a truncated table cell, for instance, would
+   clip the popup — those keep title="" instead). */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translate(-50%, 4px);
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--panel-3);
+  border: 1px solid var(--border-strong);
+  color: var(--text-bright);
+  font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: var(--shadow);
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-tip]::before {
+  content: "";
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  bottom: 100%;
+  border: 5px solid transparent;
+  border-top-color: var(--panel-3);
+  transform: translate(-50%, 4px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-tip]:hover::after,   [data-tip]:focus-visible::after,
+[data-tip]:hover::before,  [data-tip]:focus-visible::before {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Table headers sit at the very top of a card that clips overflow (for
+   the table's rounded corners), so the default upward-popping bubble is
+   invisible there — pop it downward, into the table, instead. */
+thead [data-tip]::after {
+  top: calc(100% + 8px);
+  bottom: auto;
+  transform: translate(-50%, -4px);
+}
+thead [data-tip]::before {
+  top: 100%;
+  bottom: auto;
+  border-top-color: transparent;
+  border-bottom-color: var(--panel-3);
+  transform: translate(-50%, -4px);
+}
+thead [data-tip]:hover::after,   thead [data-tip]:focus-visible::after,
+thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
+  transform: translate(-50%, 0);
 }
 
 /* ─── Badges ───────────────────────────────────────── */

@@ -314,8 +314,11 @@ function loadToggles() {
       list.innerHTML = Object.entries(data).map(([key, meta]) => {
         _toggleState[key] = meta.enabled;
         return `<label>
-          <input type="checkbox" id="toggle-${key}" ${meta.enabled ? 'checked' : ''}
-                 onchange="_toggleState['${key}']=this.checked; markDirty('pipeline')">
+          <span class="dive-switch">
+            <input type="checkbox" id="toggle-${key}" ${meta.enabled ? 'checked' : ''}
+                   onchange="_toggleState['${key}']=this.checked; markDirty('pipeline')">
+            <span class="track"><span class="thumb"></span></span>
+          </span>
           ${meta.label}
         </label>`;
       }).join('');
@@ -388,9 +391,11 @@ function renderFeedsTable(feeds) {
             <td style="font-size:0.78rem;color:var(--text-dim)">${f.last_fetched_at ? f.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
             <td style="font-size:0.82rem">${f.item_count || 0}</td>
             <td>
-              <input type="checkbox" ${f.enabled ? 'checked' : ''}
-                     onchange="toggleFeed(${f.id}, this.checked)"
-                     style="width:1rem;height:1rem;accent-color:var(--accent)">
+              <span class="dive-switch">
+                <input type="checkbox" ${f.enabled ? 'checked' : ''}
+                       onchange="toggleFeed(${f.id}, this.checked)" aria-label="Enabled">
+                <span class="track"><span class="thumb"></span></span>
+              </span>
             </td>
             <td style="white-space:nowrap">
               <button class="btn btn-sm" onclick="editFeed(${f.id})" style="margin-right:0.25rem">Edit</button>

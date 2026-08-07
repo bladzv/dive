@@ -31,10 +31,10 @@
         {% set offset_m = pct_critical + pct_high %}
         {% set offset_l = pct_critical + pct_high + pct_medium %}
         {% if total_open > 0 %}
-          {% if summary.critical %}<span class="exposure-stack-seg is-critical" style="left:0%;width:{{ pct_critical }}%"></span>{% endif %}
-          {% if summary.high     %}<span class="exposure-stack-seg is-high"     style="left:{{ offset_h }}%;width:{{ pct_high }}%"></span>{% endif %}
-          {% if summary.medium   %}<span class="exposure-stack-seg is-medium"   style="left:{{ offset_m }}%;width:{{ pct_medium }}%"></span>{% endif %}
-          {% if summary.low      %}<span class="exposure-stack-seg is-low"      style="left:{{ offset_l }}%;width:{{ pct_low }}%"></span>{% endif %}
+          {% if summary.critical %}<span class="exposure-stack-seg is-critical" style="--seg-start:0%;--seg-width:{{ pct_critical }}%"></span>{% endif %}
+          {% if summary.high     %}<span class="exposure-stack-seg is-high"     style="--seg-start:{{ offset_h }}%;--seg-width:{{ pct_high }}%"></span>{% endif %}
+          {% if summary.medium   %}<span class="exposure-stack-seg is-medium"   style="--seg-start:{{ offset_m }}%;--seg-width:{{ pct_medium }}%"></span>{% endif %}
+          {% if summary.low      %}<span class="exposure-stack-seg is-low"      style="--seg-start:{{ offset_l }}%;--seg-width:{{ pct_low }}%"></span>{% endif %}
         {% endif %}
       </div>
 
@@ -161,7 +161,7 @@
           </span>
         </div>
         <div class="top-cve-tags">
-          {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+          {% if f.is_kev %}<span class="badge badge-kev" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
           <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
         </div>
       </li>
@@ -263,7 +263,7 @@
           </td>
           <td class="triage-badges">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
-            {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+            {% if f.is_kev %}<span class="badge badge-kev" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
           </td>
           <td class="triage-advisory">{{ f.cve_id or f.ghsa_id or '—' }}</td>
           <td class="triage-fix">

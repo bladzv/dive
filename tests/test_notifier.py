@@ -13,10 +13,14 @@ import pytest
 
 import dive.notifier as notifier
 from dive.notifier import (
+    _SLACK_MAX_SECTION_BLOCKS,
+    _SLACK_SECTION_CHAR_LIMIT,
     MAX_FINDINGS_PER_ALERT,
     _build_findings_text,
+    _build_secrets_slack_blocks,
     _build_slack_blocks,
     _finding_line,
+    _section_blocks,
     _severity_label,
     send_failure_alert,
     send_findings_alert,
@@ -211,6 +215,95 @@ def test_slack_blocks_no_overflow_context_under_max():
     rows = [_row(id=i, package_name=f"pkg{i}") for i in range(3)]
     blocks = _build_slack_blocks(rows)
     assert not any(b.get("type") == "context" for b in blocks)
+
+
+# ---------------------------------------------------------------------------
+# _section_blocks
+# ---------------------------------------------------------------------------
+
+
+def _secret_row(**kwargs) -> sqlite3.Row:
+    defaults = {
+        "id": 1,
+        "repo_full_name": "some-org/a-fairly-long-repository-name-here",
+        "file_path": "src/main/resources/application-production.yml",
+        "line_number": 42,
+        "commit_sha": "abc123def456abc123def456abc123def456ab",
+        "secret_type": "AWS Access Key",
+        "rule_id": "aws-access-key",
+        "fingerprint": "abc123:src/main/resources/application-production.yml:aws-access-key:42",
+        "state": "new",
+    }
+    defaults.update(kwargs)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    cols = list(defaults.keys())
+    vals = list(defaults.values())
+    placeholders = ", ".join("?" * len(cols))
+    conn.execute(f"CREATE TABLE t ({', '.join(cols)})")
+    conn.execute(f"INSERT INTO t VALUES ({placeholders})", vals)
+    return conn.execute("SELECT * FROM t").fetchone()
+
+
+def test_section_blocks_empty_input_returns_no_blocks():
+    assert _section_blocks([], "check the dashboard") == []
+
+
+def test_section_blocks_18_secret_rows_stay_under_char_limit_and_lose_nothing():
+    rows = [_secret_row(id=i, line_number=i) for i in range(18)]
+    lines = [notifier._secret_line(r) for r in rows]
+    blocks = _section_blocks(lines, "check the Secrets view")
+
+    for block in blocks:
+        assert len(block["text"]["text"]) <= _SLACK_SECTION_CHAR_LIMIT
+
+    packed_text = "\n".join(b["text"]["text"] for b in blocks)
+    for line in lines:
+        assert line in packed_text
+
+
+def test_section_blocks_truncates_single_oversized_line():
+    huge_line = "x" * 5000
+    blocks = _section_blocks([huge_line], "check the dashboard")
+
+    assert len(blocks) == 1
+    assert len(blocks[0]["text"]["text"]) <= _SLACK_SECTION_CHAR_LIMIT
+
+
+def test_section_blocks_caps_total_blocks_with_overflow_context():
+    # Each line alone fills a block, forcing one block per line.
+    lines = ["y" * _SLACK_SECTION_CHAR_LIMIT for _ in range(_SLACK_MAX_SECTION_BLOCKS + 5)]
+    blocks = _section_blocks(lines, "check the dashboard")
+
+    assert len(blocks) <= _SLACK_MAX_SECTION_BLOCKS + 1
+    assert blocks[-1]["type"] == "context"
+    assert "more" in blocks[-1]["elements"][0]["text"]
+
+
+def test_section_blocks_never_emits_empty_section():
+    blocks = _section_blocks(["one line"], "check the dashboard")
+    for block in blocks:
+        if block["type"] == "section":
+            assert block["text"]["text"]
+
+
+# ---------------------------------------------------------------------------
+# _build_secrets_slack_blocks
+# ---------------------------------------------------------------------------
+
+
+def test_secrets_slack_blocks_18_rows_all_sections_under_limit():
+    rows = [_secret_row(id=i, line_number=i) for i in range(18)]
+    blocks = _build_secrets_slack_blocks(rows)
+
+    for block in blocks:
+        if block["type"] == "section":
+            assert len(block["text"]["text"]) <= _SLACK_SECTION_CHAR_LIMIT
+
+
+def test_secrets_slack_blocks_has_header():
+    blocks = _build_secrets_slack_blocks([_secret_row()])
+    assert any(b.get("type") == "header" for b in blocks)
 
 
 # ---------------------------------------------------------------------------

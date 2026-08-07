@@ -69,3 +69,9 @@ __jinja2_cache__/
 # Workflow files
 .github/actions.md
 .github/pr_description.md
+
+# Planning doc — not part of the shipped codebase
+PLAN.md
+
+# Third-party design reference repos (cloned locally, not DIVE assets)
+designs/

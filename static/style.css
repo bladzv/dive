@@ -2542,6 +2542,22 @@ input[type="checkbox"] {
   font-size: 0.78rem;
 }
 
+/* Inline field validation — set via DIVE.setFieldError()/clearFieldError()
+   in static/app.js. [aria-invalid] gets the red border for free; the
+   .field-error <p> (role="alert", same pattern as login.html's
+   .login-error) carries the message and is what aria-describedby points
+   at, so screen readers get it read out alongside the field. */
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--error) !important;
+}
+.field-error {
+  margin: 0.32rem 0 0;
+  color: var(--error);
+  font-size: 0.78rem;
+}
+
 /* ─── Tables ───────────────────────────────────────── */
 .table-wrap {
   width: 100%;

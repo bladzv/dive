@@ -68,6 +68,38 @@
       .then(r => r.json());
   }
 
+  /* ── Inline field validation ───────────────────────────
+   * Mirrors login.html's .login-error pattern (a role="alert" message tied
+   * to the field via aria-describedby) instead of the toast-only, post-hoc
+   * validation used everywhere else. Creates the <p class="field-error">
+   * on demand right after the input, so call sites don't need to add
+   * markup for every field up front.
+   */
+  function setFieldError(input, message) {
+    input.setAttribute('aria-invalid', 'true');
+    const id = input.id ? input.id + '-error' : null;
+    let el = id ? document.getElementById(id) : input._fieldErrorEl;
+    if (!el) {
+      el = document.createElement('p');
+      el.className = 'field-error';
+      el.setAttribute('role', 'alert');
+      if (id) el.id = id;
+      else input._fieldErrorEl = el;
+      input.insertAdjacentElement('afterend', el);
+    }
+    el.textContent = message;
+    if (id) input.setAttribute('aria-describedby', id);
+  }
+
+  function clearFieldError(input) {
+    input.removeAttribute('aria-invalid');
+    input.removeAttribute('aria-describedby');
+    const id = input.id ? input.id + '-error' : null;
+    const el = id ? document.getElementById(id) : input._fieldErrorEl;
+    if (el) el.remove();
+    input._fieldErrorEl = null;
+  }
+
   /* ── Shared modal component ────────────────────────────
    * Every modal in the app is a `.modal-backdrop > .modal-panel` pair (see
    * static/style.css), toggled via the `open` class. openModal()/closeModal()
@@ -171,5 +203,6 @@
   window.DIVE = {
     apiFetch, showToast, timeAgo, timeUntil, escapeHtml,
     setPageSize, toggleBookmark, confirmModal, openModal, closeModal,
+    setFieldError, clearFieldError,
   };
 })();

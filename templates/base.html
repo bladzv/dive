@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="run-token" content="{{ run_token }}">
   <title>{% block title %}DIVE{% endblock %}</title>
-  <link rel="preconnect" href="https://rsms.me/">
-  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400-normal.woff2">
   <link rel="stylesheet" href="/static/style.css">
   <script>
     /* Apply saved theme + sidebar state before first paint */
@@ -141,12 +140,12 @@
       <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">
         <svg id="theme-icon"><use href="#i-sun"/></svg>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl" id="pause-btn"
-              onclick="togglePause()" style="display:none" title="Pause / resume pipeline">
+      <button class="btn btn-outline btn-sm pipeline-ctl is-hidden" id="pause-btn"
+              onclick="togglePause()" title="Pause / resume pipeline">
         <span id="pause-btn-label">Pause</span>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel"
-              id="cancel-btn" onclick="cancelRun()" style="display:none" title="Cancel pipeline run">
+      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel is-hidden"
+              id="cancel-btn" onclick="cancelRun()" title="Cancel pipeline run">
         Cancel
       </button>
       <button class="btn-pipeline-mobile" id="pipeline-status-mobile"
@@ -272,6 +271,7 @@
   </div>
 </div>
 
+<script src="/static/app.js"></script>
 <script id="dive-base-js">
 /* ── Sign-out confirmation ───────────────────────────── */
 function confirmSignOut(event) {
@@ -344,40 +344,8 @@ function toggleSidebar() {
 _applySidebarIcon();
 
 /* ── Shared helpers ──────────────────────────────────── */
-const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
-
-function apiFetch(url, options = {}) {
-  const method = (options.method || 'GET').toUpperCase();
-  const headers = Object.assign({}, options.headers);
-  if (method !== 'GET' && method !== 'HEAD') {
-    headers['X-Run-Token'] = RUN_TOKEN;
-  }
-  return fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
-}
-
-function showToast(msg, type = 'info') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'show toast-' + type;
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => { t.className = ''; }, 3500);
-}
-
-function timeAgo(iso) {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60)    return 'just now';
-  if (diff < 3600)  return Math.floor(diff / 60)   + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
-}
-
-function timeUntil(iso) {
-  const diff = (new Date(iso).getTime() - Date.now()) / 1000;
-  if (diff <= 0)     return 'soon';
-  if (diff < 3600)   return Math.ceil(diff / 60)   + 'm';
-  if (diff < 86400)  return Math.floor(diff / 3600) + 'h';
-  return Math.floor(diff / 86400) + 'd';
-}
+/* apiFetch, showToast, timeAgo, timeUntil, escapeHtml now live in
+   static/app.js as DIVE.<fn> — loaded above, before this script. */
 
 /* ── Pipeline status polling ─────────────────────────── */
 function updateStatusBadge(pipeline) {
@@ -397,7 +365,7 @@ function updateStatusBadge(pipeline) {
     btn.disabled = true;
   } else if (pipeline.last_status === 'success') {
     setDot('success');
-    text.textContent = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
+    text.textContent = pipeline.last_completed ? DIVE.timeAgo(pipeline.last_completed) : '—';
     btn.disabled = false;
   } else if (pipeline.last_status === 'error') {
     setDot('error');
@@ -476,13 +444,6 @@ function fallbackCopy(text, done) {
 
 window.copyCodeBlock = copyCodeBlock;
 
-/* Escape a value for safe interpolation into innerHTML. */
-function escapeHtml(value) {
-  const div = document.createElement('div');
-  div.textContent = value == null ? '' : String(value);
-  return div.innerHTML;
-}
-
 function pollStatus() {
   refreshNavBadges();
   fetch('/api/status')
@@ -494,7 +455,7 @@ function pollStatus() {
       updatePipelineDrawer(data.pipeline_steps, data.pipeline);
 
       const nr = document.getElementById('next-run-text');
-      if (nr) nr.textContent = data.next_run ? timeUntil(data.next_run) : 'unscheduled';
+      if (nr) nr.textContent = data.next_run ? DIVE.timeUntil(data.next_run) : 'unscheduled';
 
       const od = document.getElementById('ollama-dot');
       if (!od) return;
@@ -519,30 +480,26 @@ function updatePipelineControls(pipeline) {
   const runBtn = document.getElementById('run-now-btn');
   if (!pauseBtn || !cancelBtn || !runBtn) return;
 
+  pauseBtn.classList.toggle('is-hidden', !pipeline.running);
+  cancelBtn.classList.toggle('is-hidden', !pipeline.running);
+  runBtn.classList.toggle('is-hidden', pipeline.running);
   if (pipeline.running) {
-    pauseBtn.style.display = '';
-    cancelBtn.style.display = '';
-    runBtn.style.display = 'none';
     document.getElementById('pause-btn-label').textContent = pipeline.paused ? 'Resume' : 'Pause';
     pauseBtn.classList.toggle('is-paused', !!pipeline.paused);
-  } else {
-    pauseBtn.style.display = 'none';
-    cancelBtn.style.display = 'none';
-    runBtn.style.display = '';
   }
 }
 
 function togglePause() {
   const label = document.getElementById('pause-btn-label').textContent;
   const wantPause = label === 'Pause';
-  apiFetch('/api/run/pause', {
+  DIVE.apiFetch('/api/run/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pause: wantPause }),
   })
   .then(r => r.json())
-  .then(d => { showToast(wantPause ? 'Pipeline paused' : 'Pipeline resumed', 'info'); })
-  .catch(() => showToast('Pause request failed', 'error'));
+  .then(d => { DIVE.showToast(wantPause ? 'Pipeline paused' : 'Pipeline resumed', 'info'); })
+  .catch(() => DIVE.showToast('Pause request failed', 'error'));
 }
 
 function cancelRun() {
@@ -551,10 +508,10 @@ function cancelRun() {
 
 function _confirmCancelRun() {
   document.getElementById('cancel-run-modal').classList.remove('open');
-  apiFetch('/api/run/cancel', { method: 'POST' })
+  DIVE.apiFetch('/api/run/cancel', { method: 'POST' })
   .then(r => r.json())
-  .then(() => showToast('Cancellation requested', 'info'))
-  .catch(() => showToast('Cancel request failed', 'error'));
+  .then(() => DIVE.showToast('Cancellation requested', 'info'))
+  .catch(() => DIVE.showToast('Cancel request failed', 'error'));
 }
 
 /* ── Unsaved-changes guard ────────────────────────────
@@ -697,7 +654,7 @@ function updatePipelineDrawer(stepDefs, pipeline) {
       <button class="drawer-failed-toggle" onclick="this.closest('.drawer-failed-wrap').classList.toggle('open')">
         ▸ ${items.length} failed ${noun}
       </button>
-      <ul class="drawer-failed-list">${items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>
+      <ul class="drawer-failed-list">${items.map(i => `<li>${DIVE.escapeHtml(i)}</li>`).join('')}</ul>
     </div>`;
   }
 
@@ -761,13 +718,13 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     let errorHtml = '';
     if (pipeline.last_status === 'error' && pipeline.last_error) {
       errorHtml = `<div class="drawer-error">
-        <div class="drawer-error-msg">${escapeHtml(pipeline.last_error)}</div>
+        <div class="drawer-error-msg">${DIVE.escapeHtml(pipeline.last_error)}</div>
         <a class="drawer-error-link" href="/logs?level=ERROR">View logs →</a>
       </div>`;
     }
     let rows = '';
     if (pipeline.last_completed) {
-      rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${timeAgo(pipeline.last_completed)}</span></div>`;
+      rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${DIVE.timeAgo(pipeline.last_completed)}</span></div>`;
     }
     if (pipeline.run_duration_s != null) {
       rows += `<div class="drawer-summary-row"><span>Total duration</span><span class="drawer-summary-val">${fmtDuration(pipeline.run_duration_s)}</span></div>`;
@@ -902,15 +859,11 @@ pollStatus();
 function triggerRun() {
   const btn = document.getElementById('run-now-btn');
   btn.disabled = true;
-  fetch('/api/run', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'X-Run-Token': RUN_TOKEN }
-  })
+  DIVE.apiFetch('/api/run', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
     if (data.status === 'started') {
-      showToast('Pipeline started', 'success');
+      DIVE.showToast('Pipeline started', 'success');
       openPipelineDrawer();
       clearInterval(_pollTimer);
       _pollTimer = setInterval(pollStatus, 2000);
@@ -919,15 +872,15 @@ function triggerRun() {
         _pollTimer = setInterval(pollStatus, 5000);
       }, 60000);
     } else if (data.status === 'already_running') {
-      showToast('Pipeline is already running', 'info');
+      DIVE.showToast('Pipeline is already running', 'info');
       btn.disabled = false;
     } else {
-      showToast(data.message || 'Unknown response', 'info');
+      DIVE.showToast(data.message || 'Unknown response', 'info');
       btn.disabled = false;
     }
   })
   .catch(() => {
-    showToast('Failed to trigger run', 'error');
+    DIVE.showToast('Failed to trigger run', 'error');
     btn.disabled = false;
   });
 }

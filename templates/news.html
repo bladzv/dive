@@ -118,7 +118,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="setPageSize(this.value)" title="Rows per page">
+    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page">
       {% for s in pagination.page_size_options %}
       <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
       {% endfor %}
@@ -148,22 +148,14 @@ function applySearch(e) {
   window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
 }
 
-function setPageSize(size) {
-  const params = new URLSearchParams(window.location.search);
-  params.set('per_page', size);
-  params.set('page', '1');
-  window.location = '/news?' + params.toString();
-}
-
 function toggleBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
-  .then(r => r.json())
+  DIVE.toggleBookmark(itemId)
   .then(data => {
     const btn = document.getElementById('bm-btn-' + itemId);
     if (btn) btn.textContent = data.bookmarked ? 'Saved' : 'Save';
-    showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+    DIVE.showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
   })
-  .catch(() => showToast('Failed to toggle bookmark', 'error'));
+  .catch(() => DIVE.showToast('Failed to toggle bookmark', 'error'));
 }
 </script>
 {% endblock %}

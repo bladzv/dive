@@ -346,14 +346,13 @@
 {% block scripts %}
 <script>
 function toggleBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
-  .then(r => r.json())
+  DIVE.toggleBookmark(itemId)
   .then(data => {
     const btn = document.getElementById('bm-btn-' + itemId);
     if (btn) btn.textContent = data.bookmarked ? 'Saved' : 'Save';
-    showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+    DIVE.showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
   })
-  .catch(() => showToast('Failed to toggle bookmark', 'error'));
+  .catch(() => DIVE.showToast('Failed to toggle bookmark', 'error'));
 }
 </script>
 {% endblock %}

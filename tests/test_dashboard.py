@@ -302,17 +302,25 @@ def test_logs_page_returns_html(client):
     assert "text/html" in resp.headers["content-type"]
 
 
-def test_logs_page_script_is_after_pjax_fence(client):
-    """Regression test: setPageSize() used to live inside {% block content %},
-    so the pjax router (which only re-executes scripts after
-    <script id="page-scripts-fence">) never ran it on in-app navigation. The
-    script must now appear after the fence.
+def test_logs_page_uses_shared_set_page_size(client):
+    """Regression test: setPageSize() used to be redefined locally inside
+    {% block content %}, so the pjax router (which only re-executes scripts
+    after <script id="page-scripts-fence">) never ran it on in-app
+    navigation. It's now the shared DIVE.setPageSize from static/app.js
+    (loaded once, outside the pjax-swapped region), so there's no
+    page-local script to lose on navigation at all.
+
+    The rows-per-page <select> only renders once pagination.total_pages > 1,
+    so this seeds enough log entries (default page size is 25) to trigger it.
     """
+    with db.get_conn() as conn:
+        for i in range(30):
+            db.insert_log_entry(conn, db._now(), "INFO", "dive.test", f"entry {i}")
+
     resp = client.get("/logs")
     html = resp.text
-    fence_index = html.index('id="page-scripts-fence"')
-    script_index = html.index("function setPageSize")
-    assert script_index > fence_index
+    assert "DIVE.setPageSize(this.value)" in html
+    assert "function setPageSize" not in html
 
 
 def test_settings_page_returns_html(client):

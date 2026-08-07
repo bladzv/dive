@@ -103,16 +103,15 @@
 {% block scripts %}
 <script>
 function removeBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
-  .then(r => r.json())
+  DIVE.toggleBookmark(itemId)
   .then(data => {
     if (!data.bookmarked) {
       const el = document.getElementById('bm-' + itemId);
       if (el) el.remove();
-      showToast('Bookmark removed', 'success');
+      DIVE.showToast('Bookmark removed', 'success');
     }
   })
-  .catch(() => showToast('Failed to remove bookmark', 'error'));
+  .catch(() => DIVE.showToast('Failed to remove bookmark', 'error'));
 }
 </script>
 {% endblock %}

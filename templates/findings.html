@@ -252,7 +252,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="setPageSize(this.value)" title="Rows per page">
+    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page">
       {% for s in pagination.page_size_options %}
       <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
       {% endfor %}
@@ -296,7 +296,7 @@ function openBestSource(cveId, ghsaId) {
    applyRepoFilter, setPageSize) live in /static/bulk-selection.js. */
 function bulkAction(action) {
   if (!_selected.size) return;
-  apiFetch('/api/findings/bulk', {
+  DIVE.apiFetch('/api/findings/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids: [..._selected], action }),
@@ -306,15 +306,15 @@ function bulkAction(action) {
     return r.json();
   })
   .then(d => {
-    showToast(d.updated + ' finding(s) updated', 'success');
+    DIVE.showToast(d.updated + ' finding(s) updated', 'success');
     setTimeout(() => location.reload(), 700);
   })
-  .catch(err => showToast(err.message, 'error'));
+  .catch(err => DIVE.showToast(err.message, 'error'));
 }
 
 function doAction(btn, id, action) {
   btn.disabled = true;
-  apiFetch('/api/findings/' + id + '/' + action, {
+  DIVE.apiFetch('/api/findings/' + id + '/' + action, {
     method: 'POST',
   })
   .then(r => {
@@ -322,11 +322,11 @@ function doAction(btn, id, action) {
     return r.json();
   })
   .then(() => {
-    showToast('Finding ' + action + 'd', 'success');
+    DIVE.showToast('Finding ' + action + 'd', 'success');
     setTimeout(() => location.reload(), 700);
   })
   .catch(err => {
-    showToast(err.message, 'error');
+    DIVE.showToast(err.message, 'error');
     btn.disabled = false;
   });
 }
@@ -350,7 +350,7 @@ function closeAnnotation() {
 
 function saveAnnotation() {
   const text = document.getElementById('annotation-input').value.trim();
-  apiFetch('/api/findings/' + _annotatingId + '/annotate', {
+  DIVE.apiFetch('/api/findings/' + _annotatingId + '/annotate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ annotation: text }),
@@ -360,11 +360,11 @@ function saveAnnotation() {
     return r.json();
   })
   .then(() => {
-    showToast('Note saved', 'success');
+    DIVE.showToast('Note saved', 'success');
     closeAnnotation();
     setTimeout(() => location.reload(), 500);
   })
-  .catch(err => showToast(err.message, 'error'));
+  .catch(err => DIVE.showToast(err.message, 'error'));
 }
 
 initBulkSelection();

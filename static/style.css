@@ -3,6 +3,44 @@
    Slate base + severity-only color. No gradients. No glows.
    ───────────────────────────────────────────────────── */
 
+/* Self-hosted fonts (latin subset) — same-origin, so the dashboard makes
+   zero third-party requests. See static/fonts/README.md for provenance. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+}
+
 :root,
 [data-theme="dark"] {
   color-scheme: dark;
@@ -76,6 +114,40 @@
   --sidebar-collapsed: 78px;
   --topbar:            56px;
   --row-h:             36px;
+
+  /* Type scale — new call sites should use these instead of freehand rem
+     values. Existing declarations are migrated incrementally, not en masse
+     (see CLAUDE.md). */
+  --fs-xs:   0.75rem;
+  --fs-sm:   0.8125rem;
+  --fs-base: 0.875rem;
+  --fs-md:   1rem;
+  --fs-lg:   1.125rem;
+  --fs-xl:   1.375rem;
+  --fs-2xl:  1.75rem;
+
+  /* Spacing scale */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-8: 3rem;
+
+  /* GitHub-style activity heatmap intensity ramp — moved here from a
+     separate ad hoc :root/[data-theme="light"] block mid-file so there's
+     one token home. .hm-l0 itself uses --panel-3 directly (see .hm-* rules
+     further down); --hm-l0-light is its light-theme override. */
+  --hm-l1: #143e2a;
+  --hm-l2: #16704a;
+  --hm-l3: #22c55e;
+  --hm-l4: #86efac;
+
+  /* .btn-primary's hover fill — was hardcoded #ffffff for both themes,
+     which is a subtle brighten-to-white in dark mode but an odd flip from
+     near-black to pure white in light mode. */
+  --btn-primary-hover-bg: #ffffff;
 }
 
 html.sidebar-collapsed { --sidebar: var(--sidebar-collapsed); }
@@ -99,6 +171,11 @@ html.sidebar-collapsed { --sidebar: var(--sidebar-collapsed); }
   --text-bright: #0d1424;
   --text-on-accent: #ffffff;
 
+  /* Brand mark colour — was not overridden here previously, so the collapse
+     button and logo square kept the dark-theme indigo in light mode too. */
+  --brand-mark:       #4f46e5;
+  --brand-mark-hover: #6366f1;
+
   --accent:        #334155;
   --accent-soft:   rgba(51, 65, 85, 0.06);
   --accent-ring:   rgba(51, 65, 85, 0.18);
@@ -121,6 +198,17 @@ html.sidebar-collapsed { --sidebar: var(--sidebar-collapsed); }
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
   --shadow:    0 4px 14px rgba(15, 23, 42, 0.07);
   --shadow-lg: 0 16px 40px rgba(15, 23, 42, 0.10);
+
+  /* Activity heatmap — light-theme intensity ramp + the .hm-l0 override. */
+  --hm-l0-light: #eef1f7;
+  --hm-l1: #bbf7d0;
+  --hm-l2: #4ade80;
+  --hm-l3: #15803d;
+  --hm-l4: #064e3b;
+
+  /* .btn-primary's base is --text-bright (near-black in light theme), so
+     its hover must lighten from there, not jump straight to white. */
+  --btn-primary-hover-bg: #1e293b;
 }
 
 /* ─── Base ─────────────────────────────────────────── */
@@ -128,7 +216,7 @@ html.sidebar-collapsed { --sidebar: var(--sidebar-collapsed); }
 
 html {
   min-width: 320px;
-  font-size: 14.5px;
+  font-size: 15px;
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -182,9 +270,6 @@ code {
   border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
-
-/* Ambient blobs DOM is left over from previous design — hide it. */
-.ambient-blobs { display: none !important; }
 
 /* ─── Shell ────────────────────────────────────────── */
 .app-shell { min-height: 100vh; position: relative; }
@@ -830,7 +915,10 @@ html.sidebar-collapsed .page-footer {
 }
 
 .mobile-scrim { display: none; }
-.nav-close { display: none; }
+
+/* Generic hide utility — replaces ad hoc style="display:none" + JS
+   .style.display mutation (e.g. the pipeline pause/cancel/run buttons). */
+.is-hidden { display: none !important; }
 
 /* ─── Page heading ─────────────────────────────────── */
 .page-heading {
@@ -1316,21 +1404,8 @@ html.sidebar-collapsed .page-footer {
 
 .hm-empty { background: transparent !important; }
 
-/* Activity-heatmap intensity ramp — themed via variables for consistency. */
-:root {
-  --hm-l1: #143e2a;
-  --hm-l2: #16704a;
-  --hm-l3: #22c55e;
-  --hm-l4: #86efac;
-  --hm-l0-light: #eef1f7;
-}
-[data-theme="light"] {
-  --hm-l1: #bbf7d0;
-  --hm-l2: #4ade80;
-  --hm-l3: #15803d;
-  --hm-l4: #064e3b;
-}
-
+/* Activity-heatmap intensity ramp — tokens now live in the main
+   :root/[data-theme="light"] blocks at the top of this file. */
 .hm-l0 { background: var(--panel-3); }
 .hm-l1 { background: var(--hm-l1); }
 .hm-l2 { background: var(--hm-l2); }
@@ -2177,8 +2252,8 @@ html.sidebar-collapsed .page-footer {
 }
 .btn-primary:hover {
   color: var(--text-on-accent);
-  background: #ffffff;
-  border-color: #ffffff;
+  background: var(--btn-primary-hover-bg);
+  border-color: var(--btn-primary-hover-bg);
 }
 
 [data-theme="light"] .btn-primary {
@@ -2342,6 +2417,22 @@ textarea:focus {
   outline: none;
   border-color: var(--border-strong);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Global focus ring — previously the ONLY :focus rule in this file was the
+   input/select/textarea one above; every button, link, and custom
+   interactive element fell back to the browser's default outline, which is
+   close to invisible against --bg in both themes. The two-layer ring (an
+   inner ring in the page background color, then an outer ring in the
+   accent) stays visible on any surface color underneath it. */
+:where(
+  a, button, .btn, [role="button"], summary,
+  input, select, textarea,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  border-radius: var(--radius-sm);
 }
 
 select {

@@ -53,9 +53,6 @@ function applyRepoFilter(repo) {
   window.location = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
 }
 
-function setPageSize(size) {
-  const params = new URLSearchParams(window.location.search);
-  params.set('per_page', size);
-  params.set('page', '1');
-  window.location = window.location.pathname + '?' + params.toString();
-}
+/* setPageSize is now the shared DIVE.setPageSize from static/app.js — it
+   was defined here (and, separately, in news.html and logs.html) three
+   times with subtly different implementations. */

@@ -14,10 +14,24 @@
 # GitHub
 # ------------------------------------------------------------------
 github:
-  # Fine-grained Personal Access Token.
-  # Generate at: github.com → Settings → Developer settings → Fine-grained tokens
-  # Required permissions: Contents (Read-only), Metadata (Read-only)
-  # Set a 90-day expiration and rotate before it expires.
+  # Personal Access Token used for BOTH the dependency scanner and the
+  # secrets scanner (which clones repos over HTTPS using this same token).
+  #
+  # Fine-grained token (recommended):
+  #   Generate at: github.com → Settings → Developer settings → Fine-grained tokens
+  #   Required permissions: Contents (Read-only), Metadata (Read-only)
+  #   Repository access: you must explicitly select "All repositories", or
+  #   individually select every private repo you want scanned — a
+  #   fine-grained token only enumerates repos it's been granted access to,
+  #   so private repos left unselected are silently skipped by both scanners.
+  #   Set a 90-day expiration and rotate before it expires.
+  #
+  # Classic token (alternative): needs the `repo` scope for private repo
+  # access (public_repo alone will not see private repos or let the secrets
+  # scanner clone them).
+  #
+  # Either way, both scanners cover public AND private repos owned by this
+  # token's account (not organizations — see docs/setup.md).
   token: ""
 
   # Your GitHub username — used to scope repository listing.

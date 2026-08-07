@@ -24,6 +24,7 @@ is logged (no repos are silently skipped — the warning makes the gap explicit)
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -62,6 +63,8 @@ _OSV_BATCH_SIZE = 500  # max queries per OSV.dev batch request
 _HTTP_TIMEOUT = 30.0
 _MAX_MANIFESTS_PER_REPO = 25  # guard against monorepos with hundreds of lockfiles
 _RATE_LIMIT_WARN_PCT = 0.10  # warn when < 10% of requests remain
+_CONTENTS_API_SIZE_LIMIT = 1_000_000  # Contents API returns encoding="none" above ~1MB
+_MAX_MANIFEST_BYTES = 20_000_000  # sanity cap on files fetched via the Git Blobs API
 
 # Filename → ecosystem mapping (exact filenames only; paths checked separately)
 _MANIFEST_FILENAMES: dict[str, str] = {
@@ -106,6 +109,7 @@ class ScannerStats:
     api_requests_start: int = 0
     api_requests_end: int = 0
     failed_repos: list[str] = field(default_factory=list)
+    skipped_repos: list[str] = field(default_factory=list)
     rate_limit_warning: bool = False
     finding_keys: set = field(default_factory=set)
     scanned_repos: set[str] = field(default_factory=set)
@@ -116,6 +120,13 @@ class ScannerStats:
     @property
     def api_requests_used(self) -> int:
         return self.api_requests_start - self.api_requests_end
+
+
+class _RepoTreeUnavailable(Exception):
+    """Raised by _scan_repo when a repo's file tree can't be fetched at all,
+    so the caller can distinguish "skipped entirely" from "scanned but
+    genuinely has no manifests" — both previously looked identical (an empty
+    package list) and the failure was only ever logged at DEBUG."""
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +214,15 @@ def run(
             logger.warning("Rate limit exceeded mid-scan — stopping early")
             stats.rate_limit_warning = True
             break
+        except _RepoTreeUnavailable as exc:
+            logger.warning("Could not get file tree for %s — skipping: %s", repo.full_name, exc)
+            stats.skipped_repos.append(repo.full_name)
         except GithubException as exc:
             logger.warning("Failed to scan %s: %s", repo.full_name, exc)
             stats.failed_repos.append(repo.full_name)
         except Exception as exc:
             logger.exception("Unexpected error scanning %s: %s", repo.full_name, exc)
+            stats.failed_repos.append(repo.full_name)
         if on_progress:
             on_progress(stats.repos_scanned, total_repos)
 
@@ -254,29 +269,34 @@ def run(
 
 
 def _scan_repo(repo) -> list[Package]:
-    """Return all packages found in dependency manifests for one repo."""
+    """Return all packages found in dependency manifests for one repo.
+
+    Raises _RepoTreeUnavailable if the repo's tree itself can't be fetched
+    (e.g. an empty repo or a token-permission gap), so the caller can tell
+    that apart from a repo that was scanned but genuinely has no manifests.
+    """
     packages: list[Package] = []
 
     try:
         # One API call to get the full file tree
         tree = repo.get_git_tree(repo.default_branch or "HEAD", recursive=True)
-    except GithubException:
-        logger.debug("Could not get tree for %s — skipping", repo.full_name)
-        return packages
+    except GithubException as exc:
+        raise _RepoTreeUnavailable(str(exc)) from exc
 
-    manifest_paths: list[tuple[str, str]] = []  # (path, ecosystem)
-    workflow_paths: list[str] = []
+    manifest_paths: list[tuple[str, str, str, int]] = []  # (path, ecosystem, sha, size)
+    workflow_paths: list[tuple[str, str, int]] = []  # (path, sha, size)
 
     for element in tree.tree:
         if element.type != "blob":
             continue
         path: str = element.path
         filename = path.rsplit("/", 1)[-1]
+        size = element.size or 0
 
         if filename in _MANIFEST_FILENAMES:
-            manifest_paths.append((path, _MANIFEST_FILENAMES[filename]))
+            manifest_paths.append((path, _MANIFEST_FILENAMES[filename], element.sha, size))
         elif path.startswith(".github/workflows/") and path.endswith((".yml", ".yaml")):
-            workflow_paths.append(path)
+            workflow_paths.append((path, element.sha, size))
 
     # Prefer lock files over loose manifests (exact pinned versions are more reliable)
     for lockfile, loose in (
@@ -284,29 +304,65 @@ def _scan_repo(repo) -> list[Package]:
         ("Cargo.lock", "Cargo.toml"),
         ("Gemfile.lock", "Gemfile"),
     ):
-        if any(p.endswith(lockfile) for p, _ in manifest_paths):
-            manifest_paths = [(p, e) for p, e in manifest_paths if not p.endswith(loose)]
+        if any(p.endswith(lockfile) for p, _, _, _ in manifest_paths):
+            manifest_paths = [
+                (p, e, sha, sz) for p, e, sha, sz in manifest_paths if not p.endswith(loose)
+            ]
 
     all_paths = manifest_paths[:_MAX_MANIFESTS_PER_REPO]
-    all_paths += [(p, "Actions") for p in workflow_paths[:5]]  # limit workflow files
+    all_paths += [(p, "Actions", sha, sz) for p, sha, sz in workflow_paths[:5]]
 
     if tree.truncated:
         logger.debug("%s: file tree truncated — may miss some manifests", repo.full_name)
 
-    for path, ecosystem in all_paths:
+    for path, ecosystem, sha, size in all_paths:
         try:
-            content_obj = repo.get_contents(path)
-            raw = content_obj.decoded_content.decode("utf-8", errors="replace")
+            raw = _fetch_manifest_content(repo, path, sha, size)
+            if raw is None:
+                continue
             parsed = _parse_manifest(path, raw, ecosystem)
             for pkg in parsed:
                 pkg.repo_full_name = repo.full_name
             packages.extend(parsed)
         except GithubException as exc:
-            logger.debug("Could not fetch %s/%s: %s", repo.full_name, path, exc)
+            logger.warning("Could not fetch %s/%s: %s", repo.full_name, path, exc)
         except Exception as exc:
-            logger.debug("Error parsing %s/%s: %s", repo.full_name, path, exc)
+            logger.warning("Error parsing %s/%s: %s", repo.full_name, path, exc)
 
     return packages
+
+
+def _fetch_manifest_content(repo, path: str, sha: str, size: int) -> str | None:
+    """Fetch a manifest file's text content.
+
+    The Contents API silently returns encoding="none" with empty content for
+    blobs over ~1 MB — previously this tripped an assertion deep in PyGithub
+    that was swallowed by a blanket except, so large package-lock.json /
+    Gemfile.lock files (exactly the highest-value manifests) yielded zero
+    packages with nothing but a DEBUG log line. Route anything over that
+    threshold through the Git Blobs API instead, which serves up to 100 MB.
+    """
+    if size > _MAX_MANIFEST_BYTES:
+        logger.warning(
+            "%s: %s is %d bytes — skipping (exceeds %d byte sanity cap)",
+            repo.full_name,
+            path,
+            size,
+            _MAX_MANIFEST_BYTES,
+        )
+        return None
+
+    if size > _CONTENTS_API_SIZE_LIMIT:
+        blob = repo.get_git_blob(sha)
+        return base64.b64decode(blob.content).decode("utf-8", errors="replace")
+
+    content_obj = repo.get_contents(path)
+    if isinstance(content_obj, list):
+        # A directory landed at this path — shouldn't happen for a blob from
+        # the tree walk, but the Contents API can still surprise us.
+        logger.warning("%s: %s resolved to a directory, not a file", repo.full_name, path)
+        return None
+    return content_obj.decoded_content.decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------

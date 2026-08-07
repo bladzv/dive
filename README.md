@@ -31,7 +31,7 @@ A self-hosted security intelligence tool that runs on a Raspberry Pi (or any Lin
 
 - **Docker** and **Docker Compose** (V2)
 - A machine with at least **4 GB RAM** (8 GB recommended for larger models)
-- A **GitHub fine-grained PAT** with *Contents: Read-only* and *Metadata: Read-only* scopes
+- A **GitHub fine-grained PAT** with *Contents: Read-only* and *Metadata: Read-only* scopes, and **repository access explicitly covering every private repo you want scanned** (fine-grained tokens only enumerate repos they've been granted access to — leaving a private repo unselected means it's silently skipped by both the dependency and secrets scanners). A classic PAT with the `repo` scope also works.
 - Internet access for the first model pull (~2 GB); subsequent runs work fully offline
 - `gitleaks` v8.18.4 — included automatically in the Docker image (multi-arch: amd64, arm64, armv7)
 

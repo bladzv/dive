@@ -72,7 +72,12 @@ def run(
 
     gh = Github(config.github.token)
     try:
-        repos = list(gh.get_user(config.github.username).get_repos())
+        # gh.get_user() with NO argument returns the AuthenticatedUser, whose
+        # get_repos() hits GET /user/repos (public + private). Passing the
+        # username instead returns a NamedUser, whose get_repos() hits
+        # GET /users/{username}/repos — public repos only, even with a valid
+        # token. type="all" matches github_scanner.py's repo listing.
+        repos = list(gh.get_user().get_repos(type="all"))
     except GithubException as exc:
         logger.error("Failed to list repos for secrets scan: %s", exc)
         return stats

@@ -246,6 +246,29 @@ def test_run_returns_stats_on_success(in_memory_db):
     assert stats.gitleaks_missing is False
 
 
+def test_run_lists_repos_via_authenticated_user_not_named_user(in_memory_db):
+    """Regression test: gh.get_user(username) (NamedUser) only returns public
+    repos even with a valid token. Must call gh.get_user() with NO arguments
+    (AuthenticatedUser → GET /user/repos) and pass type="all", matching
+    github_scanner.py's repo listing — otherwise private repos are silently
+    skipped by the secrets scanner while still being covered by the
+    dependency scanner, which is the more dangerous direction to get wrong.
+    """
+    config = _make_config()
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = []
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        ss.run(in_memory_db, config)
+
+    MockGithub.return_value.get_user.assert_called_once_with()
+    mock_gh_user.get_repos.assert_called_once_with(type="all")
+
+
 def test_run_records_failed_repo(in_memory_db):
     config = _make_config()
 

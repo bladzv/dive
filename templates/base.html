@@ -742,6 +742,7 @@ function updatePipelineDrawer(stepDefs, pipeline) {
       if (bits.length) subHtml += `<div class="drawer-step-sub">${bits.join(' · ')}</div>`;
       subHtml += failedList(stats.failed_sources, 'source');
       subHtml += failedList(stats.failed_repos,   'repo');
+      subHtml += failedList(stats.skipped_repos,  'skipped repo');
     }
 
     const durHtml = dur ? `<span class="drawer-step-dur">${dur}</span>` : '';

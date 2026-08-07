@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 import dive.db as db
+import dive.github_scanner as gs
 from dive.config import AppConfig, DashboardConfig, GitHubConfig
 from dive.github_scanner import (
     _LATEST_VERSION_REGISTRIES,
@@ -43,6 +44,7 @@ from dive.github_scanner import (
     _parse_requirements_txt,
     _priority_score,
     _query_and_store_batch,
+    _RepoTreeUnavailable,
     _store_osv_finding,
 )
 
@@ -578,6 +580,161 @@ def test_upsert_kev_entries_uppercases_cve_id(db_conn):
     db.upsert_kev_entries(db_conn, [("cve-2024-2222", None)])
     kev_ids = db.get_kev_cve_ids(db_conn)
     assert "CVE-2024-2222" in kev_ids
+
+
+# ---------------------------------------------------------------------------
+# run() — repo listing must cover private repos
+# ---------------------------------------------------------------------------
+
+
+def test_run_lists_repos_via_authenticated_user_with_type_all(db_conn):
+    """gs.run() must list repos via the AuthenticatedUser (GET /user/repos,
+    type="all") so private repos are included — this is the behaviour
+    secrets_scanner.py was missing (it called gh.get_user(username), a
+    NamedUser, which only returns public repos). Locking this in here so the
+    dependency scanner can't regress to the same bug.
+    """
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = []
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        gs.run(db_conn, config)
+
+    MockGithub.return_value.get_user.assert_called_once_with()
+    mock_user.get_repos.assert_called_once_with(type="all")
+
+
+# ---------------------------------------------------------------------------
+# run() / _scan_repo — skipped vs. failed repos must be visible, not silent
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_manifest_content_uses_contents_api_for_small_file():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_content = MagicMock()
+    mock_content.decoded_content = b'{"name": "pkg"}'
+    mock_repo.get_contents.return_value = mock_content
+
+    raw = gs._fetch_manifest_content(mock_repo, "package.json", "sha123", 500)
+
+    assert raw == '{"name": "pkg"}'
+    mock_repo.get_contents.assert_called_once_with("package.json")
+    mock_repo.get_git_blob.assert_not_called()
+
+
+def test_fetch_manifest_content_uses_blob_api_above_contents_size_limit():
+    """Regression test: files over ~1MB return encoding="none" from the
+    Contents API and previously yielded zero packages with only a DEBUG log.
+    """
+    import base64
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_blob = MagicMock()
+    mock_blob.content = base64.b64encode(b'{"name": "big-pkg"}').decode()
+    mock_repo.get_git_blob.return_value = mock_blob
+
+    raw = gs._fetch_manifest_content(mock_repo, "package-lock.json", "sha456", 2_000_000)
+
+    assert raw == '{"name": "big-pkg"}'
+    mock_repo.get_git_blob.assert_called_once_with("sha456")
+    mock_repo.get_contents.assert_not_called()
+
+
+def test_fetch_manifest_content_skips_absurdly_large_file():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+
+    raw = gs._fetch_manifest_content(mock_repo, "huge.json", "sha789", 50_000_000)
+
+    assert raw is None
+    mock_repo.get_git_blob.assert_not_called()
+    mock_repo.get_contents.assert_not_called()
+
+
+def test_fetch_manifest_content_handles_directory_response():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_repo.get_contents.return_value = [MagicMock(), MagicMock()]
+
+    raw = gs._fetch_manifest_content(mock_repo, "some/path", "sha000", 100)
+
+    assert raw is None
+
+
+def test_scan_repo_raises_when_tree_unavailable():
+    from github import GithubException
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/no-tree"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = GithubException(404, "Not Found", None)
+
+    with pytest.raises(_RepoTreeUnavailable):
+        gs._scan_repo(mock_repo)
+
+
+def test_run_records_repo_in_skipped_repos_when_tree_unavailable(db_conn):
+    from unittest.mock import patch
+
+    from github import GithubException
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/no-tree"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = GithubException(404, "Not Found", None)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [mock_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert stats.skipped_repos == ["user/no-tree"]
+    assert stats.failed_repos == []
+    assert stats.repos_scanned == 0
+
+
+def test_run_records_repo_in_failed_repos_on_unexpected_error(db_conn):
+    """Previously a bare Exception during a repo scan was logged but counted
+    in neither failed_repos nor repos_scanned — a silent gap where a repo
+    just vanished from the run's accounting."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/weird"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = RuntimeError("boom")
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [mock_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert "user/weird" in stats.failed_repos
+    assert stats.repos_scanned == 0
 
 
 # ---------------------------------------------------------------------------

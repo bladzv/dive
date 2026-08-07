@@ -518,6 +518,8 @@ def _run_pipeline() -> None:
                     )
                     if scan_stats.failed_repos:
                         logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
+                    if scan_stats.skipped_repos:
+                        logger.warning("Scanner skipped repos: %s", scan_stats.skipped_repos)
                 _finish_step("scan")
                 _set_step_stats(
                     "scan",
@@ -525,6 +527,7 @@ def _run_pipeline() -> None:
                     packages_checked=scan_stats.packages_checked,
                     findings_new=scan_stats.findings_new or None,
                     failed_repos=scan_stats.failed_repos or None,
+                    skipped_repos=scan_stats.skipped_repos or None,
                 )
             except Exception as exc:
                 logger.error("Scanner failed: %s", exc, exc_info=True)

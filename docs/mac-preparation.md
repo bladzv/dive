@@ -35,7 +35,7 @@ This guide uses a **fine-grained PAT**, which lets you grant the minimum permiss
 6. In the **Token name** field, type: `dive`
 7. Set **Expiration** to **90 days** (or choose a shorter period — you will need to regenerate it when it expires, and update `config.yaml` with the new token)
 8. Under **Resource owner**, select your personal account
-9. Under **Repository access**, select **All repositories** *(or choose specific repos if you prefer to limit scope)*
+9. Under **Repository access**, select **All repositories** *(or choose specific repos if you prefer to limit scope — but note that a fine-grained token only ever sees repos it's been granted access to, so any private repo left unselected here is invisible to DIVE and silently skipped by both the dependency scanner and the secrets scanner)*
 10. Under **Permissions → Repository permissions**, set exactly these:
     - **Contents** → **Read-only** — allows reading dependency files and code
     - **Metadata** → **Read-only** — allows listing repositories *(auto-selected, required)*

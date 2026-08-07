@@ -49,6 +49,7 @@ class _FakeScannerStats:
     repos_scanned: int = 0
     packages_checked: int = 0
     failed_repos: list = field(default_factory=list)
+    skipped_repos: list = field(default_factory=list)
 
 
 @dataclass

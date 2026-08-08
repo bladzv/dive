@@ -2487,7 +2487,7 @@ html.sidebar-collapsed .page-footer {
   font-family: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  transition: background 0.12s, border-color 0.12s, color 0.12s,
+  transition: background 0.35s, border-color 0.35s, color 0.35s,
               transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
               box-shadow 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -2497,6 +2497,40 @@ html.sidebar-collapsed .page-footer {
   box-shadow: 0 6px 0 -2px color-mix(in srgb, var(--text-bright) 30%, transparent);
 }
 .btn-run:active:not(:disabled) { transform: translateY(0); }
+
+/* State pill: RUN stays mounted for the whole pipeline run instead of
+   being swapped out for Pause/Cancel, so its data-state actually tracks
+   the run (idle → loading while running → success/error flash → idle).
+   .run-icon is a fixed 12px box so swapping between the play glyph, the
+   spinner ring, and the checkmark never reflows the pill. */
+.btn-run .run-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+.btn-run[data-state="loading"] .run-icon svg { display: none; }
+.btn-run[data-state="loading"] .run-icon::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: btn-spin 0.6s linear infinite;
+}
+/* .btn:disabled sets opacity: 0.5 — too dim for a pill that stays on
+   screen for the entire run; this rule shares its specificity and comes
+   later, so it wins. */
+.btn-run[data-state="loading"] { opacity: 0.75; }
+.btn-run[data-state="success"],
+.btn-run[data-state="error"] {
+  opacity: 1;
+  color: var(--text-on-accent);
+}
+.btn-run[data-state="success"] { background: var(--success); border-color: var(--success); }
+.btn-run[data-state="error"] { background: var(--error); border-color: var(--error); }
 
 /* Mobile pipeline status button — hidden on desktop, shown on small screens */
 .btn-pipeline-mobile {

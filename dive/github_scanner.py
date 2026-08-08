@@ -205,15 +205,13 @@ def run(
     if stats.token_permission_warning:
         logger.warning(stats.token_permission_warning)
 
-    total_repos = len(repos)
-    logger.info("Scanning %d repositories", total_repos)
+    scannable = [r for r in repos if r.full_name not in _excluded]
+    total_repos = len(scannable)
+    logger.info("Scanning %d repositories (%d excluded)", total_repos, len(repos) - total_repos)
     if on_progress:
         on_progress(0, total_repos)
 
-    for repo in repos:
-        if repo.full_name in _excluded:
-            logger.debug("Skipping excluded repo: %s", repo.full_name)
-            continue
+    for repo in scannable:
         # Check rate limit before each repo
         try:
             remaining, limit = g.rate_limiting
@@ -225,7 +223,7 @@ def run(
                     remaining,
                     limit,
                     stats.repos_scanned,
-                    len(repos),
+                    total_repos,
                 )
                 stats.rate_limit_warning = True
                 break
@@ -251,7 +249,10 @@ def run(
             logger.exception("Unexpected error scanning %s: %s", repo.full_name, exc)
             stats.failed_repos.append(repo.full_name)
         if on_progress:
-            on_progress(stats.repos_scanned, total_repos)
+            on_progress(
+                stats.repos_scanned + len(stats.failed_repos) + len(stats.skipped_repos),
+                total_repos,
+            )
 
     # Record rate limit at end
     try:

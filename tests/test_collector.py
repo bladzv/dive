@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 import dive.db as db
-from dive.collector import CollectorStats, _fetch_github_advisories, _fetch_nvd, _safe_get
+from dive.collector import CollectorStats, _fetch_github_advisories, _fetch_nvd, _safe_get, run
 
 
 def _response(status_code=200, content=b"ok"):
@@ -324,3 +324,84 @@ def test_fetch_github_advisories_respects_page_cap(mock_safe_get, tmp_db):
     from dive.collector import _GHSA_MAX_PAGES
 
     assert mock_safe_get.call_count == _GHSA_MAX_PAGES
+
+
+# ---------------------------------------------------------------------------
+# run() — progress reporting
+#
+# Regression coverage for a bug where on_progress(n, n) was called on every
+# tick — the drawer's denominator grew in lockstep with the numerator
+# (rendering as "1/1, 2/2, 3/3...") instead of reporting a fixed total known
+# up front (RSS feed count + 3 for NVD/KEV/GHSA).
+# ---------------------------------------------------------------------------
+
+
+def _run_rss_stub(client, conn, stats, feeds=None, on_source_done=None):
+    """Stand-in for _run_rss: just fire the per-feed tick, no network I/O."""
+    for _ in feeds or []:
+        if on_source_done:
+            on_source_done()
+
+
+@patch("dive.collector._run_github_advisories")
+@patch("dive.collector._run_kev")
+@patch("dive.collector._run_nvd")
+@patch("dive.collector._run_rss", side_effect=_run_rss_stub)
+@patch("dive.collector.settings_module.get_enabled_feeds")
+def test_run_reports_constant_total_across_all_progress_calls(
+    mock_get_feeds, mock_run_rss, mock_nvd, mock_kev, mock_ghsa, tmp_db
+):
+    mock_get_feeds.return_value = [MagicMock() for _ in range(5)]
+    config = MagicMock()
+
+    calls = []
+
+    with db.get_conn(tmp_db) as conn:
+        run(conn, config, on_progress=lambda d, t: calls.append((d, t)))
+
+    totals = {t for _, t in calls}
+    assert len(totals) == 1, f"total must be constant across ticks, got {calls}"
+    assert totals.pop() == 5 + 3  # 5 feeds + NVD + KEV + GHSA
+
+
+@patch("dive.collector._run_github_advisories")
+@patch("dive.collector._run_kev")
+@patch("dive.collector._run_nvd")
+@patch("dive.collector._run_rss", side_effect=_run_rss_stub)
+@patch("dive.collector.settings_module.get_enabled_feeds")
+def test_run_primes_progress_with_zero_done_before_first_source(
+    mock_get_feeds, mock_run_rss, mock_nvd, mock_kev, mock_ghsa, tmp_db
+):
+    mock_get_feeds.return_value = [MagicMock() for _ in range(2)]
+    config = MagicMock()
+
+    calls = []
+
+    with db.get_conn(tmp_db) as conn:
+        run(conn, config, on_progress=lambda d, t: calls.append((d, t)))
+
+    assert calls[0] == (0, 2 + 3)
+
+
+@patch("dive.collector._run_github_advisories")
+@patch("dive.collector._run_kev")
+@patch("dive.collector._run_nvd")
+@patch("dive.collector._run_rss", side_effect=_run_rss_stub)
+@patch(
+    "dive.collector.settings_module.get_enabled_feeds",
+    side_effect=RuntimeError("db unavailable"),
+)
+def test_run_falls_back_to_no_feeds_if_feed_lookup_fails(
+    mock_get_feeds, mock_run_rss, mock_nvd, mock_kev, mock_ghsa, tmp_db
+):
+    """A failure loading the feed list must not abort the whole collector —
+    it must proceed with an empty feed list (and thus a total of 3)."""
+    config = MagicMock()
+
+    calls = []
+
+    with db.get_conn(tmp_db) as conn:
+        stats = run(conn, config, on_progress=lambda d, t: calls.append((d, t)))
+
+    assert stats is not None
+    assert {t for _, t in calls} == {3}

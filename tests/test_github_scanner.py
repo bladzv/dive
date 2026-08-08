@@ -899,6 +899,83 @@ def test_run_records_repo_in_failed_repos_on_unexpected_error(db_conn):
     assert stats.repos_scanned == 0
 
 
+def test_run_progress_total_excludes_excluded_repos(db_conn):
+    """total_repos previously counted excluded repos too, so with any
+    exclusions configured the progress bar stalled short of 100%."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+
+    repos = []
+    for name in ("user/keep-a", "user/excluded", "user/keep-b"):
+        repo = MagicMock()
+        repo.full_name = name
+        repo.default_branch = "main"
+        tree = MagicMock()
+        tree.truncated = False
+        tree.tree = []
+        repo.get_git_tree.return_value = tree
+        repos.append(repo)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = repos
+
+    calls = []
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(
+            db_conn,
+            config,
+            excluded_repos=["user/excluded"],
+            on_progress=lambda d, t: calls.append((d, t)),
+        )
+
+    totals = {t for _, t in calls}
+    assert totals == {2}
+    assert calls[0] == (0, 2)
+    assert calls[-1] == (2, 2)
+    assert stats.repos_scanned == 2
+
+
+def test_run_progress_reaches_total_even_with_a_failed_repo(db_conn):
+    """A repo that fails (or is skipped) must still count toward `done` so the
+    bar reaches 100% instead of stalling on a run with any failures."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+
+    good_repo = MagicMock()
+    good_repo.full_name = "user/good"
+    good_repo.default_branch = "main"
+    good_tree = MagicMock()
+    good_tree.truncated = False
+    good_tree.tree = []
+    good_repo.get_git_tree.return_value = good_tree
+
+    bad_repo = MagicMock()
+    bad_repo.full_name = "user/bad"
+    bad_repo.default_branch = "main"
+    bad_repo.get_git_tree.side_effect = RuntimeError("boom")
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [good_repo, bad_repo]
+
+    calls = []
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        gs.run(db_conn, config, on_progress=lambda d, t: calls.append((d, t)))
+
+    assert calls[-1] == (2, 2)
+
+
 # ---------------------------------------------------------------------------
 # _parse_go_mod
 # ---------------------------------------------------------------------------

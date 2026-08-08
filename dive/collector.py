@@ -108,15 +108,24 @@ def run(
     stats = CollectorStats()
     _sources_done = 0
 
+    try:
+        feeds = settings_module.get_enabled_feeds(conn)
+    except Exception:
+        logger.exception("Failed to load enabled feeds — proceeding with none")
+        feeds = []
+    total_sources = len(feeds) + 3  # RSS feeds + NVD + KEV + GHSA
+
     def _tick() -> None:
         nonlocal _sources_done
         _sources_done += 1
         if on_progress:
-            # total = RSS feeds + NVD + KEV + GHSA (4 source groups; RSS expands later)
-            on_progress(_sources_done, _sources_done)  # indeterminate total
+            on_progress(_sources_done, total_sources)
+
+    if on_progress:
+        on_progress(0, total_sources)
 
     with _make_client() as client:
-        _run_rss(client, conn, stats, on_source_done=_tick)
+        _run_rss(client, conn, stats, feeds=feeds, on_source_done=_tick)
         _run_nvd(client, conn, config, stats)
         _tick()
         _run_kev(client, conn, stats)
@@ -246,9 +255,11 @@ def _run_rss(
     client: httpx.Client,
     conn: sqlite3.Connection,
     stats: CollectorStats,
+    feeds: list | None = None,
     on_source_done: Callable[[], None] | None = None,
 ) -> None:
-    feeds = settings_module.get_enabled_feeds(conn)
+    if feeds is None:
+        feeds = settings_module.get_enabled_feeds(conn)
     for feed_row in feeds:
         name, url = feed_row["name"], feed_row["url"]
         try:

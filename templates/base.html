@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="run-token" content="{{ run_token }}">
   <title>{% block title %}DIVE{% endblock %}</title>
-  <link rel="preconnect" href="https://rsms.me/">
-  <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="/static/fonts/inter-latin-400-normal.woff2">
   <link rel="stylesheet" href="/static/style.css">
   <script>
     /* Apply saved theme + sidebar state before first paint */
@@ -115,12 +114,12 @@
     <div class="topbar-title">{% block topbar_title %}{{ self.title()|replace(' — DIVE','') }}{% endblock %}</div>
     <div class="topbar-spacer"></div>
 
-    <span class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
-          onclick="openPipelineDrawer()">
+    <button type="button" class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
+            onclick="openPipelineDrawer()">
       <span class="status-dot idle" id="status-dot"></span>
       <span class="topbar-meta-label">Last run</span>
       <strong id="status-text">—</strong>
-    </span>
+    </button>
 
     <span class="topbar-meta optional" title="Scheduled next run">
       <svg><use href="#i-clock"/></svg>
@@ -141,12 +140,12 @@
       <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">
         <svg id="theme-icon"><use href="#i-sun"/></svg>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl" id="pause-btn"
-              onclick="togglePause()" style="display:none" title="Pause / resume pipeline">
+      <button class="btn btn-outline btn-sm pipeline-ctl is-hidden" id="pause-btn"
+              onclick="togglePause()" title="Pause / resume pipeline">
         <span id="pause-btn-label">Pause</span>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel"
-              id="cancel-btn" onclick="cancelRun()" style="display:none" title="Cancel pipeline run">
+      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel is-hidden"
+              id="cancel-btn" onclick="cancelRun()" title="Cancel pipeline run">
         Cancel
       </button>
       <button class="btn-pipeline-mobile" id="pipeline-status-mobile"
@@ -161,7 +160,7 @@
   </header>
 
   <!-- ── Pipeline progress drawer ── -->
-  <aside class="pipeline-drawer" id="pipeline-drawer" aria-hidden="true" aria-label="Pipeline progress">
+  <aside class="pipeline-drawer" id="pipeline-drawer" aria-hidden="true" inert aria-label="Pipeline progress">
     <div class="drawer-header">
       <h3 class="drawer-title">Pipeline</h3>
       <span class="drawer-state" id="drawer-state"></span>
@@ -236,32 +235,32 @@
   </section>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <div class="modal-backdrop" id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="logout-modal-title">Sign out?</h2>
     <p>You'll need to enter your credentials again to access DIVE.</p>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="document.getElementById('logout-modal').classList.remove('open')">Cancel</button>
+      <button class="btn btn-outline" onclick="DIVE.closeModal('logout-modal')">Cancel</button>
       <button class="btn btn-danger" onclick="window.location='/logout'">Sign out</button>
     </div>
   </div>
 </div>
 
 <div class="modal-backdrop" id="cancel-run-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-run-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="cancel-run-modal-title">Cancel running pipeline?</h2>
     <p>The pipeline will stop at the next step boundary.</p>
     <div class="modal-actions">
-      <button class="btn btn-outline" onclick="document.getElementById('cancel-run-modal').classList.remove('open')">Keep running</button>
+      <button class="btn btn-outline" onclick="DIVE.closeModal('cancel-run-modal')">Keep running</button>
       <button class="btn btn-danger" onclick="_confirmCancelRun()">Cancel run</button>
     </div>
   </div>
 </div>
 
 <div class="modal-backdrop" id="unsaved-modal" role="dialog" aria-modal="true" aria-labelledby="unsaved-modal-title">
-  <div class="modal-panel">
+  <div class="modal-panel" tabindex="-1">
     <h2 id="unsaved-modal-title">Unsaved changes</h2>
     <p>You have unsaved changes on this page. Save them before leaving?</p>
     <div class="modal-actions">
@@ -272,24 +271,19 @@
   </div>
 </div>
 
+<script src="/static/app.js"></script>
 <script id="dive-base-js">
 /* ── Sign-out confirmation ───────────────────────────── */
 function confirmSignOut(event) {
   event.preventDefault();
-  document.getElementById('logout-modal').classList.add('open');
+  DIVE.openModal('logout-modal');
 }
 
-/* Generic modal dismissal — applies to logout, cancel-run, and unsaved-changes
-   modals alike: click the backdrop or press Escape to close. */
-document.querySelectorAll('.modal-backdrop').forEach(function(modal) {
-  modal.addEventListener('click', function(e) {
-    if (e.target === modal) modal.classList.remove('open');
-  });
-});
-
+/* Backdrop-click/Escape dismissal and the focus trap/restore for every
+   .modal-backdrop (logout, cancel-run, unsaved-changes, and any modal a
+   page opens via DIVE.openModal) are wired once in static/app.js. */
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Escape') return;
-  document.querySelectorAll('.modal-backdrop.open').forEach(m => m.classList.remove('open'));
   const drawer = document.getElementById('pipeline-drawer');
   if (drawer && drawer.classList.contains('open')) closePipelineDrawer();
 });
@@ -306,6 +300,10 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   localStorage.setItem('theme', next);
   _applyTheme(next);
+  // Anything with colours baked into a canvas (Chart.js) or otherwise
+  // computed once at render time — rather than left as live CSS var()
+  // references — needs to know to redraw. history.html listens for this.
+  document.dispatchEvent(new CustomEvent('dive:themechange', { detail: { theme: next } }));
 }
 
 _applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
@@ -344,40 +342,8 @@ function toggleSidebar() {
 _applySidebarIcon();
 
 /* ── Shared helpers ──────────────────────────────────── */
-const RUN_TOKEN = document.querySelector('meta[name="run-token"]').content;
-
-function apiFetch(url, options = {}) {
-  const method = (options.method || 'GET').toUpperCase();
-  const headers = Object.assign({}, options.headers);
-  if (method !== 'GET' && method !== 'HEAD') {
-    headers['X-Run-Token'] = RUN_TOKEN;
-  }
-  return fetch(url, Object.assign({ credentials: 'same-origin' }, options, { headers }));
-}
-
-function showToast(msg, type = 'info') {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'show toast-' + type;
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => { t.className = ''; }, 3500);
-}
-
-function timeAgo(iso) {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60)    return 'just now';
-  if (diff < 3600)  return Math.floor(diff / 60)   + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
-}
-
-function timeUntil(iso) {
-  const diff = (new Date(iso).getTime() - Date.now()) / 1000;
-  if (diff <= 0)     return 'soon';
-  if (diff < 3600)   return Math.ceil(diff / 60)   + 'm';
-  if (diff < 86400)  return Math.floor(diff / 3600) + 'h';
-  return Math.floor(diff / 86400) + 'd';
-}
+/* apiFetch, showToast, timeAgo, timeUntil, escapeHtml now live in
+   static/app.js as DIVE.<fn> — loaded above, before this script. */
 
 /* ── Pipeline status polling ─────────────────────────── */
 function updateStatusBadge(pipeline) {
@@ -397,7 +363,7 @@ function updateStatusBadge(pipeline) {
     btn.disabled = true;
   } else if (pipeline.last_status === 'success') {
     setDot('success');
-    text.textContent = pipeline.last_completed ? timeAgo(pipeline.last_completed) : '—';
+    text.textContent = pipeline.last_completed ? DIVE.timeAgo(pipeline.last_completed) : '—';
     btn.disabled = false;
   } else if (pipeline.last_status === 'error') {
     setDot('error');
@@ -476,25 +442,46 @@ function fallbackCopy(text, done) {
 
 window.copyCodeBlock = copyCodeBlock;
 
-/* Escape a value for safe interpolation into innerHTML. */
-function escapeHtml(value) {
-  const div = document.createElement('div');
-  div.textContent = value == null ? '' : String(value);
-  return div.innerHTML;
+/* Poll cadence: _pollDelay is the "normal" interval (dropped to 2s for a
+   minute after the operator triggers a run, see triggerRun()). On a failed
+   request it backs off exponentially up to POLL_MAX_DELAY instead of
+   hammering a backend that's already down, and shows a "Disconnected"
+   state after a couple of consecutive misses rather than silently freezing
+   on the last known value. Polling pauses entirely while the tab is
+   hidden and resumes (with an immediate poll) when it becomes visible. */
+const POLL_BASE_DELAY = 5000;
+const POLL_MAX_DELAY = 60000;
+let _pollDelay = POLL_BASE_DELAY;
+let _pollFailures = 0;
+let _pollInFlight = false;
+
+function _setDisconnected(isDisconnected) {
+  const text = document.getElementById('status-text');
+  const dot = document.getElementById('status-dot');
+  const dotMob = document.getElementById('status-dot-mobile');
+  if (isDisconnected) {
+    if (dot) dot.className = 'status-dot offline';
+    if (dotMob) dotMob.className = 'status-dot offline';
+    if (text) text.textContent = 'Disconnected';
+  }
+  // Recovery just lets the next successful poll's updateStatusBadge()
+  // overwrite the dot/text with the real pipeline state — nothing to do here.
 }
 
 function pollStatus() {
+  if (document.hidden || _pollInFlight) return;
+  _pollInFlight = true;
   refreshNavBadges();
-  fetch('/api/health')
-    .then(r => r.ok ? r.json() : null)
+  fetch('/api/status')
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
     .then(data => {
-      if (!data) return;  // transient non-200 — keep last known state, retry next tick
+      _pollFailures = 0;
       updateStatusBadge(data.pipeline);
       updatePipelineControls(data.pipeline);
-      updatePipelineDrawer(data.pipeline_steps, data.pipeline);
+      updatePipelineDrawer(data.pipeline_steps, data.pipeline, data.log_drops);
 
       const nr = document.getElementById('next-run-text');
-      if (nr) nr.textContent = data.next_run ? timeUntil(data.next_run) : 'unscheduled';
+      if (nr) nr.textContent = data.next_run ? DIVE.timeUntil(data.next_run) : 'unscheduled';
 
       const od = document.getElementById('ollama-dot');
       if (!od) return;
@@ -509,8 +496,23 @@ function pollStatus() {
         if (chip) chip.textContent = 'AI offline';
       }
     })
-    .catch(() => {});
+    .catch(() => {
+      _pollFailures += 1;
+      if (_pollFailures >= 2) _setDisconnected(true);
+    })
+    .finally(() => {
+      _pollInFlight = false;
+      const delay = _pollFailures > 0
+        ? Math.min(POLL_MAX_DELAY, POLL_BASE_DELAY * Math.pow(2, _pollFailures))
+        : _pollDelay;
+      clearTimeout(_pollTimer);
+      _pollTimer = setTimeout(pollStatus, delay);
+    });
 }
+
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) pollStatus();
+});
 
 /* ── Pipeline pause / cancel controls ────────────────── */
 function updatePipelineControls(pipeline) {
@@ -519,42 +521,38 @@ function updatePipelineControls(pipeline) {
   const runBtn = document.getElementById('run-now-btn');
   if (!pauseBtn || !cancelBtn || !runBtn) return;
 
+  pauseBtn.classList.toggle('is-hidden', !pipeline.running);
+  cancelBtn.classList.toggle('is-hidden', !pipeline.running);
+  runBtn.classList.toggle('is-hidden', pipeline.running);
   if (pipeline.running) {
-    pauseBtn.style.display = '';
-    cancelBtn.style.display = '';
-    runBtn.style.display = 'none';
     document.getElementById('pause-btn-label').textContent = pipeline.paused ? 'Resume' : 'Pause';
     pauseBtn.classList.toggle('is-paused', !!pipeline.paused);
-  } else {
-    pauseBtn.style.display = 'none';
-    cancelBtn.style.display = 'none';
-    runBtn.style.display = '';
   }
 }
 
 function togglePause() {
   const label = document.getElementById('pause-btn-label').textContent;
   const wantPause = label === 'Pause';
-  apiFetch('/api/run/pause', {
+  DIVE.apiFetch('/api/run/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pause: wantPause }),
   })
   .then(r => r.json())
-  .then(d => { showToast(wantPause ? 'Pipeline paused' : 'Pipeline resumed', 'info'); })
-  .catch(() => showToast('Pause request failed', 'error'));
+  .then(d => { DIVE.showToast(wantPause ? 'Pipeline paused' : 'Pipeline resumed', 'info'); })
+  .catch(() => DIVE.showToast('Pause request failed', 'error'));
 }
 
 function cancelRun() {
-  document.getElementById('cancel-run-modal').classList.add('open');
+  DIVE.openModal('cancel-run-modal');
 }
 
 function _confirmCancelRun() {
-  document.getElementById('cancel-run-modal').classList.remove('open');
-  apiFetch('/api/run/cancel', { method: 'POST' })
+  DIVE.closeModal('cancel-run-modal');
+  DIVE.apiFetch('/api/run/cancel', { method: 'POST' })
   .then(r => r.json())
-  .then(() => showToast('Cancellation requested', 'info'))
-  .catch(() => showToast('Cancel request failed', 'error'));
+  .then(() => DIVE.showToast('Cancellation requested', 'info'))
+  .catch(() => DIVE.showToast('Cancel request failed', 'error'));
 }
 
 /* ── Unsaved-changes guard ────────────────────────────
@@ -574,19 +572,19 @@ window.setUnsavedChanges = function(isDirty, opts) {
 
 function _openUnsavedModal(pendingNav) {
   _unsavedPendingNav = pendingNav;
-  document.getElementById('unsaved-modal').classList.add('open');
+  DIVE.openModal('unsaved-modal');
 }
 
 function _unsavedModalCancel() {
   _unsavedPendingNav = null;
-  document.getElementById('unsaved-modal').classList.remove('open');
+  DIVE.closeModal('unsaved-modal');
 }
 
 function _unsavedModalDiscard() {
   const nav = _unsavedPendingNav;
   _unsavedPendingNav = null;
   _unsavedDirty = false;
-  document.getElementById('unsaved-modal').classList.remove('open');
+  DIVE.closeModal('unsaved-modal');
   if (nav) nav();
 }
 
@@ -599,7 +597,7 @@ function _unsavedModalSave() {
       const nav = _unsavedPendingNav;
       _unsavedPendingNav = null;
       _unsavedDirty = false;
-      document.getElementById('unsaved-modal').classList.remove('open');
+      DIVE.closeModal('unsaved-modal');
       if (nav) nav();
     })
     // The page's own onSave handler is expected to toast its own error message;
@@ -619,7 +617,8 @@ function openPipelineDrawer() {
   const drawer = document.getElementById('pipeline-drawer');
   if (!drawer) return;
   drawer.classList.add('open');
-  drawer.setAttribute('aria-hidden', 'false');
+  drawer.removeAttribute('aria-hidden');
+  drawer.inert = false;
 }
 
 function closePipelineDrawer() {
@@ -627,6 +626,7 @@ function closePipelineDrawer() {
   if (!drawer) return;
   drawer.classList.remove('open');
   drawer.setAttribute('aria-hidden', 'true');
+  drawer.inert = true;
   _drawerUserClosed = true;
 }
 
@@ -638,7 +638,7 @@ document.addEventListener('click', function(e) {
   }
 });
 
-function updatePipelineDrawer(stepDefs, pipeline) {
+function updatePipelineDrawer(stepDefs, pipeline, logDrops) {
   if (!Array.isArray(stepDefs)) return;
 
   const stateEl   = document.getElementById('drawer-state');
@@ -689,17 +689,30 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
   }
 
-  function failedList(items, label) {
+  function failedList(stepKey, items, label) {
     if (!items || !items.length) return '';
     const noun = items.length === 1 ? label : label + 's';
+    const key = `${stepKey}:${label}`;
+    const isOpen = _drawerExpanded.has(key);
     // Feed/repo names are user-controlled — escape before injecting as HTML.
-    return `<div class="drawer-failed-wrap">
-      <button class="drawer-failed-toggle" onclick="this.closest('.drawer-failed-wrap').classList.toggle('open')">
-        ▸ ${items.length} failed ${noun}
+    return `<div class="drawer-failed-wrap${isOpen ? ' open' : ''}">
+      <button class="drawer-failed-toggle" data-failkey="${key}" aria-expanded="${isOpen}">
+        ${isOpen ? '▾' : '▸'} ${items.length} failed ${noun}
       </button>
-      <ul class="drawer-failed-list">${items.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>
+      <ul class="drawer-failed-list">${items.map(i => `<li>${DIVE.escapeHtml(i)}</li>`).join('')}</ul>
     </div>`;
   }
+
+  // Skip the innerHTML rebuild entirely when nothing that affects it has
+  // changed since the last render — this codebase targets a Raspberry Pi 4,
+  // and idle polling would otherwise rebuild identical DOM every 5s.
+  const _sig = JSON.stringify([
+    pipeline.step_history, pipeline.step_stats, pipeline.step_progress, pipeline.step_times,
+    pipeline.current_step, pipeline.running, pipeline.last_status, pipeline.last_completed,
+    pipeline.last_error, pipeline.run_duration_s, logDrops,
+  ]);
+  if (_sig === _drawerRenderSig) return;
+  _drawerRenderSig = _sig;
 
   stepsList.innerHTML = stepDefs.filter(s => completed[s.key] !== 'skipped' && (completed[s.key] || current === s.key || !Object.keys(completed).length || pipeline.running)).map(s => {
     const status = completed[s.key];
@@ -740,8 +753,12 @@ function updatePipelineDrawer(stepDefs, pipeline) {
       if (stats.alerted != null) bits.push(`${stats.alerted} alerted`);
       if (stats.suppressed != null) bits.push(`${stats.suppressed} suppressed`);
       if (bits.length) subHtml += `<div class="drawer-step-sub">${bits.join(' · ')}</div>`;
-      subHtml += failedList(stats.failed_sources, 'source');
-      subHtml += failedList(stats.failed_repos,   'repo');
+      subHtml += failedList(s.key, stats.failed_sources, 'source');
+      subHtml += failedList(s.key, stats.failed_repos,   'repo');
+      subHtml += failedList(s.key, stats.skipped_repos,  'skipped repo');
+      if (stats.token_permission_warning) {
+        subHtml += `<div class="drawer-step-warn">⚠ ${DIVE.escapeHtml(stats.token_permission_warning)}</div>`;
+      }
     }
 
     const durHtml = dur ? `<span class="drawer-step-dur">${dur}</span>` : '';
@@ -760,13 +777,13 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     let errorHtml = '';
     if (pipeline.last_status === 'error' && pipeline.last_error) {
       errorHtml = `<div class="drawer-error">
-        <div class="drawer-error-msg">${escapeHtml(pipeline.last_error)}</div>
+        <div class="drawer-error-msg">${DIVE.escapeHtml(pipeline.last_error)}</div>
         <a class="drawer-error-link" href="/logs?level=ERROR">View logs →</a>
       </div>`;
     }
     let rows = '';
     if (pipeline.last_completed) {
-      rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${timeAgo(pipeline.last_completed)}</span></div>`;
+      rows += `<div class="drawer-summary-row"><span>Finished</span><span class="drawer-summary-val">${DIVE.timeAgo(pipeline.last_completed)}</span></div>`;
     }
     if (pipeline.run_duration_s != null) {
       rows += `<div class="drawer-summary-row"><span>Total duration</span><span class="drawer-summary-val">${fmtDuration(pipeline.run_duration_s)}</span></div>`;
@@ -779,7 +796,11 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     if (ks.findings_new != null) rows += `<div class="drawer-summary-row"><span>New findings</span><span class="drawer-summary-val">${ks.findings_new}</span></div>`;
     if (ss.secrets_new != null) rows += `<div class="drawer-summary-row"><span>New secrets</span><span class="drawer-summary-val">${ss.secrets_new}</span></div>`;
     if (ls.auto_resolved != null) rows += `<div class="drawer-summary-row"><span>Auto-resolved</span><span class="drawer-summary-val">${ls.auto_resolved}</span></div>`;
-    const content = errorHtml + rows;
+    let dropsHtml = '';
+    if (logDrops) {
+      dropsHtml = `<div class="drawer-step-warn">⚠ ${logDrops} log record(s) dropped — /logs may be incomplete.</div>`;
+    }
+    const content = errorHtml + rows + dropsHtml;
     summaryEl.style.display = content ? '' : 'none';
     summaryEl.innerHTML = content;
   } else {
@@ -789,8 +810,31 @@ function updatePipelineDrawer(stepDefs, pipeline) {
 
 let _drawerUserClosed   = false;  // set when user explicitly closes the drawer
 let _prevPipelineRunning = null;   // null = first poll, then true/false
+let _drawerRenderSig = null;       // signature of last-rendered step list, to skip no-op re-renders
 
-let _pollTimer = setInterval(pollStatus, 5000);
+// "<stepKey>:<label>" of expanded failed-item lists. Lives here instead of on
+// the DOM because updatePipelineDrawer() rebuilds #drawer-steps via innerHTML
+// on every poll (5s idle / 2s during a run), which would otherwise destroy
+// the "open" class the instant a new poll landed.
+const _drawerExpanded = new Set();
+
+// Registered once, here — not inside updatePipelineDrawer() — since that
+// function reruns on every poll and would otherwise stack a new listener
+// each time. #drawer-steps itself is rebuilt via innerHTML each render, but
+// event delegation from its stable parent survives that.
+document.getElementById('drawer-steps') && document.getElementById('drawer-steps').addEventListener('click', function (e) {
+  const btn = e.target.closest('.drawer-failed-toggle');
+  if (!btn) return;
+  const key = btn.dataset.failkey;
+  const wrap = btn.closest('.drawer-failed-wrap');
+  const nowOpen = !wrap.classList.contains('open');
+  wrap.classList.toggle('open', nowOpen);
+  btn.setAttribute('aria-expanded', String(nowOpen));
+  btn.textContent = btn.textContent.replace(/[▸▾]/, nowOpen ? '▾' : '▸');
+  if (nowOpen) _drawerExpanded.add(key); else _drawerExpanded.delete(key);
+});
+
+let _pollTimer = null;
 pollStatus();
 
 /* ── Pjax router ─────────────────────────────────────── */
@@ -895,39 +939,67 @@ pollStatus();
     }
     navigate(location.href);
   });
+
+  /* Re-fetch and swap the current page in place — same mechanism as
+     navigate(), minus the history entry (the URL isn't changing). Used
+     after row-mutating actions (ack/resolve/reopen, mark FP, annotate)
+     instead of location.reload(), which otherwise drops the pjax session
+     and resets scroll to the top on every single click. */
+  async function refreshCurrentPage() {
+    if (busy) return;
+    busy = true;
+    const scrollY = window.scrollY;
+    try {
+      const res = await fetch(currentUrl, { credentials: 'same-origin' });
+      if (!res.ok) { location.reload(); return; }
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const nm = doc.querySelector('.page-main');
+      const cm = document.querySelector('.page-main');
+      if (!nm || !cm) { location.reload(); return; }
+      cm.innerHTML = nm.innerHTML;
+      runPageScripts(doc);
+      window.scrollTo(0, scrollY);
+    } catch (_) {
+      location.reload();
+    } finally {
+      busy = false;
+    }
+  }
+  window.DIVE = window.DIVE || {};
+  DIVE.refreshPage = refreshCurrentPage;
 })();
 
 /* ── Run Now ─────────────────────────────────────────── */
 function triggerRun() {
   const btn = document.getElementById('run-now-btn');
   btn.disabled = true;
-  fetch('/api/run', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'X-Run-Token': RUN_TOKEN }
-  })
+  btn.classList.add('is-loading');
+  DIVE.apiFetch('/api/run', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
     if (data.status === 'started') {
-      showToast('Pipeline started', 'success');
+      DIVE.showToast('Pipeline started', 'success');
       openPipelineDrawer();
-      clearInterval(_pollTimer);
-      _pollTimer = setInterval(pollStatus, 2000);
-      setTimeout(() => {
-        clearInterval(_pollTimer);
-        _pollTimer = setInterval(pollStatus, 5000);
-      }, 60000);
+      _pollDelay = 2000;
+      pollStatus();
+      setTimeout(() => { _pollDelay = POLL_BASE_DELAY; }, 60000);
+      // Left disabled/loading — updatePipelineControls() hides this button
+      // as soon as the next poll confirms the run is underway.
     } else if (data.status === 'already_running') {
-      showToast('Pipeline is already running', 'info');
+      DIVE.showToast('Pipeline is already running', 'info');
       btn.disabled = false;
+      btn.classList.remove('is-loading');
     } else {
-      showToast(data.message || 'Unknown response', 'info');
+      DIVE.showToast(data.message || 'Unknown response', 'info');
       btn.disabled = false;
+      btn.classList.remove('is-loading');
     }
   })
   .catch(() => {
-    showToast('Failed to trigger run', 'error');
+    DIVE.showToast('Failed to trigger run', 'error');
     btn.disabled = false;
+    btn.classList.remove('is-loading');
   });
 }
 </script>

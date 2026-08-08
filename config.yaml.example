@@ -14,10 +14,32 @@
 # GitHub
 # ------------------------------------------------------------------
 github:
-  # Fine-grained Personal Access Token.
-  # Generate at: github.com → Settings → Developer settings → Fine-grained tokens
-  # Required permissions: Contents (Read-only), Metadata (Read-only)
-  # Set a 90-day expiration and rotate before it expires.
+  # Personal Access Token used for BOTH the dependency scanner and the
+  # secrets scanner (which clones repos over HTTPS using this same token).
+  #
+  # Fine-grained token (recommended):
+  #   Generate at: github.com → Settings → Developer settings → Fine-grained tokens
+  #   Required permissions: Contents (Read-only), Metadata (Read-only)
+  #   Repository access: you must explicitly select "All repositories", or
+  #   individually select every private repo you want scanned — a
+  #   fine-grained token only enumerates repos it's been granted access to,
+  #   so private repos left unselected are silently skipped by both scanners.
+  #   Set a 90-day expiration and rotate before it expires.
+  #
+  #   Metadata (Read-only) alone lets both scanners LIST a private repo (its
+  #   name shows up, GET /repos/{full} returns 200) without letting them READ
+  #   it — the file tree and clone both need Contents (Read-only) too. Without
+  #   it, private repos 403 with no explanation; a public-only token will
+  #   look completely fine until it hits the first private repo. DIVE's own
+  #   preflight check (see CLAUDE.md § M12) surfaces this as one warning in
+  #   the pipeline drawer rather than a 403 per private repo.
+  #
+  # Classic token (alternative): needs the `repo` scope for private repo
+  # access (public_repo alone will not see private repos or let the secrets
+  # scanner clone them).
+  #
+  # Either way, both scanners cover public AND private repos owned by this
+  # token's account (not organizations — see docs/setup.md).
   token: ""
 
   # Your GitHub username — used to scope repository listing.
@@ -53,6 +75,8 @@ nvd:
   # Without a key: 5 requests per 30 seconds (slower but functional).
   # With a key:   50 requests per 30 seconds.
   # Leave blank to run without a key.
+  # Sent as the `apiKey` request header (not a query parameter) — the NVD API
+  # returns HTTP 404 on every request if it's passed as a query param instead.
   api_key: ""
 
 # ------------------------------------------------------------------

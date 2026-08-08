@@ -5,6 +5,7 @@
 {% block content %}
 <section class="page-heading">
   <div>
+    <h1 class="sr-only">Vulnerabilities</h1>
     <p class="heading-copy">Prioritised by exploitability, KEV signal, patch availability, and repository ownership.</p>
   </div>
   {# Carry the active filters into the export URL so exports match the view. #}
@@ -29,7 +30,7 @@
   <a href="/findings?state=resolved{{ _r_and }}"       class="btn btn-sm {{ 'btn-primary' if state_filter == 'resolved'     else 'btn-outline' }}">Resolved</a>
 
   {% if repos %}
-  <select onchange="applyRepoFilter(this.value)" style="max-width:220px">
+  <select onchange="applyRepoFilter(this.value)" style="max-width:220px" aria-label="Filter by repository">
     <option value="">All repos</option>
     {% for r in repos %}
     <option value="{{ r }}" {{ 'selected' if repo_filter == r else '' }}>{{ r }}</option>
@@ -46,13 +47,12 @@
   </span>
 </div>
 
-<div id="action-msg" style="display:none;margin-bottom:0.75rem"></div>
 
 <!-- ── Table ────────────────────────────────────────── -->
 {% if findings %}
 <div class="card" style="padding:0;overflow:hidden">
   <div class="table-wrap">
-    <table>
+    <table class="table-stack">
       <thead>
         <tr>
           <th style="width:2rem;padding-right:0">
@@ -63,10 +63,10 @@
           <th>Priority</th>
           <th>Repo</th>
           <th>Package</th>
-          <th title="Version in the repository's manifest">Installed</th>
-          <th title="Vulnerable version range">Affected</th>
-          <th title="First release that includes the patch">Patched</th>
-          <th title="Latest release on the package registry">Latest</th>
+          <th data-tip="Version in the repository's manifest">Installed</th>
+          <th data-tip="Vulnerable version range">Affected</th>
+          <th data-tip="First release that includes the patch">Patched</th>
+          <th data-tip="Latest release on the package registry">Latest</th>
           <th>CVE / GHSA</th>
           <th>Severity</th>
           <th>State</th>
@@ -81,53 +81,52 @@
             title="Open vulnerability page">
 
           <!-- Checkbox -->
-          <td onclick="event.stopPropagation()" style="padding-right:0">
+          <td data-label="Select" onclick="event.stopPropagation()" style="padding-right:0">
             <input type="checkbox" class="row-check" value="{{ f.id }}"
                    onchange="toggleRow({{ f.id }}, this.checked)"
                    style="cursor:pointer">
           </td>
 
           <!-- Priority score -->
-          <td style="font-weight:600;
-            {% if f.priority_score and f.priority_score >= 60 %}color:var(--critical)
-            {% elif f.priority_score and f.priority_score >= 40 %}color:var(--high)
-            {% else %}color:var(--text-dim){% endif %}">
+          <td data-label="Priority" class="priority-score
+            {% if f.priority_score and f.priority_score >= 60 %}is-critical
+            {% elif f.priority_score and f.priority_score >= 40 %}is-high{% endif %}">
             {{ '%d' % f.priority_score if f.priority_score else '—' }}
           </td>
 
           <!-- Repo -->
-          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          <td data-label="Repo" class="truncate" style="max-width:180px"
               title="{{ f.repo_full_name }}">{{ f.repo_full_name }}</td>
 
           <!-- Package + manifest + annotation -->
-          <td>
+          <td data-label="Package">
             <span style="font-weight:500">{{ f.package_name }}</span>
             {% if f.manifest_path %}
             <br><span style="font-size:0.7rem;color:var(--text-dim)">{{ f.manifest_path }}</span>
             {% endif %}
             {% if f.annotation %}
-            <br><span class="annotation-text" title="{{ f.annotation }}">Note · {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
+            <br><span class="annotation-text" data-tip="{{ f.annotation }}">Note · {{ f.annotation[:60] }}{% if f.annotation | length > 60 %}…{% endif %}</span>
             {% endif %}
           </td>
 
           <!-- Installed version -->
-          <td style="font-size:0.82rem">
+          <td data-label="Installed" style="font-size:0.82rem">
             {% if f.installed_version %}<code>{{ f.installed_version }}</code>
             {% else %}<span style="color:var(--text-dim)">—</span>{% endif %}
           </td>
 
           <!-- Affected versions -->
-          <td style="font-size:0.78rem;max-width:180px"
+          <td data-label="Affected" style="font-size:0.78rem;max-width:180px"
               title="{{ f.affected_versions or 'No affected range provided by advisory' }}">
             {% if f.affected_versions %}
-            <code style="display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom">{{ f.affected_versions }}</code>
+            <code class="truncate" style="display:inline-block;max-width:100%;vertical-align:bottom">{{ f.affected_versions }}</code>
             {% else %}
             <span style="color:var(--text-dim)">—</span>
             {% endif %}
           </td>
 
           <!-- Patched version -->
-          <td style="font-size:0.82rem">
+          <td data-label="Patched" style="font-size:0.82rem">
             {% if f.fixed_version %}
               <code>{{ f.fixed_version }}</code>
             {% else %}
@@ -136,16 +135,16 @@
           </td>
 
           <!-- Latest version + vulnerability badge -->
-          <td style="font-size:0.82rem">
+          <td data-label="Latest" style="font-size:0.82rem">
             {% if f.latest_version %}
               <code>{{ f.latest_version }}</code>
               {% if f.latest_version_vuln_count is not none %}
                 {% if f.latest_version_vuln_count == 0 %}
                 <br><span style="font-size:0.7rem;color:var(--success);font-weight:600"
-                          title="Registry latest has no known OSV vulnerabilities">clean</span>
+                          data-tip="Registry latest has no known OSV vulnerabilities">clean</span>
                 {% else %}
                 <br><span style="font-size:0.7rem;color:var(--high);font-weight:600"
-                          title="Latest release still has known vulnerabilities">{{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }}</span>
+                          data-tip="Latest release still has known vulnerabilities">{{ f.latest_version_vuln_count }} CVE{{ 's' if f.latest_version_vuln_count != 1 else '' }}</span>
                 {% endif %}
               {% endif %}
             {% else %}
@@ -154,7 +153,7 @@
           </td>
 
           <!-- CVE / GHSA — show all available source links -->
-          <td onclick="event.stopPropagation()">
+          <td data-label="CVE / GHSA" onclick="event.stopPropagation()">
             {% if f.cve_id or f.ghsa_id %}
             <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:flex-start">
               {% if f.cve_id %}
@@ -178,16 +177,16 @@
           </td>
 
           <!-- Severity -->
-          <td>
+          <td data-label="Severity">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
-            {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem">KEV</span>{% endif %}
+            {% if f.is_kev %}<span class="badge badge-kev" style="margin-left:0.25rem" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
             {% if f.cvss_score is not none %}
-            <br><span style="font-size:0.7rem;color:var(--text-dim)" title="CVSS score">CVSS {{ '%.1f' % f.cvss_score }}</span>
+            <br><span style="font-size:0.7rem;color:var(--text-dim)" data-tip="CVSS score">CVSS {{ '%.1f' % f.cvss_score }}</span>
             {% endif %}
           </td>
 
           <!-- State -->
-          <td>
+          <td data-label="State">
             <span class="badge
               {% if f.state == 'new' %}badge-new
               {% elif f.state == 'acknowledged' %}badge-ack
@@ -195,7 +194,7 @@
           </td>
 
           <!-- Actions -->
-          <td onclick="event.stopPropagation()">
+          <td data-label="Actions" onclick="event.stopPropagation()">
             <div class="td-actions">
               {% if f.state == 'new' %}
                 <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Ack</button>
@@ -252,7 +251,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="setPageSize(this.value)" title="Rows per page">
+    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page" aria-label="Rows per page">
       {% for s in pagination.page_size_options %}
       <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
       {% endfor %}
@@ -262,21 +261,16 @@
 {% endif %}
 
 <!-- ── Annotation modal ──────────────────────────────── -->
-<div id="annotation-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200"
-     onclick="closeAnnotation()"></div>
-<div id="annotation-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-     background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
-     padding:1.25rem;width:min(440px,90vw);z-index:201;box-shadow:var(--shadow)">
-  <p style="font-weight:600;font-size:0.9rem;margin-bottom:0.75rem">Add / edit note</p>
-  <textarea id="annotation-input" rows="3"
-            style="width:100%;background:var(--surface-2);border:1px solid var(--border);
-                   color:var(--text);border-radius:var(--radius);padding:0.5rem 0.75rem;
-                   font-size:0.875rem;font-family:inherit;resize:vertical"
-            placeholder="e.g. fixing in v2.1 · accepted risk · discussed with team"></textarea>
-  <p style="font-size:0.75rem;color:var(--text-dim);margin-top:0.35rem">Leave blank to clear the note.</p>
-  <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.85rem">
-    <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
-    <button class="btn btn-primary btn-sm" onclick="saveAnnotation()">Save</button>
+<div id="annotation-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="annotation-modal-title">
+  <div class="modal-panel form-modal" tabindex="-1">
+    <h2 id="annotation-modal-title">Add / edit note</h2>
+    <textarea id="annotation-input" rows="3" class="modal-textarea" aria-label="Note"
+              placeholder="e.g. fixing in v2.1 · accepted risk · discussed with team"></textarea>
+    <p class="modal-hint">Leave blank to clear the note.</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline btn-sm" onclick="closeAnnotation()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="saveAnnotation(this)">Save</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -295,8 +289,8 @@ function openBestSource(cveId, ghsaId) {
 /* Bulk selection helpers (_selected, toggleRow, toggleAll, _updateBulkBar,
    applyRepoFilter, setPageSize) live in /static/bulk-selection.js. */
 function bulkAction(action) {
-  if (!_selected.size) return;
-  apiFetch('/api/findings/bulk', {
+  if (!_selected.size) { DIVE.showToast('No rows selected', 'info'); return; }
+  DIVE.apiFetch('/api/findings/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids: [..._selected], action }),
@@ -306,15 +300,16 @@ function bulkAction(action) {
     return r.json();
   })
   .then(d => {
-    showToast(d.updated + ' finding(s) updated', 'success');
-    setTimeout(() => location.reload(), 700);
+    DIVE.showToast(d.updated + ' finding(s) updated', 'success');
+    setTimeout(() => DIVE.refreshPage(), 700);
   })
-  .catch(err => showToast(err.message, 'error'));
+  .catch(err => DIVE.showToast(err.message, 'error'));
 }
 
 function doAction(btn, id, action) {
   btn.disabled = true;
-  apiFetch('/api/findings/' + id + '/' + action, {
+  btn.classList.add('is-loading');
+  DIVE.apiFetch('/api/findings/' + id + '/' + action, {
     method: 'POST',
   })
   .then(r => {
@@ -322,12 +317,13 @@ function doAction(btn, id, action) {
     return r.json();
   })
   .then(() => {
-    showToast('Finding ' + action + 'd', 'success');
-    setTimeout(() => location.reload(), 700);
+    DIVE.showToast('Finding ' + action + 'd', 'success');
+    setTimeout(() => DIVE.refreshPage(), 700);
   })
   .catch(err => {
-    showToast(err.message, 'error');
+    DIVE.showToast(err.message, 'error');
     btn.disabled = false;
+    btn.classList.remove('is-loading');
   });
 }
 
@@ -337,20 +333,19 @@ var _annotatingId = null;
 function openAnnotation(id, current) {
   _annotatingId = id;
   document.getElementById('annotation-input').value = current || '';
-  document.getElementById('annotation-backdrop').style.display = '';
-  document.getElementById('annotation-modal').style.display = '';
-  setTimeout(() => document.getElementById('annotation-input').focus(), 50);
+  DIVE.openModal('annotation-modal');
 }
 
 function closeAnnotation() {
   _annotatingId = null;
-  document.getElementById('annotation-backdrop').style.display = 'none';
-  document.getElementById('annotation-modal').style.display = 'none';
+  DIVE.closeModal('annotation-modal');
 }
 
-function saveAnnotation() {
+function saveAnnotation(btn) {
   const text = document.getElementById('annotation-input').value.trim();
-  apiFetch('/api/findings/' + _annotatingId + '/annotate', {
+  btn.disabled = true;
+  btn.classList.add('is-loading');
+  DIVE.apiFetch('/api/findings/' + _annotatingId + '/annotate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ annotation: text }),
@@ -360,11 +355,15 @@ function saveAnnotation() {
     return r.json();
   })
   .then(() => {
-    showToast('Note saved', 'success');
+    DIVE.showToast('Note saved', 'success');
     closeAnnotation();
-    setTimeout(() => location.reload(), 500);
+    setTimeout(() => DIVE.refreshPage(), 500);
   })
-  .catch(err => showToast(err.message, 'error'));
+  .catch(err => {
+    DIVE.showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+  });
 }
 
 initBulkSelection();

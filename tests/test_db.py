@@ -48,12 +48,32 @@ def test_init_creates_tables(tmp_db: Path):
     assert "findings" in tables
     assert "run_log" in tables
     assert "settings" in tables
+    assert "kev_entries" in tables
 
 
 def test_init_is_idempotent(tmp_db: Path):
     """Calling init() a second time must not raise."""
     db.init(tmp_db)
     db.init(tmp_db)
+
+
+def test_init_creates_expected_indexes(tmp_db: Path):
+    """Regression test for the missing-index audit: every findings/secrets/
+    news list query sorts on one of these columns, so a full scan+sort on
+    every paginated page is the failure mode if any of these disappear."""
+    with db.get_conn(tmp_db) as c:
+        indexes = {
+            row[0]
+            for row in c.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+        }
+    for expected in (
+        "idx_findings_priority",
+        "idx_findings_notified",
+        "idx_findings_firstseen",
+        "idx_secrets_firstseen",
+        "idx_news_published_coalesce",
+    ):
+        assert expected in indexes, f"missing index: {expected}"
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +308,61 @@ def test_upsert_secret_finding_distinct_secrets_kept(conn):
     assert _secret_count(conn) == 2
 
 
+def test_upsert_secret_finding_fingerprint_collision_across_match_keys_no_crash(conn):
+    """Regression test for a live failure: gitleaks reported two findings at
+    the identical commit/file/rule/line with different secret_type
+    descriptions. Their match_keys differ (secret_type is part of the key)
+    but gitleaks's Fingerprint — the column with the actual UNIQUE
+    constraint — does not depend on secret_type, so it collided. The naive
+    match_key-only lookup missed this and the second INSERT raised
+    sqlite3.IntegrityError instead of updating the existing row.
+    """
+    same_fingerprint = "abc1234:config/settings.py:generic-api-key:12"
+    assert (
+        db.upsert_secret_finding(
+            conn,
+            _make_secret(
+                secret_type="Generic API Key",
+                rule_id="generic-api-key",
+                fingerprint=same_fingerprint,
+            ),
+        )
+        is True
+    )
+
+    # Must not raise, and must not be counted as a second brand-new finding.
+    second = db.upsert_secret_finding(
+        conn,
+        _make_secret(
+            secret_type="AWS Access Key",  # different description, same location
+            rule_id="generic-api-key",
+            fingerprint=same_fingerprint,
+        ),
+    )
+    assert second is False
+    assert _secret_count(conn) == 1
+
+    # match_key and secret_type are both refreshed to the latest sighting, so
+    # the row never stores a match_key that describes a different secret_type
+    # than what's in the secret_type column.
+    row = conn.execute("SELECT match_key, secret_type FROM secret_findings").fetchone()
+    assert row["secret_type"] == "AWS Access Key"
+    expected_key = db.secret_match_key(
+        "owner/repo", "config/settings.py", "generic-api-key", "AWS Access Key", 12
+    )
+    assert row["match_key"] == expected_key
+
+
 def test_migrate_dedupes_existing_secret_duplicates(conn):
     """Rows created before the match_key migration (same secret, different
-    commit) must collapse to one when _migrate runs again."""
+    commit) must collapse to one when the backfill runs.
+
+    Calls _migrate_secret_findings_backfill directly rather than _migrate()
+    — the `conn` fixture already ran init() once, which stamps
+    schema_version and makes _migrate() a no-op for this one-time data
+    migration on subsequent calls (see _SCHEMA_VERSION). That gating is
+    exactly the point of M4.7; this test is about the dedup logic itself.
+    """
     now = "2024-01-01T00:00:00+00:00"
     for i, sha in enumerate(("c1", "c2", "c3")):
         conn.execute(
@@ -314,7 +386,7 @@ def test_migrate_dedupes_existing_secret_duplicates(conn):
             ),
         )
     assert _secret_count(conn) == 3
-    db._migrate(conn)
+    db._migrate_secret_findings_backfill(conn)
     assert _secret_count(conn) == 1
     row = conn.execute("SELECT match_key FROM secret_findings").fetchone()
     assert row["match_key"] == db.secret_match_key("owner/repo", "a.py", "github-pat", "PAT", 5)
@@ -346,9 +418,60 @@ def test_migrate_dedup_keeps_false_positive(conn):
                 now,
             ),
         )
-    db._migrate(conn)
+    db._migrate_secret_findings_backfill(conn)
     assert _secret_count(conn) == 1
     assert conn.execute("SELECT state FROM secret_findings").fetchone()["state"] == "false_positive"
+
+
+# ---------------------------------------------------------------------------
+# Schema versioning (M4.7)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_stamps_schema_version_on_fresh_init(conn):
+    """db.init() (via the `conn` fixture) already ran _migrate() once —
+    schema_version must be at the current version afterward."""
+    assert db._get_schema_version(conn) == db._SCHEMA_VERSION
+
+
+def test_migrate_skips_one_time_dedup_when_version_current(conn, monkeypatch):
+    """Once schema_version is current, _migrate() must not re-run the
+    full-table dedup/backfill passes — that's the whole point of gating them.
+    """
+    calls = []
+    monkeypatch.setattr(db, "_dedup_aliased_findings", lambda c: calls.append("dedup"))
+    monkeypatch.setattr(db, "_migrate_secret_findings_backfill", lambda c: calls.append("backfill"))
+    monkeypatch.setattr(db, "_migrate_default_feed_urls", lambda c: calls.append("feeds"))
+
+    db._migrate(conn)  # schema_version is already current from the fixture's init()
+
+    assert calls == []
+
+
+def test_migrate_runs_one_time_dedup_when_version_stale(conn, monkeypatch):
+    """Simulates upgrading from a pre-M4.7 install: schema_version absent/0
+    must still trigger the one-time migrations exactly once."""
+    conn.execute("DELETE FROM settings WHERE key = 'schema_version'")
+    assert db._get_schema_version(conn) == 0
+
+    calls = []
+    monkeypatch.setattr(db, "_dedup_aliased_findings", lambda c: calls.append("dedup"))
+    monkeypatch.setattr(db, "_migrate_secret_findings_backfill", lambda c: calls.append("backfill"))
+    monkeypatch.setattr(db, "_migrate_default_feed_urls", lambda c: calls.append("feeds"))
+
+    db._migrate(conn)
+
+    assert set(calls) == {"dedup", "backfill", "feeds"}
+    assert db._get_schema_version(conn) == db._SCHEMA_VERSION
+
+
+def test_migrate_secret_findings_columns_always_runs(conn):
+    """The match_key column + its index must exist even though the backfill
+    pass that also touches this table is version-gated."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(secret_findings)").fetchall()}
+    assert "match_key" in cols
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_secrets_matchkey" in indexes
 
 
 # ---------------------------------------------------------------------------

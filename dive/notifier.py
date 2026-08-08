@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 
 MAX_FINDINGS_PER_ALERT = 20
 
+# Slack hard limits: 3000 chars per section block's text, 50 blocks per
+# message. Headroom kept under both so we never sit exactly on the edge.
+_SLACK_SECTION_CHAR_LIMIT = 2900
+_SLACK_MAX_SECTION_BLOCKS = 45
+
 # Severity → emoji
 _SEVERITY_EMOJI = {
     "Critical": "🔴",
@@ -248,6 +253,65 @@ def send_secrets_alert(
 # ---------------------------------------------------------------------------
 
 
+def _section_blocks(lines: list[str], overflow_text: str) -> list[dict[str, Any]]:
+    """Pack lines into as few mrkdwn section blocks as fit Slack's limits.
+
+    A single section block with every line joined by "\\n" — the previous
+    approach here — silently exceeds Slack's 3000-char section-text limit
+    once there are enough findings/secrets, and the whole message is then
+    rejected with HTTP 400 (measured against real data: 18 secrets produced
+    a 3281-char block). This never splits a line across two blocks and never
+    emits an empty block. A single line longer than the per-block limit is
+    hard-truncated — otherwise it could never be placed and the packing loop
+    below would never make progress. If packing would need more than
+    _SLACK_MAX_SECTION_BLOCKS blocks, stop there and append a context block
+    with `overflow_text` so truncation is never silent.
+    """
+    if not lines:
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    current: list[str] = []
+    current_len = 0
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i]
+        if len(line) > _SLACK_SECTION_CHAR_LIMIT:
+            line = line[: _SLACK_SECTION_CHAR_LIMIT - 1] + "…"
+
+        # +1 accounts for the "\n" that will join this line to the block.
+        candidate_len = len(line) if not current else current_len + 1 + len(line)
+
+        if current and candidate_len > _SLACK_SECTION_CHAR_LIMIT:
+            blocks.append(
+                {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(current)}}
+            )
+            current = []
+            current_len = 0
+            if len(blocks) >= _SLACK_MAX_SECTION_BLOCKS:
+                remaining = n - i
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [
+                            {"type": "mrkdwn", "text": f"+ {remaining} more — {overflow_text}"}
+                        ],
+                    }
+                )
+                return blocks
+            continue  # re-process this line against the now-empty block
+
+        current.append(line)
+        current_len = candidate_len
+        i += 1
+
+    if current:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(current)}})
+    return blocks
+
+
 def _secret_line(row: sqlite3.Row) -> str:
     sha = (row["commit_sha"] or "")[:8]
     return f"🔑 {row['repo_full_name']} | {row['secret_type']} | {row['file_path']}:{row['line_number'] or '?'} | {sha}"
@@ -276,12 +340,7 @@ def _build_secrets_slack_blocks(secret_findings: list[sqlite3.Row]) -> list[dict
             },
         }
     ]
-    blocks.append(
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(_secret_line(r) for r in shown)},
-        }
-    )
+    blocks.extend(_section_blocks([_secret_line(r) for r in shown], "check the Secrets view"))
     if len(secret_findings) > MAX_FINDINGS_PER_ALERT:
         blocks.append(
             {
@@ -341,12 +400,7 @@ def _build_slack_blocks(findings: list[sqlite3.Row]) -> list[dict[str, Any]]:
         }
     ]
     lines = [_finding_line(row) for row in shown]
-    blocks.append(
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-        }
-    )
+    blocks.extend(_section_blocks(lines, "check the dashboard"))
     if len(findings) > MAX_FINDINGS_PER_ALERT:
         blocks.append(
             {

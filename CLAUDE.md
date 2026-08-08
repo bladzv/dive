@@ -35,7 +35,7 @@ collector → categorizer → github_scanner → github_issue_creator → secret
 
 ### Web UI
 
-FastAPI + Jinja2 templates in `templates/`, CSS in `static/`. All dashboard routes require HTTP Basic Auth. The API also exposes JSON endpoints under `/api/`.
+FastAPI + Jinja2 templates in `templates/`, CSS in `static/`. All dashboard routes require an authenticated session — a signed cookie (`itsdangerous.URLSafeTimedSerializer`, 7-day expiry) set by `POST /login`, not HTTP Basic Auth. The API also exposes JSON endpoints under `/api/`.
 
 ### Data persistence
 
@@ -46,6 +46,7 @@ FastAPI + Jinja2 templates in `templates/`, CSS in `static/`. All dashboard rout
 - `keywords` table: per-user watchlist; highlighted in news feed
 - Feature toggles: stored as `toggle.<key>` keys in `settings` table; defaults in `settings.FEATURE_TOGGLES`
 - Scanner settings: stored as `scanner.<key>` keys in `settings` table
+- `kev_entries` table: the CISA KEV set, independent of `news_items` retention — see M11
 
 ## Development
 
@@ -89,8 +90,9 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 ### Security
 - **Never use `yaml.load()`** — always `yaml.safe_load()`. Arbitrary-code RCE risk.
 - **All DB queries must use parameterised statements** — no string interpolation into SQL.
-- All non-health routes require HTTP Basic Auth (`_require_auth` dependency).
-- `POST /api/run` additionally requires `X-Run-Token` header (CSRF protection).
+- All non-health routes require an authenticated session (`_require_auth` dependency — checks a signed session cookie, not HTTP Basic Auth). `POST /login` sets the cookie; it's rate-limited (10 attempts / 15 min per IP, in-memory, resets on restart) and its `next` redirect target is sanitised (`_safe_next()`) against open redirects.
+- Mutation endpoints (`POST /api/run` and others) additionally require the `X-Run-Token` header (`_require_csrf` dependency — CSRF protection), read from the same-origin page via the `run-token` meta tag.
+- `GET /api/health` is unauthenticated and intentionally minimal (Docker healthcheck target — just `{"status": "ok", ...}`); the full pipeline/status payload lives behind auth at `GET /api/status`. Never move detailed status (repo names, error text, active model) back onto the unauthenticated endpoint.
 - `config.yaml` must never be committed. It is gitignored and `.dockerignore`d.
 - The Dockerfile deletes `config.yaml` as a second line of defence.
 - Ollama's port 11434 is intentionally not published in `docker-compose.yml`.
@@ -103,7 +105,7 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 ### Resilience
 - Each pipeline step catches exceptions independently so a failed step doesn't abort the rest.
 - A failed notification channel does not prevent delivery to other channels.
-- GitHub rate-limit budget is checked at scan start; a warning is logged (not a hard stop) when below 10%.
+- GitHub rate-limit budget is checked before each repo; dropping below 10% (or a mid-scan `RateLimitExceededException`) stops that scan early — not a hard stop for the *pipeline* (later steps still run) — and logs a warning + sets `ScannerStats.rate_limit_warning` so the gap is visible rather than looking like a clean scan. Unscanned repos are picked up on the next run.
 
 ## M6 — Secrets scanner
 
@@ -137,7 +139,7 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 
 **Default feed protection:** Default feeds (`is_default=1`) can be disabled but never deleted. `settings.remove_feed()` raises `ValueError`; the API converts this to HTTP 409.
 
-**Next-run display:** `GET /api/health` returns `next_run` (ISO timestamp from APScheduler). The `base.html` header polls this and shows "next run in Xm" via `timeUntil()`.
+**Next-run display:** `GET /api/status` (authenticated) returns `next_run` (ISO timestamp from APScheduler) — this moved off `GET /api/health` when that endpoint was split (see the Security section above). The `base.html` header polls `/api/status` and shows "next run in Xm" via `DIVE.timeUntil()`.
 
 ## M8 — Full dashboard views
 
@@ -152,9 +154,9 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 
 **Dark mode toggle:** `data-theme="dark|light"` on `<html>`; light-mode CSS variables defined under `[data-theme="light"]` in `style.css`. Preference persisted in `localStorage`; applied before first paint to avoid flash.
 
-**Ollama status indicator:** green/red dot in the header, updated by the 5-second `pollStatus()` poll from `/api/health` which now includes `ollama_ok` (boolean — checks `/api/tags` on the Ollama host and verifies the active model is listed).
+**Ollama status indicator:** green/red dot in the header, updated by `pollStatus()`'s poll of `/api/status`, which includes `ollama_ok` (boolean — checks `/api/tags` on the Ollama host and verifies the active model is listed). Polling backs off exponentially on consecutive failures (capped at 60s), shows a "Disconnected" state after 2 misses, and pauses entirely while the tab is hidden (`visibilitychange`).
 
-**Mobile-responsive layout:** hamburger toggle collapses nav vertically on ≤600 px screens. Nav is horizontally scrollable on medium screens. Status text and model chip hidden on small screens.
+**Mobile-responsive layout:** hamburger toggle collapses the sidebar into an overlay drawer at ≤980px (paired with a `min-width: 981px` rule that hides the hamburger above that — kept in sync at the same value, zero gap between them). Content reflow (page padding, hero sizing, table card-stacking) uses a separate ≤700px breakpoint, plus a ≤430px sub-breakpoint for a few grids. These are the only three standard breakpoints in `style.css` — don't introduce a fourth without a reason.
 
 ## M9 — Bookmarks, Annotations & Data Export
 
@@ -173,7 +175,7 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 ## Adding a new feature
 
 - **New notification channel**: add a config dataclass in `config.py`, implement `_send_<channel>()` in `notifier.py`, wire into `_dispatch()`.
-- **New manifest format**: add to `_MANIFEST_FILENAMES` in `github_scanner.py` and implement a `_parse_<format>()` function.
+- **New manifest format**: add to `_MANIFEST_FILENAMES` (exact filename match) or `_MANIFEST_SUFFIXES` (extension match, e.g. `*.csproj`) in `github_scanner.py` and implement a `_parse_<format>()` function. Never let a parser raise — `_parse_manifest`'s blanket `except Exception` will swallow it and silently return `[]`, so write a test rather than relying on that guard to catch a bug.
 - **New RSS source**: add to `DEFAULT_FEEDS` in `settings.py` (not `collector.py`) — these seed the `rss_feeds` table on first boot.
 - **New feature toggle**: add an entry to `FEATURE_TOGGLES` in `settings.py`; check it in the pipeline with `st.is_feature_enabled(conn, "<key>")`.
 - **New API endpoint**: add route in `main.py`, add the corresponding DB query in `db.py`.
@@ -205,6 +207,165 @@ On every push/PR to `main`: ruff → black check → pip-audit → pytest unit t
 **Persistence model:** `db.get_findings_for_issue_creation(conn)` returns `state = 'new' AND github_issue_url IS NULL`. Skipped-duplicate findings are left with `github_issue_url = NULL` so they are re-checked next run (handles the case where the open issue was closed and then re-opened).
 
 **Release workflow:** `.github/workflows/release.yml` builds and pushes a multi-arch Docker image (`linux/amd64` + `linux/arm64`) to `ghcr.io` on every `v*` tag, then creates a GitHub Release with the matching CHANGELOG excerpt.
+
+## M11 — UI/UX consolidation, accessibility, and scanner reliability
+
+### Scanner coverage
+**Private repos:** both scanners now correctly enumerate private repos via `gh.get_user().get_repos(type="all")` (the authenticated-user endpoint). `secrets_scanner.py` previously used `gh.get_user(username).get_repos()` — the *named*-user endpoint, which only ever returns public repos regardless of token scope. If you're adding a third scanner that lists repos, use the authenticated-user pattern; the tests for both existing scanners assert `get_user` is called with no arguments specifically to catch this regressing.
+
+**New manifest formats** (`github_scanner.py`): `yarn.lock` (v1 custom format and v2+ YAML, detected by a `__metadata` key), `pnpm-lock.yaml`, `poetry.lock` / `uv.lock` (TOML `[[package]]` blocks, shared parser), `composer.json` / `composer.lock`, `packages.lock.json`, and `*.csproj` (NuGet — matched by **suffix**, not exact filename, via `_MANIFEST_SUFFIXES`; the exact-filename table is `_MANIFEST_FILENAMES`). Lock-file preference (prefer the lock file over the manifest when both exist) now also covers yarn/pnpm vs `package.json` and poetry/uv vs `pyproject.toml`.
+
+**`kev_entries` table:** the CISA KEV set used to be derived from `news_items WHERE source = 'CISA KEV'`, so clearing news history (or `news.retention_days`) silently flipped `is_kev` to 0 on every finding. `kev_entries` (`cve_id, added_at, first_seen_at`) is a dedicated table the collector upserts into and retention pruning never touches; `db.get_kev_cve_ids()` reads from it, falling back to the old `news_items` query only if `kev_entries` is empty (first run after upgrade).
+
+### Frontend architecture
+**`static/app.js`** — loaded once from `base.html` *without* `data-pjax`, so it survives in-app navigation (the pjax router only re-executes scripts after the `#page-scripts-fence` sentinel). Exposes shared helpers under `window.DIVE` instead of each page redefining its own: `apiFetch`, `showToast`, `timeAgo`, `timeUntil`, `escapeHtml`, `setPageSize`, `toggleBookmark`, `confirmModal`, `openModal`/`closeModal`, `setFieldError`/`clearFieldError`. Add new cross-page utilities here, not inline in a template's `{% block scripts %}`.
+
+**Modal component** — every modal is `.modal-backdrop > .modal-panel`, toggled via the `open` class (see `static/style.css`). `DIVE.openModal(id)` / `DIVE.closeModal(id)` are the *only* way to open/close one: they handle the Tab focus trap, restore focus to the triggering element on close, and are wired once to backdrop-click/Escape dismissal for every current and future modal — don't hand-roll `classList.add('open')` elsewhere. `templates/base.html`'s pjax router also exposes `DIVE.refreshPage()`, which re-fetches and swaps `.page-main` in place; use it after a mutation instead of `location.reload()` (which drops pjax state and resets scroll).
+
+**Tooltip component** — `[data-tip]="..."` on any element gets a hover/focus-revealed bubble (see `static/style.css`, adapted from `designs/colorion-css-tooltips` under its MIT license). Don't use it inside anything with `overflow:hidden` between the trigger and the viewport edge (a truncated table cell, for instance) — the popup gets clipped; use `title=""` there instead. Table headers get a `thead [data-tip]` downward-popping variant automatically (their enclosing `.card`'s `overflow:hidden`, there to round the table's corners, clips the default upward pop). Elements near a container's right edge may need a per-selector right-anchor override like `.badge-kev[data-tip]` — see that rule for the pattern.
+
+**Toggle switch** — `.dive-switch` (a `<span class="dive-switch"><input type="checkbox">…<span class="track"><span class="thumb"></span></span></span>` structure) replaces raw `<input type="checkbox">` + `accent-color` for boolean settings. Written from scratch, not adapted from any `designs/` library (none of the toggle/button/loader/animation libraries there have a verifiable LICENSE file — only `colorion-css-tooltips` does).
+
+**Responsive tables** — the one supported pattern is `.table-stack` + `data-label="Column Name"` on every `<td>`: below 700px, `<thead>` hides and each cell becomes a label/value row via `::before { content: attr(data-label) }`. Don't hide columns by `nth-child` position (drops data with no disclosure) and don't rely on `.table-wrap`'s horizontal scroll as the *only* strategy for a data table — pick `.table-stack` unless there's a specific reason not to. Grid/flex items default to `min-width: auto` (never shrink below content), so a card containing a `.table-stack` needs `min-width: 0` set explicitly at the breakpoint or a wide badge can push the whole grid wider than the viewport — see the `.card, .panel { min-width: 0; }` rule inside the 700px block.
+
+**Breakpoints** — exactly three standard values in `static/style.css`: 700 (content reflow), 980 (tablet / sidebar-collapse-to-hamburger), 1200 (wide). Plus one legitimate sub-breakpoint at 430px for a couple of dense grids. Don't add a new one-off value; fit into one of these three, and if two rules at the same breakpoint must fire in a specific order relative to each other (a min-width/max-width pair, or a "collapse further" cascade), keep them at the *same* pixel value on both sides — a 900px max-width paired with a 901px min-width, for instance, is fragile if only one side ever gets touched again.
+
+**Kinetic easing** — `cubic-bezier(0.34, 1.56, 0.64, 1)` (bouncy overshoot, row hover / drawer slide) and `cubic-bezier(0.16, 1, 0.3, 1)` (gentle decel, modal entrance) replace flat `ease`/`linear` transitions in a few places. These are bare numeric values (not copyrightable expression), inspired by `designs/kinetics` but not copied from it (that repo has no LICENSE file either).
+
+## M12 — Pipeline reliability and notifier hardening
+
+**NVD API key placement:** `collector._fetch_nvd()` sends `config.nvd.api_key` as the `apiKey`
+**request header**, never a query parameter — the live NVD API returns HTTP 404 on every request
+when the key is passed as `?apiKey=...` instead. Header placement also keeps the key out of any
+URL-based logging.
+
+**Collector User-Agent:** `_make_client()` identifies honestly by default
+(`_DEFAULT_UA = "DIVE-security-monitor/1.0 ..."`). A spoofed browser UA is not used as the default —
+some WAFs fingerprint the TLS handshake and flag a UA claiming to be Chrome that doesn't match
+Chrome's real fingerprint as bot impersonation (this is why Bleeping Computer's feed 403'd under the
+old default UA while every other feed worked fine either way). `_safe_get()` retries a `403` exactly
+once with `_BROWSER_UA` as a fallback (merged into, not replacing, any caller-supplied headers such
+as GHSA's `Authorization`), for the rare host that actually rejects non-browser agents.
+
+**`httpx`/`httpcore` logging:** pinned to `WARNING` in `main.py` (right after `logging.basicConfig`).
+Both log every request URL at `INFO`, which the SQLite log handler captures — that wrote ~160 rows
+per pipeline run into `log_entries`, and would carry any credential embedded in a URL into the
+database in plaintext.
+
+**Slack section-block chunking:** `notifier._section_blocks()` packs finding/secret lines across as
+many `section` blocks as needed instead of one unbounded block. Slack caps a section's `text.text`
+at 3000 characters and a message at 50 blocks; a single oversized block silently fails delivery with
+`invalid_payload`. Both `_build_slack_blocks()` and `_build_secrets_slack_blocks()` call this helper
+— never reassemble the single-block form, and never "fix" an over-limit alert by lowering
+`MAX_FINDINGS_PER_ALERT` (the limit is a function of line length, not count).
+
+**Token-permission diagnostics:** `github_scanner.probe_private_repo_access()` checks read access on
+one private repo (skipped entirely if the account has none) and returns a single actionable message
+on a 403 — a fine-grained PAT can read a private repo's metadata while lacking the separate
+`Contents: Read-only` scope needed for its file tree, which otherwise surfaces as a bare 403 per repo
+with no explanation. Both `github_scanner.run()` and `secrets_scanner.run()` call it once per run and
+store the result on `ScannerStats.token_permission_warning` / `ScanStats.token_permission_warning`,
+rendered in the pipeline drawer. `secrets_scanner._clone()` also returns git's stderr on failure (the
+embedded access token redacted unconditionally before it can reach a log line) instead of discarding it.
+
+**Drawer failed-list expand state:** lives in the client-side `_drawerExpanded` Set (keyed by
+`"<stepKey>:<label>"`), not the DOM — `updatePipelineDrawer()` rebuilds `#drawer-steps` via
+`innerHTML` on every status poll (5s idle / 2s during a run), which would otherwise destroy an
+`open` class the instant the next poll landed. Toggling goes through one delegated `click` listener
+registered once on `#drawer-steps`, never re-registered inside `updatePipelineDrawer()`. A
+`_drawerRenderSig` guard also skips the `innerHTML` rebuild entirely when nothing in
+`step_history`/`step_stats`/`step_progress`/`step_times`/`current_step`/`running`/`last_status`/
+`last_completed`/`last_error`/`run_duration_s` changed since the last render — placed after the
+state-label and drawer open/close logic, which must run unconditionally on every poll.
+
+## M13 — Progress-total accuracy and actionable clone-failure diagnostics
+
+**Collector progress denominator:** `collector.run()` used to call `on_progress(_sources_done,
+_sources_done)` on every tick — the same counter as both numerator and denominator — so the pipeline
+drawer rendered a moving target (`1/1`, `2/2`, `3/3`, ...) instead of a real fraction. `run()` now
+fetches `settings.get_enabled_feeds(conn)` before starting and computes a fixed
+`total_sources = len(feeds) + 3` (RSS feeds + NVD + KEV + GHSA) up front, primes the drawer with
+`(0, total_sources)`, and every tick reports that constant total. `_run_rss()` takes the
+already-fetched `feeds` list via a keyword arg instead of re-querying it. Any new source group added
+to the collector must be counted in `total_sources`, not left to an ad-hoc tick.
+
+**`github_scanner` progress denominator:** `total_repos` was `len(repos)` measured *before*
+excluding repos, so a run with any excluded repos configured stalled short of 100% — excluded repos
+were skipped inside the loop without incrementing the numerator. `run()` now filters to `scannable`
+repos first and measures `total_repos` from that list; progress also counts failed and skipped repos
+toward the numerator (not just successfully-scanned ones) so a run with failures still reaches
+`done == total`.
+
+**Gitleaks clone failures now translate GitHub's misleading 403 message.** `git clone` over HTTPS
+only needs read access, but GitHub's git-over-HTTPS endpoint returns the generic string `remote:
+Write access to repository not granted` for *any* 403 — including a fine-grained PAT that is simply
+missing `Contents: Read-only` (or a classic PAT missing the `repo` scope). `secrets_scanner.py`'s
+`_explain_clone_failure()` maps that (and repo-not-found / bad-token) stderr patterns to a
+remediation string; do not "fix" future reports of this message by telling users to grant write
+access — that scope is never required for cloning. The remediation is threaded through a
+`_CloneFailed` exception (subclasses `RuntimeError`, preserving the `"git clone failed for X:
+detail"` message so existing tests matching on `RuntimeError` keep passing) and surfaces in two
+places: appended inline to the `failed_repos` entry for that repo, and — unless
+`probe_private_repo_access()` already set a warning, which takes priority as the more specific
+signal — as `ScanStats.token_permission_warning`. A missing `gitleaks` binary and a per-repo
+`subprocess.TimeoutExpired` also now set an actionable message instead of failing silently or as a
+bare repo name.
+
+**No `secrets_scanner` failure is ever reported as a bare repo name.** Every branch of `run()`'s
+per-repo `except` chain (`_CloneFailed` → `_GitleaksFailed` → `subprocess.TimeoutExpired` →
+`Exception`, in that order — `_CloneFailed` and `TimeoutExpired` are unrelated exception types, so
+this ordering is not load-bearing, but keep it) appends a reason to `failed_repos`, not just
+`repo.full_name`. An unrecognised clone failure falls back to `_condense_detail(exc.detail)`, which
+picks git's `fatal:` line out of multiline stderr; the generic catch-all includes the exception type
+and message. **`TimeoutExpired.cmd` for a clone timeout is the real argv, which embeds a live
+access token in the clone URL** — `_clone()`'s redaction only covers the non-timeout failure path —
+so only `exc.cmd[0]` (the binary name, to distinguish a git-clone timeout from a gitleaks-scan
+timeout) may ever be read from it; never interpolate `exc.cmd`, `str(exc)`, or `exc.args` into a
+message, a log line, or `failed_repos`.
+
+**A crashed gitleaks run is a failure, not a clean scan.** `_run_gitleaks()` used to return `[]` on
+a non-0/1 exit code and on a malformed report, so `_scan_repo` returned 0 and the repo was counted
+in `repos_scanned` with zero findings — indistinguishable from a repo that is actually clean. It now
+raises `_GitleaksFailed` for those cases (still returning `[]` only for the two genuine no-findings
+cases: an empty report, or valid JSON that isn't a list), which `run()` turns into a `failed_repos`
+entry. This is a deliberate behavior change: repos hitting this path move from `repos_scanned` into
+`failed_repos`, so the drawer's counts will shift for anyone currently affected.
+
+**`db.upsert_secret_finding()` now checks `fingerprint` as a fallback dedup key, not just
+`match_key`.** This bug was found *by* the above changes, on a live run: `secret_findings.fingerprint`
+is the column with the actual `UNIQUE` constraint, but the dedup lookup only checked `match_key`
+(deliberately commit-independent — see the docstring). gitleaks can report two entries for the exact
+same commit/file/rule/line with a different `secret_type` description; those get different
+`match_key`s (which includes `secret_type`) but the *same* `fingerprint` (which doesn't), so the
+second `INSERT` raised `sqlite3.IntegrityError` instead of being recognized as the same row. The
+lookup now falls back to a `fingerprint`-keyed `SELECT` when `match_key` misses, and the `UPDATE`
+path also refreshes `match_key`/`secret_type`/`rule_id` (previously only `commit_sha`/`line_number`/
+`fingerprint`), so a row never ends up with a `match_key` that describes a different `secret_type`
+than what's actually stored.
+
+**The SQLite log handler gets a much longer `busy_timeout`, plus a retry, instead of dropping the
+record.** `_SQLiteLogHandler.emit()` previously treated `sqlite3.OperationalError` ("database is
+locked") the same as a permanently broken connection — one failed insert and the record was gone,
+`self._dropped` incremented, with no consumer anywhere. A pipeline step can hold a write transaction
+open across its **entire run**, not just briefly — `db.upsert_secret_finding()` never commits
+mid-loop, so `secrets_scanner.run()`'s `with db.get_conn() as conn:` in `main.py` keeps one
+transaction open for the whole scan. A live 15-repo run measured this at 48.9s, and lost exactly the
+`ERROR` row for the repo that failed mid-scan even with a first-pass fix that only added a short
+Python-level retry on top of `_make_connection()`'s 5s default `busy_timeout` (~15.75s worst case
+total — still nowhere near 48.9s). The fix is `_LOG_CONN_BUSY_TIMEOUT_MS` (60s): this handler's
+`_get_conn()` overrides the busy_timeout **only on its own dedicated connection**, via `PRAGMA
+busy_timeout=<ms>` right after opening it — request and pipeline connections keep the 5s default
+from `_make_connection()`. This connection runs only on the `QueueListener` thread, which has
+nothing else to do but wait, so a long per-attempt block (and `_LOG_INSERT_ATTEMPTS` of them) cannot
+stall a request or the pipeline. **This mitigates, it does not eliminate** — a step that holds the
+lock longer than the combined retry budget will still drop a record. That is exactly why `log_drops`
+exists: the drop count is surfaced in the authenticated `GET /api/status` payload (via
+`_get_dropped_log_count()`) and rendered in the drawer summary when non-zero — **never add it to
+`GET /api/health`**, which is deliberately minimal. Confirmed live: the drawer showed "1 log
+record(s) dropped" for the exact run where this happened, so the operator sees the gap instead of a
+silent one. Do not "fix" this by raising SQLite's **global** `busy_timeout` — that slows every
+request thread to solve a logging-thread problem; only this handler's connection should ever get a
+non-default value.
 
 ## Deployment targets
 

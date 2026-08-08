@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -86,6 +86,11 @@ CREATE INDEX IF NOT EXISTS idx_news_category  ON news_items(category);
 CREATE INDEX IF NOT EXISTS idx_news_severity  ON news_items(severity);
 CREATE INDEX IF NOT EXISTS idx_news_cluster   ON news_items(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_news_source    ON news_items(source);
+-- Matches get_news()'s ORDER BY COALESCE(published_at, fetched_at) exactly —
+-- an expression index only serves a query whose ORDER BY/WHERE expression
+-- matches it verbatim, and this is DIVE's most-hit paginated list query.
+CREATE INDEX IF NOT EXISTS idx_news_published_coalesce
+    ON news_items(COALESCE(published_at, fetched_at));
 
 CREATE TABLE IF NOT EXISTS findings (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +114,12 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE INDEX IF NOT EXISTS idx_findings_repo   ON findings(repo_full_name);
 CREATE INDEX IF NOT EXISTS idx_findings_state  ON findings(state);
 CREATE INDEX IF NOT EXISTS idx_findings_cve    ON findings(cve_id);
+-- Every findings list/export/get_new_findings query sorts by this; without
+-- an index each paginated page is a full table scan + sort.
+CREATE INDEX IF NOT EXISTS idx_findings_priority  ON findings(priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_firstseen ON findings(first_seen_at);
+-- idx_findings_notified is created in _migrate(), after the notified_at
+-- column it indexes is added (that column isn't in the base schema).
 
 -- Expression index for deduplication — COALESCE is valid in indexes (SQLite 3.9+)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_unique
@@ -161,6 +172,8 @@ CREATE TABLE IF NOT EXISTS secret_findings (
 
 CREATE INDEX IF NOT EXISTS idx_secrets_repo  ON secret_findings(repo_full_name);
 CREATE INDEX IF NOT EXISTS idx_secrets_state ON secret_findings(state);
+-- Matches the default ORDER BY first_seen_at DESC on the secrets list.
+CREATE INDEX IF NOT EXISTS idx_secrets_firstseen ON secret_findings(first_seen_at);
 
 CREATE TABLE IF NOT EXISTS rss_feeds (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,6 +199,15 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bookmarks_item ON bookmarks(news_item_id);
+
+-- Persistent, retention-independent record of CISA KEV membership. Kept
+-- separate from news_items so is_kev scoring never regresses when a user
+-- prunes old news (news.retention_days) or clears news data.
+CREATE TABLE IF NOT EXISTS kev_entries (
+    cve_id        TEXT PRIMARY KEY,
+    added_at      TEXT,
+    first_seen_at TEXT NOT NULL
+);
 """
 
 
@@ -198,8 +220,39 @@ def init(path: Path | None = None) -> None:
     logger.info("Database ready at %s", db_path)
 
 
+# Bump when adding a new one-time DATA migration (a full-table dedup/backfill
+# pass) — schema_version gates those so they run once ever, not on every
+# startup. Idempotent structural changes (ALTER TABLE / CREATE INDEX IF NOT
+# EXISTS) are cheap PRAGMA checks and always run regardless of this version.
+_SCHEMA_VERSION = 1
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM settings WHERE key = 'schema_version'").fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (str(version), _now()),
+    )
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Add columns introduced in later milestones. Each ALTER is idempotent."""
+    """Add columns introduced in later milestones. Each ALTER/CREATE INDEX
+    guard below is a cheap, idempotent PRAGMA table_info check and always
+    runs. One-time DATA migrations (full-table dedup/backfill passes) are
+    gated by schema_version — see _SCHEMA_VERSION.
+    """
     news_existing = {row[1] for row in conn.execute("PRAGMA table_info(news_items)").fetchall()}
     if "categorize_attempts" not in news_existing:
         conn.execute("ALTER TABLE news_items ADD COLUMN categorize_attempts INT NOT NULL DEFAULT 0")
@@ -213,6 +266,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # M4 columns
     if "notified_at" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN notified_at TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_notified ON findings(notified_at)")
     # M9 columns
     if "annotation" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN annotation TEXT")
@@ -228,24 +282,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "latest_version_vuln_count" not in existing:
         conn.execute("ALTER TABLE findings ADD COLUMN latest_version_vuln_count INTEGER")
 
-    _dedup_aliased_findings(conn)
-    _migrate_secret_findings(conn)
-    _migrate_default_feed_urls(conn)
+    _migrate_secret_findings_columns(conn)
+
+    version = _get_schema_version(conn)
+    if version < _SCHEMA_VERSION:
+        _dedup_aliased_findings(conn)
+        _migrate_secret_findings_backfill(conn)
+        _migrate_default_feed_urls(conn)
+        _set_schema_version(conn, _SCHEMA_VERSION)
 
 
-def _migrate_secret_findings(conn: sqlite3.Connection) -> None:
-    """Add a commit-independent match_key to secret_findings and dedupe.
-
-    gitleaks' Fingerprint embeds the commit SHA, which is unstable across
-    shallow-clone runs (the boundary commit slides as new commits land), so the
-    same real secret was being re-inserted under a fresh fingerprint each run.
-    match_key drops the commit so re-sightings update instead of duplicating.
-    Safe to run repeatedly.
+def _migrate_secret_findings_columns(conn: sqlite3.Connection) -> None:
+    """Add secret_findings.match_key if missing, and ensure its unique index
+    exists. Always runs — cheap idempotent PRAGMA/CREATE INDEX checks, unlike
+    the full-table backfill in _migrate_secret_findings_backfill().
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(secret_findings)").fetchall()}
     if "match_key" not in cols:
         conn.execute("ALTER TABLE secret_findings ADD COLUMN match_key TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_secrets_matchkey ON secret_findings(match_key)"
+    )
 
+
+def _migrate_secret_findings_backfill(conn: sqlite3.Connection) -> None:
+    """One-time: backfill match_key on legacy rows and collapse duplicates
+    that predate it (gated by schema_version — see _migrate()).
+
+    gitleaks' Fingerprint embeds the commit SHA, which is unstable across
+    shallow-clone runs (the boundary commit slides as new commits land), so
+    the same real secret was previously re-inserted under a fresh
+    fingerprint each run. match_key drops the commit so re-sightings update
+    instead of duplicating. New rows always get match_key set at insert time
+    (see upsert_secret_finding), so this never has work to do after the
+    first run — hence gating it rather than re-scanning the table forever.
+    """
     # Drop the uniqueness guard while reconciling so backfilling duplicate rows
     # to the same key doesn't trip it; it is recreated at the end.
     conn.execute("DROP INDEX IF EXISTS idx_secrets_matchkey")
@@ -707,6 +778,10 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     Returns True if this is a brand-new finding (triggers notification in M4).
     For existing findings the last_seen_at and vulnerability data are updated;
     the state is NOT changed here — lifecycle.py (M4) owns state transitions.
+
+    Stamps the row's database id onto finding["id"] (insert or update) so
+    callers can act on the specific row afterward without a natural-key
+    re-query — which is fragile when cve_id is NULL for more than one row.
     """
     cve_id = finding.get("cve_id")
     ghsa_id = finding.get("ghsa_id")
@@ -769,7 +844,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     existing = conn.execute(lookup_sql, lookup_params).fetchone()
 
     if existing is None:
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO findings (
                 repo_full_name, cve_id, ghsa_id,
@@ -800,6 +875,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
                 None,
             ),
         )
+        finding["id"] = cursor.lastrowid
         return True
 
     # Refresh mutable fields; leave state and first_seen_at alone.
@@ -836,6 +912,7 @@ def upsert_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             existing["id"],
         ),
     )
+    finding["id"] = existing["id"]
     return False
 
 
@@ -941,7 +1018,18 @@ def get_new_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def get_kev_cve_ids(conn: sqlite3.Connection) -> set[str]:
-    """Return the set of CVE IDs present in the CISA KEV (from news_items)."""
+    """Return the set of CVE IDs present in the CISA KEV.
+
+    Reads from the persistent `kev_entries` table so `is_kev` scoring is
+    unaffected by news retention/pruning. Falls back to deriving the set from
+    `news_items` (the pre-kev_entries behaviour) when the table is empty —
+    e.g. immediately after upgrading, before the next collector run has had a
+    chance to populate it.
+    """
+    rows = conn.execute("SELECT cve_id FROM kev_entries").fetchall()
+    if rows:
+        return {row["cve_id"] for row in rows}
+
     rows = conn.execute("SELECT url FROM news_items WHERE source = 'CISA KEV'").fetchall()
     result = set()
     for row in rows:
@@ -949,6 +1037,27 @@ def get_kev_cve_ids(conn: sqlite3.Connection) -> set[str]:
         if "#" in url:
             result.add(url.split("#")[-1].upper())
     return result
+
+
+def upsert_kev_entries(conn: sqlite3.Connection, entries: Iterable[tuple[str, str | None]]) -> None:
+    """Upsert (cve_id, added_at) pairs into the persistent KEV table.
+
+    Never touched by retention/clear-data operations, so `is_kev` scoring
+    survives news pruning. Safe to call with the full current KEV catalog on
+    every collector run — existing rows just get their `added_at` refreshed.
+    """
+    now = _now()
+    for cve_id, added_at in entries:
+        if not cve_id:
+            continue
+        conn.execute(
+            """
+            INSERT INTO kev_entries (cve_id, added_at, first_seen_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cve_id) DO UPDATE SET added_at = excluded.added_at
+            """,
+            (cve_id.upper(), added_at, now),
+        )
 
 
 def get_unnotified_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1017,6 +1126,21 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     ).fetchone()
 
     if existing is None:
+        # gitleaks can report two entries for the same commit/file/rule/line
+        # with a different secret_type description (observed live: two
+        # findings at an identical location, differing only in the
+        # human-readable Description gitleaks attached), which gives them
+        # different match_keys but the *same* Fingerprint. fingerprint is the
+        # column with the actual UNIQUE constraint, so falling through to an
+        # INSERT here would raise IntegrityError instead of updating the row
+        # that's already there. Check fingerprint too before deciding this is
+        # really new.
+        existing = conn.execute(
+            "SELECT id FROM secret_findings WHERE fingerprint = ?",
+            (finding["fingerprint"],),
+        ).fetchone()
+
+    if existing is None:
         conn.execute(
             """
             INSERT INTO secret_findings
@@ -1043,7 +1167,8 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     conn.execute(
         """
         UPDATE secret_findings
-        SET last_seen_at = ?, commit_sha = ?, line_number = ?, fingerprint = ?
+        SET last_seen_at = ?, commit_sha = ?, line_number = ?, fingerprint = ?,
+            match_key = ?, secret_type = ?, rule_id = ?
         WHERE id = ?
         """,
         (
@@ -1051,6 +1176,9 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             finding["commit_sha"],
             finding.get("line_number"),
             finding["fingerprint"],
+            match_key,
+            finding["secret_type"],
+            finding["rule_id"],
             existing["id"],
         ),
     )

@@ -10,6 +10,7 @@
 {% set pct_low      = (summary.low      * 100 / total_norm) %}
 
 {% block content %}
+<h1 class="sr-only">Dashboard</h1>
 <section class="exposure-hero" aria-label="Exposure overview">
   <div class="exposure-hero-grid">
 
@@ -30,10 +31,10 @@
         {% set offset_m = pct_critical + pct_high %}
         {% set offset_l = pct_critical + pct_high + pct_medium %}
         {% if total_open > 0 %}
-          {% if summary.critical %}<span class="exposure-stack-seg is-critical" style="left:0%;width:{{ pct_critical }}%"></span>{% endif %}
-          {% if summary.high     %}<span class="exposure-stack-seg is-high"     style="left:{{ offset_h }}%;width:{{ pct_high }}%"></span>{% endif %}
-          {% if summary.medium   %}<span class="exposure-stack-seg is-medium"   style="left:{{ offset_m }}%;width:{{ pct_medium }}%"></span>{% endif %}
-          {% if summary.low      %}<span class="exposure-stack-seg is-low"      style="left:{{ offset_l }}%;width:{{ pct_low }}%"></span>{% endif %}
+          {% if summary.critical %}<span class="exposure-stack-seg is-critical" style="--seg-start:0%;--seg-width:{{ pct_critical }}%"></span>{% endif %}
+          {% if summary.high     %}<span class="exposure-stack-seg is-high"     style="--seg-start:{{ offset_h }}%;--seg-width:{{ pct_high }}%"></span>{% endif %}
+          {% if summary.medium   %}<span class="exposure-stack-seg is-medium"   style="--seg-start:{{ offset_m }}%;--seg-width:{{ pct_medium }}%"></span>{% endif %}
+          {% if summary.low      %}<span class="exposure-stack-seg is-low"      style="--seg-start:{{ offset_l }}%;--seg-width:{{ pct_low }}%"></span>{% endif %}
         {% endif %}
       </div>
 
@@ -84,9 +85,11 @@
     </div>
 
     {% set repo_total = top_repos | sum(attribute='total') %}
-    {# Six perceptually distinct, theme-matched colours so adjacent slices and
-       legend rows are easy to tell apart against the dark panel. #}
-    {% set palette = ['#818cf8','#34d399','#fb923c','#60a5fa','#f472b6','#facc15'] %}
+    {# Six perceptually distinct categorical colours, one per theme in
+       static/style.css (--chart-cat-0..5) so this SVG re-colours itself on
+       theme toggle for free — no JS re-render needed, unlike the Chart.js
+       canvases in history.html. #}
+    {% set palette = ['var(--chart-cat-0)','var(--chart-cat-1)','var(--chart-cat-2)','var(--chart-cat-3)','var(--chart-cat-4)','var(--chart-cat-5)'] %}
     {% if repo_total > 0 %}
     {% set C = 263.894 %}
     <div class="donut-wrap">
@@ -105,8 +108,8 @@
                   transform="rotate(-90 60 60)"/>
           {% set ns.off = ns.off + seg %}
         {% endfor %}
-        <text x="60" y="56" text-anchor="middle" fill="#f1f4fb" font-size="22" font-weight="600" font-family="Inter, sans-serif">{{ repo_total }}</text>
-        <text x="60" y="72" text-anchor="middle" fill="#8a93ad" font-size="9" font-weight="600" letter-spacing="2" font-family="Inter, sans-serif">FINDINGS</text>
+        <text x="60" y="56" text-anchor="middle" fill="var(--text-bright)" font-size="22" font-weight="600" font-family="Inter, sans-serif">{{ repo_total }}</text>
+        <text x="60" y="72" text-anchor="middle" fill="var(--text-muted)" font-size="9" font-weight="600" letter-spacing="2" font-family="Inter, sans-serif">FINDINGS</text>
       </svg>
 
       <ul class="donut-legend">
@@ -158,7 +161,7 @@
           </span>
         </div>
         <div class="top-cve-tags">
-          {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+          {% if f.is_kev %}<span class="badge badge-kev" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
           <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
         </div>
       </li>
@@ -246,17 +249,21 @@
     <table class="triage-table">
       <tbody>
         {% for f in recent_findings %}
-        <tr onclick="window.location='/findings?state=new'" style="cursor:pointer">
+        <tr class="clickable-row"
+            onclick="if (!event.target.closest('a,button')) window.location='/findings?state=new'"
+            style="cursor:pointer">
           <td class="triage-score {{ 'is-critical' if f.priority_score and f.priority_score >= 60 else ('is-high' if f.priority_score and f.priority_score >= 40 else 'is-low') }}">
             {{ '%d' % f.priority_score if f.priority_score else '—' }}
           </td>
           <td class="triage-pkg">
-            <strong>{{ f.package_name }}</strong>
-            <span>{{ f.repo_full_name.split('/')[-1] if '/' in f.repo_full_name else f.repo_full_name }}</span>
+            <a href="/findings?state=new" class="triage-pkg-link">
+              <strong>{{ f.package_name }}</strong>
+              <span>{{ f.repo_full_name.split('/')[-1] if '/' in f.repo_full_name else f.repo_full_name }}</span>
+            </a>
           </td>
           <td class="triage-badges">
             <span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span>
-            {% if f.is_kev %}<span class="badge badge-kev">KEV</span>{% endif %}
+            {% if f.is_kev %}<span class="badge badge-kev" data-tip="CISA Known Exploited Vulnerability — actively exploited in the wild">KEV</span>{% endif %}
           </td>
           <td class="triage-advisory">{{ f.cve_id or f.ghsa_id or '—' }}</td>
           <td class="triage-fix">
@@ -346,14 +353,13 @@
 {% block scripts %}
 <script>
 function toggleBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
-  .then(r => r.json())
+  DIVE.toggleBookmark(itemId)
   .then(data => {
     const btn = document.getElementById('bm-btn-' + itemId);
     if (btn) btn.textContent = data.bookmarked ? 'Saved' : 'Save';
-    showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
+    DIVE.showToast(data.bookmarked ? 'Bookmarked' : 'Bookmark removed', 'success');
   })
-  .catch(() => showToast('Failed to toggle bookmark', 'error'));
+  .catch(() => DIVE.showToast('Failed to toggle bookmark', 'error'));
 }
 </script>
 {% endblock %}

@@ -5,6 +5,7 @@
 {% block content %}
 <section class="page-heading">
   <div>
+    <h1 class="sr-only">History</h1>
     <p class="heading-copy">Collection volume, source health, and pipeline run history.</p>
   </div>
   <div class="hero-actions">
@@ -83,21 +84,39 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/static/vendor/chart.umd.min.js"></script>
 <script>
-var SEVERITY_COLORS = {
-  'Critical': '#f87171',
-  'High':     '#fb923c',
-  'Medium':   '#facc15',
-  'Low':      '#60a5fa',
-  'Unknown':  '#64748b',
-};
-var CHART_TEXT = '#8b95b0';
-var CHART_GRID = 'rgba(139, 149, 176, 0.18)';
-var CHART_LEGEND = '#d8deeb';
+/* Colours read fresh from the theme's CSS custom properties on every
+   render (initial load AND on dive:themechange) instead of hardcoded once
+   — the old hardcoded CHART_LEGEND (#d8deeb) was ~1.3:1 contrast against
+   a white panel in light theme, effectively invisible, and none of these
+   updated when the operator toggled theme without a reload. */
+function _chartColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  return {
+    severity: {
+      Critical: v('--critical'),
+      High:     v('--high'),
+      Medium:   v('--medium'),
+      Low:      v('--low'),
+      Unknown:  v('--text-muted'),
+    },
+    text:   v('--text-muted'),
+    grid:   v('--border'),
+    legend: v('--text-bright'),
+    accent: v('--brand-mark'),
+  };
+}
 
-var _newsChart = null;
-var _findingsChart = null;
+/* Chart.js tracks its own instance-per-canvas registry (Chart.getChart),
+   so destroy-before-recreate doesn't need a module-level variable that
+   would otherwise get silently re-declared (harmlessly, but sloppily) on
+   every pjax re-visit to this page. */
+function _destroyChart(canvasId) {
+  const existing = typeof Chart !== 'undefined' && Chart.getChart(canvasId);
+  if (existing) existing.destroy();
+}
 
 /* ── Utilities ──────────────────────────────────────── */
 function getDays() {
@@ -120,6 +139,7 @@ function renderNewsChart(rows) {
   document.querySelector('#news-chart-wrap .skeleton')?.remove();
   const days = getDays();
   const labels = buildDateRange(days);
+  const C = _chartColors();
 
   // Build a lookup: day → { severity: count }
   const lookup = {};
@@ -132,27 +152,27 @@ function renderNewsChart(rows) {
   const datasets = severities.map(sev => ({
     label: sev,
     data:  labels.map(d => (lookup[d] && lookup[d][sev]) || 0),
-    backgroundColor: SEVERITY_COLORS[sev] + 'cc',
-    borderColor:     SEVERITY_COLORS[sev],
+    backgroundColor: C.severity[sev] + 'cc',
+    borderColor:     C.severity[sev],
     borderWidth: 1,
     stack: 'news',
   }));
 
+  _destroyChart('news-chart');
   const ctx = document.getElementById('news-chart').getContext('2d');
-  if (_newsChart) _newsChart.destroy();
-  _newsChart = new Chart(ctx, {
+  new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: CHART_LEGEND, font: { size: 11 } } },
+        legend: { labels: { color: C.legend, font: { size: 11 } } },
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { stacked: true, ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
-        y: { stacked: true, ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
+        x: { stacked: true, ticks: { color: C.text, maxRotation: 45 }, grid: { color: C.grid } },
+        y: { stacked: true, ticks: { color: C.text }, grid: { color: C.grid }, beginAtZero: true },
       },
     },
   });
@@ -165,18 +185,19 @@ function renderFindingsChart(rows) {
   const labels = buildDateRange(days);
   const lookup = {};
   rows.forEach(r => { lookup[r.day] = r.count; });
+  const C = _chartColors();
 
+  _destroyChart('findings-chart');
   const ctx = document.getElementById('findings-chart').getContext('2d');
-  if (_findingsChart) _findingsChart.destroy();
-  _findingsChart = new Chart(ctx, {
+  new Chart(ctx, {
     type: 'line',
     data: {
       labels,
       datasets: [{
         label: 'New Findings',
         data:  labels.map(d => lookup[d] || 0),
-        borderColor: '#818cf8',
-        backgroundColor: 'rgba(129,140,248,0.18)',
+        borderColor: C.accent,
+        backgroundColor: C.accent + '2e',
         borderWidth: 2,
         pointRadius: 3,
         fill: true,
@@ -191,8 +212,8 @@ function renderFindingsChart(rows) {
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
-        y: { ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
+        x: { ticks: { color: C.text, maxRotation: 45 }, grid: { color: C.grid } },
+        y: { ticks: { color: C.text }, grid: { color: C.grid }, beginAtZero: true },
       },
     },
   });
@@ -207,14 +228,14 @@ function renderSources(rows) {
   }
   document.getElementById('sources-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Source</th><th>Last 7 days</th><th>Total items</th>
           <th>Last fetched</th><th>Status</th>
         </tr></thead>
         <tbody>${rows.map(r => `
           <tr>
-            <td data-label="Source" style="font-size:0.85rem">${r.name}</td>
+            <td data-label="Source" style="font-size:0.85rem">${DIVE.escapeHtml(r.name)}</td>
             <td data-label="Last 7 days" style="font-size:0.85rem">${r.week_items || 0}</td>
             <td data-label="Total items" style="font-size:0.82rem;color:var(--text-dim)">${r.total_items || 0}</td>
             <td data-label="Last fetched" style="font-size:0.75rem;color:var(--text-dim)">${r.last_fetched_at ? r.last_fetched_at.slice(0,16).replace('T',' ') : '—'}</td>
@@ -236,7 +257,7 @@ function renderRuns(rows) {
   }
   document.getElementById('runs-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Started</th><th>Duration</th><th>Status</th>
           <th>Items</th><th>Categorized</th><th>New Findings</th>
@@ -279,6 +300,25 @@ function _panelError(id, msg) {
     `<p style="color:var(--error);font-size:0.84rem;margin:0.5rem 0">${msg}</p>`;
 }
 
+/* Chart.js-dependent renders used to remove their skeleton first and only
+   then call `new Chart(...)` — if the vendored script failed to load (or
+   anything else inside the render throws), the skeleton was already gone
+   and the card stayed permanently blank with no indication why. Route
+   every chart render through this so a failure becomes a visible message
+   in the same slot instead of silence. */
+function _renderChartOrFail(wrapIds, renderFn) {
+  const ids = Array.isArray(wrapIds) ? wrapIds : [wrapIds];
+  if (typeof Chart === 'undefined') {
+    ids.forEach(id => _panelError(id, 'Chart library failed to load — try refreshing the page.'));
+    return;
+  }
+  try {
+    renderFn();
+  } catch (e) {
+    ids.forEach(id => _panelError(id, 'Could not render chart.'));
+  }
+}
+
 function loadAll() {
   const days = getDays();
 
@@ -300,10 +340,10 @@ function loadAll() {
       const runs         = get(3);
       const feedAnalytics = get(4);
 
-      if (news)          renderNewsChart(news);
+      if (news)          _renderChartOrFail('news-chart-wrap', () => renderNewsChart(news));
       else               _panelError('news-chart-wrap', 'Could not load news trend data.');
 
-      if (findings)      renderFindingsChart(findings);
+      if (findings)      _renderChartOrFail('findings-chart-wrap', () => renderFindingsChart(findings));
       else               _panelError('findings-chart-wrap', 'Could not load findings trend data.');
 
       if (sources)       renderSources(sources);
@@ -312,15 +352,15 @@ function loadAll() {
       if (runs)          renderRuns(runs);
       else               _panelError('runs-wrap', 'Could not load pipeline run data.');
 
-      if (feedAnalytics) renderFeedChart(feedAnalytics);
+      if (feedAnalytics) _renderChartOrFail(['feed-chart-wrap', 'feed-table-wrap'], () => renderFeedChart(feedAnalytics));
       else               _panelError('feed-table-wrap', 'Could not load feed analytics data.');
     });
 }
 
 /* ── Feed analytics chart ───────────────────────────── */
-var _feedChart = null;
-
-// Stable colour palette for up to ~12 sources
+// Stable colour palette for up to ~12 sources — categorical hues that read
+// fine against either theme's panel background, unlike the axis/legend
+// text below (which does need to come from the theme tokens).
 var FEED_PALETTE = [
   '#818cf8','#38bdf8','#fb923c','#60a5fa','#facc15',
   '#f87171','#a78bfa','#34d399','#f472b6','#22d3ee',
@@ -348,6 +388,7 @@ function renderFeedChart(rows) {
     lookup[r.source][r.day] = (lookup[r.source][r.day] || 0) + (r.count || 0);
   });
 
+  const C = _chartColors();
   const datasets = sources.map((src, i) => ({
     label: src,
     data: allDays.map(d => (lookup[src] && lookup[src][d]) || 0),
@@ -357,21 +398,21 @@ function renderFeedChart(rows) {
     stack: 'feeds',
   }));
 
+  _destroyChart('feed-chart');
   const ctx = document.getElementById('feed-chart').getContext('2d');
-  if (_feedChart) _feedChart.destroy();
-  _feedChart = new Chart(ctx, {
+  new Chart(ctx, {
     type: 'bar',
     data: { labels: allDays, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: CHART_LEGEND, font: { size: 10 }, boxWidth: 12 } },
+        legend: { labels: { color: C.legend, font: { size: 10 }, boxWidth: 12 } },
         tooltip: { mode: 'index' },
       },
       scales: {
-        x: { stacked: true, ticks: { color: CHART_TEXT, maxRotation: 45 }, grid: { color: CHART_GRID } },
-        y: { stacked: true, ticks: { color: CHART_TEXT }, grid: { color: CHART_GRID }, beginAtZero: true },
+        x: { stacked: true, ticks: { color: C.text, maxRotation: 45 }, grid: { color: C.grid } },
+        y: { stacked: true, ticks: { color: C.text }, grid: { color: C.grid }, beginAtZero: true },
       },
     },
   });
@@ -384,12 +425,12 @@ function renderFeedChart(rows) {
 
   document.getElementById('feed-table-wrap').innerHTML = `
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr><th>Source</th><th>Items in window</th></tr></thead>
         <tbody>${totals.map(s => `
           <tr>
-            <td data-label="Source" style="font-size:0.85rem">${s.name}</td>
-            <td data-label="Items" style="font-size:0.85rem">${s.total}</td>
+            <td data-label="Source" style="font-size:0.85rem">${DIVE.escapeHtml(s.name)}</td>
+            <td data-label="Items in window" style="font-size:0.85rem">${s.total}</td>
           </tr>`).join('')}
         </tbody>
       </table>
@@ -397,5 +438,21 @@ function renderFeedChart(rows) {
 }
 
 setTimeout(loadAll, 0);
+
+/* Re-fetch and redraw all three charts on theme toggle — their colours
+   are baked into a <canvas> bitmap at render time, so unlike the CSS
+   var()-driven parts of the page they don't update on their own. Guarded
+   on window so this listener is only ever registered once even though
+   this whole <script> re-executes on every pjax visit to /history. */
+if (!window._historyThemeListenerWired) {
+  window._historyThemeListenerWired = true;
+  // This listener is registered once on `document` and outlives any single
+  // pjax visit, so guard against firing after the operator has navigated
+  // away from /history (the pjax swap removes these elements from the DOM,
+  // but never unregisters this handler).
+  document.addEventListener('dive:themechange', () => {
+    if (document.getElementById('days-select')) loadAll();
+  });
+}
 </script>
 {% endblock %}

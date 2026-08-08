@@ -4,12 +4,14 @@ DIVE — main entrypoint.
 FastAPI application with:
   • APScheduler BackgroundScheduler — runs the full pipeline on a
     configurable interval (default 6h, stored in settings table).
-  • HTTP Basic Auth — all non-health routes require credentials from
-    config.yaml dashboard.username / dashboard.password.
+  • Signed session-cookie auth (itsdangerous, 7-day expiry) — all
+    non-health routes require a session established via POST /login
+    against config.yaml dashboard.username / dashboard.password.
   • POST /api/run — trigger an immediate pipeline run (X-Run-Token header
     required as CSRF protection).
   • File-based lock (filelock) — prevents concurrent pipeline runs.
-  • GET /api/health — unauthenticated; includes live pipeline status.
+  • GET /api/health — unauthenticated, minimal (Docker healthcheck target).
+    GET /api/status — authenticated; the full live pipeline status.
   • Jinja2 dashboard — /, /findings, /settings served as HTML.
 """
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar as _cal
+import copy
 import csv
 import io
 import json
@@ -25,7 +28,9 @@ import logging.handlers
 import queue
 import re
 import secrets
+import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -65,6 +70,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# httpx logs every request URL at INFO. The SQLite log handler captures INFO+,
+# so that wrote ~162 rows per pipeline run into log_entries — and any
+# credential carried in a URL (as the NVD apiKey once was, before it moved to
+# a request header) landed in the database in plaintext. Warnings and errors
+# still come through.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # BASE_DIR points to the project root (one level above this package directory)
 # so we can find static/ and templates/ regardless of how Python was invoked.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -76,27 +89,99 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 _log_queue: queue.Queue = queue.Queue(maxsize=2000)
 _log_listener: logging.handlers.QueueListener | None = None
+_sqlite_log_handler: _SQLiteLogHandler | None = None
+
+_LOG_INSERT_ATTEMPTS = 3
+_LOG_INSERT_BACKOFF_S = 0.25
+
+# db._make_connection()'s default PRAGMA busy_timeout is 5000ms, sized for
+# request-handling connections that must not stall a response. The pipeline
+# can hold a write transaction open for an entire step, not just a brief
+# window — a live 15-repo secrets scan measured at 48.9s total, with
+# db.upsert_secret_finding() never committing mid-loop (see main.py's
+# `with db.get_conn() as conn: sec_stats = secrets_scanner.run(conn, ...)`).
+# A 5s busy_timeout plus a short Python-level backoff (~15.75s worst case)
+# was measured losing exactly the ERROR record for a mid-scan failure. This
+# handler's connection is dedicated to a single background thread with
+# nothing else to do but wait, so it gets a much longer budget instead.
+_LOG_CONN_BUSY_TIMEOUT_MS = 60_000
 
 
 class _SQLiteLogHandler(logging.Handler):
-    """Write log records to the log_entries table via a fresh DB connection."""
+    """Write log records to the log_entries table via one long-lived
+    connection, reused across calls.
+
+    Safe because QueueListener runs every emit() on a single dedicated
+    thread, never concurrently — unlike request handlers, which each open
+    their own connection precisely because they run on different threads.
+    A fresh connection per record was measurable overhead at normal INFO
+    log volume, and could contend with the pipeline holding a long write
+    transaction open during a scan.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._conn: sqlite3.Connection | None = None
+        self._dropped = 0
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = db._make_connection(db._DEFAULT_DB_PATH)
+            # Override the request-connection default (5s) — see
+            # _LOG_CONN_BUSY_TIMEOUT_MS above. Only this dedicated background
+            # connection is affected; request/pipeline connections keep the
+            # 5s default from _make_connection().
+            self._conn.execute(f"PRAGMA busy_timeout={_LOG_CONN_BUSY_TIMEOUT_MS}")
+        return self._conn
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             ts = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S")
             msg = self.format(record)
-            with db.get_conn() as conn:
-                db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
         except Exception:
-            pass  # never raise from a log handler
+            self._dropped += 1
+            return
+
+        for attempt in range(_LOG_INSERT_ATTEMPTS):
+            try:
+                conn = self._get_conn()
+                db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
+                conn.commit()
+                return
+            except sqlite3.OperationalError:
+                # Each attempt above already blocks for up to
+                # _LOG_CONN_BUSY_TIMEOUT_MS inside SQLite's own busy handler
+                # before raising — this loop is a second layer for the rare
+                # case that budget is *still* not enough (an unusually long
+                # step) or the lock clears in the gap right after giving up.
+                # This runs only on the QueueListener thread, never a request
+                # thread, so several minutes of total worst-case wait here
+                # cannot block a request or the pipeline itself.
+                if attempt == _LOG_INSERT_ATTEMPTS - 1:
+                    break
+                time.sleep(_LOG_INSERT_BACKOFF_S)
+            except Exception:
+                break
+
+        # Never raise from a log handler. Drop the (possibly broken)
+        # connection so the next record gets a fresh one instead of
+        # repeating the same failure forever.
+        self._dropped += 1
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
 
 
 def _setup_sqlite_logging() -> None:
     """Wire the SQLite handler behind a QueueListener so logging never blocks."""
-    global _log_listener
+    global _log_listener, _sqlite_log_handler
     sqlite_handler = _SQLiteLogHandler()
     sqlite_handler.setFormatter(logging.Formatter("%(message)s"))
     sqlite_handler.setLevel(logging.INFO)
+    _sqlite_log_handler = sqlite_handler
     _log_listener = logging.handlers.QueueListener(
         _log_queue, sqlite_handler, respect_handler_level=True
     )
@@ -104,6 +189,13 @@ def _setup_sqlite_logging() -> None:
     queue_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(queue_handler)
     _log_listener.start()
+
+
+def _get_dropped_log_count() -> int:
+    """Number of log records lost by the SQLite handler since startup —
+    surfaced in /api/status as `log_drops` so a silent loss is visible
+    instead of just incrementing an internal counter nobody reads."""
+    return _sqlite_log_handler._dropped if _sqlite_log_handler is not None else 0
 
 
 # ---------------------------------------------------------------------------
@@ -267,13 +359,15 @@ def _enter_step(key: str) -> bool:
         # subsequent steps don't each wait another full timeout cycle.
         if not _pipeline_pause_event.is_set():
             _pipeline_pause_event.set()
-            _pipeline_control["pause_requested"] = False
+            with _pipeline_lock:
+                _pipeline_control["pause_requested"] = False
         with _pipeline_lock:
             _pipeline_status["paused"] = False
 
     # Cancel takes priority over starting the next step.
-    if _pipeline_control["cancel_requested"]:
-        return False
+    with _pipeline_lock:
+        if _pipeline_control["cancel_requested"]:
+            return False
 
     with _pipeline_lock:
         _pipeline_status["current_step"] = key
@@ -346,10 +440,10 @@ def _reset_pipeline_control() -> None:
     must NOT be called again once a run finishes. See
     _reset_pipeline_control_flags() for the finally-block equivalent.
     """
-    _pipeline_control["cancel_requested"] = False
-    _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
     with _pipeline_lock:
+        _pipeline_control["cancel_requested"] = False
+        _pipeline_control["pause_requested"] = False
         _pipeline_status["current_step"] = None
         _pipeline_status["step_history"] = []
         _pipeline_status["paused"] = False
@@ -366,10 +460,10 @@ def _reset_pipeline_control_flags() -> None:
     _reset_pipeline_control(), this preserves step_history/step_stats/etc.
     so the drawer can keep showing the just-finished run's detail.
     """
-    _pipeline_control["cancel_requested"] = False
-    _pipeline_control["pause_requested"] = False
     _pipeline_pause_event.set()
     with _pipeline_lock:
+        _pipeline_control["cancel_requested"] = False
+        _pipeline_control["pause_requested"] = False
         _pipeline_status["paused"] = False
 
 
@@ -381,11 +475,18 @@ def _run_pipeline() -> None:
     """
     global _config
 
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(_LOCK_FILE), timeout=0)
     try:
         lock.acquire()
     except Timeout:
         logger.warning("Pipeline already running — skipping this trigger")
+        # /api/run may have already flipped "running" to True (to close a
+        # race between two near-simultaneous trigger requests) before this
+        # thread got here and lost the file lock — undo that so the status
+        # doesn't get stuck reporting a run that never actually started.
+        with _pipeline_lock:
+            _pipeline_status["running"] = False
         return
 
     run_id: int | None = None
@@ -397,7 +498,6 @@ def _run_pipeline() -> None:
             _pipeline_status["last_started"] = _pipeline_start_time.isoformat()
             _pipeline_status["last_error"] = None
 
-        _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
         logger.info("Pipeline run starting")
 
         if _config:
@@ -512,6 +612,8 @@ def _run_pipeline() -> None:
                     )
                     if scan_stats.failed_repos:
                         logger.warning("Scanner failed repos: %s", scan_stats.failed_repos)
+                    if scan_stats.skipped_repos:
+                        logger.warning("Scanner skipped repos: %s", scan_stats.skipped_repos)
                 _finish_step("scan")
                 _set_step_stats(
                     "scan",
@@ -519,6 +621,8 @@ def _run_pipeline() -> None:
                     packages_checked=scan_stats.packages_checked,
                     findings_new=scan_stats.findings_new or None,
                     failed_repos=scan_stats.failed_repos or None,
+                    skipped_repos=scan_stats.skipped_repos or None,
+                    token_permission_warning=scan_stats.token_permission_warning,
                 )
             except Exception as exc:
                 logger.error("Scanner failed: %s", exc, exc_info=True)
@@ -574,6 +678,7 @@ def _run_pipeline() -> None:
         secrets_new_total = 0
         if _secrets_scanning_on:
             secrets_status = "ok"
+            sec_stats = None
             try:
                 with db.get_conn() as conn:
                     sec_stats = ss.run(
@@ -602,12 +707,14 @@ def _run_pipeline() -> None:
             except Exception as exc:
                 logger.error("Secrets notifier failed: %s", exc, exc_info=True)
             _finish_step("secrets", secrets_status)
-            _set_step_stats(
-                "secrets",
-                repos_scanned=sec_stats.repos_scanned,
-                secrets_new=sec_stats.secrets_new or None,
-                failed_repos=sec_stats.failed_repos or None,
-            )
+            if sec_stats is not None:
+                _set_step_stats(
+                    "secrets",
+                    repos_scanned=sec_stats.repos_scanned,
+                    secrets_new=sec_stats.secrets_new or None,
+                    failed_repos=sec_stats.failed_repos or None,
+                    token_permission_warning=sec_stats.token_permission_warning,
+                )
         else:
             logger.info("Secrets scanning disabled by feature toggle — skipping Step 4")
             _finish_step("secrets", "skipped")
@@ -946,6 +1053,22 @@ def _make_session_token(data: dict) -> str:
     return _session_serializer.dumps(data)  # type: ignore[return-value]
 
 
+def _safe_next(value: str) -> str:
+    """Sanitize a `next` redirect target to same-origin paths only.
+
+    A naive `value.startswith("/")` check (as previously used in the login
+    POST handler, and not used at all in the GET handler) still lets
+    protocol-relative URLs through: "//evil.tld" and "/\\evil.tld" (which
+    browsers normalize to "//evil.tld") both start with "/" but navigate
+    off-site.
+    """
+    if not value.startswith("/"):
+        return "/"
+    if len(value) > 1 and value[1] in ("/", "\\"):
+        return "/"
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Auth dependency
 # ---------------------------------------------------------------------------
@@ -1099,6 +1222,19 @@ def _validate_ollama_model(model: str) -> None:
         )
 
 
+def _fetch_installed_ollama_models(ollama_host: str) -> list[str]:
+    """Blocking HTTP call — always run via asyncio.to_thread from a route."""
+    try:
+        with httpx.Client(timeout=8) as client:
+            resp = client.get(f"{ollama_host}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+        return [m["name"] for m in data.get("models", [])]
+    except Exception as exc:
+        logger.warning("Could not reach Ollama for model list: %s", exc)
+        return []
+
+
 def _check_ollama_status() -> bool:
     """Return True if Ollama is reachable and the configured model is loaded."""
     if _config is None:
@@ -1115,20 +1251,28 @@ def _check_ollama_status() -> bool:
         return False
 
 
-def _get_run_token() -> str:
+def _get_run_token(conn: sqlite3.Connection | None = None) -> str:
+    """Reads the run_token setting. Pass an open `conn` (e.g. a route's own
+    request-scoped connection) to avoid opening a second one; otherwise
+    opens its own — every call site keeps working either way."""
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             return db.get_setting(conn, "run_token", "")
+        with db.get_conn() as c:
+            return db.get_setting(c, "run_token", "")
     except Exception:
         return ""
 
 
-def _get_current_model() -> str:
+def _get_current_model(conn: sqlite3.Connection | None = None) -> str:
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             stored = db.get_setting(conn, "active_model")
-            if stored:
-                return stored
+        else:
+            with db.get_conn() as c:
+                stored = db.get_setting(c, "active_model")
+        if stored:
+            return stored
     except Exception:
         pass
     return _config.ollama.model if _config else "—"
@@ -1152,163 +1296,187 @@ def _paginate(page: int, per_page: int, total: int) -> dict:
     }
 
 
-def _secrets_summary() -> dict:
+def _secrets_summary(conn: sqlite3.Connection | None = None) -> dict:
     """Return per-state counts from secret_findings."""
     try:
-        with db.get_conn() as conn:
+        if conn is not None:
             return db.get_secret_findings_summary(conn)
+        with db.get_conn() as c:
+            return db.get_secret_findings_summary(c)
     except Exception:
         return {"new": 0, "false_positive": 0, "resolved": 0}
 
 
-def _nav_badges() -> dict:
-    """Counts shown next to sidebar nav items."""
+def _nav_badges_query(conn: sqlite3.Connection) -> dict:
+    findings_open = conn.execute(
+        "SELECT COUNT(*) AS c FROM findings WHERE state IN ('new','acknowledged')"
+    ).fetchone()["c"]
+    secrets_open = conn.execute(
+        "SELECT COUNT(*) AS c FROM secret_findings WHERE state = 'new'"
+    ).fetchone()["c"]
+    news_recent = conn.execute(
+        "SELECT COUNT(*) AS c FROM news_items WHERE fetched_at >= datetime('now', '-1 day')"
+    ).fetchone()["c"]
+    return {
+        "findings": int(findings_open or 0),
+        "secrets": int(secrets_open or 0),
+        "news": int(news_recent or 0),
+    }
+
+
+def _nav_badges(conn: sqlite3.Connection | None = None) -> dict:
+    """Counts shown next to sidebar nav items. Also registered as a Jinja
+    global (called with no args on every template render), so it must keep
+    working standalone in addition to accepting a route's own connection."""
     try:
-        with db.get_conn() as conn:
-            findings_open = conn.execute(
-                "SELECT COUNT(*) AS c FROM findings WHERE state IN ('new','acknowledged')"
-            ).fetchone()["c"]
-            secrets_open = conn.execute(
-                "SELECT COUNT(*) AS c FROM secret_findings WHERE state = 'new'"
-            ).fetchone()["c"]
-            news_recent = conn.execute(
-                "SELECT COUNT(*) AS c FROM news_items "
-                "WHERE fetched_at >= datetime('now', '-1 day')"
-            ).fetchone()["c"]
-        return {
-            "findings": int(findings_open or 0),
-            "secrets": int(secrets_open or 0),
-            "news": int(news_recent or 0),
-        }
+        if conn is not None:
+            return _nav_badges_query(conn)
+        with db.get_conn() as c:
+            return _nav_badges_query(c)
     except Exception:
         return {"findings": 0, "secrets": 0, "news": 0}
 
 
-def _dashboard_extras() -> dict:
-    """Top affected repos, top CVEs, and activity heatmap for the dashboard."""
+def _dashboard_extras(conn: sqlite3.Connection | None = None) -> dict:
+    """Top affected repos, top CVEs, and activity heatmap for the dashboard.
+
+    Pass an open `conn` to reuse the caller's connection instead of opening
+    a new one — the dashboard route already has one open for its other
+    queries.
+    """
     out: dict = {"top_repos": [], "top_cves": [], "heatmap_weeks": [], "heatmap_max": 0}
     try:
-        with db.get_conn() as conn:
-            # Top affected repos by open finding count, with severity breakdown
-            rows = conn.execute("""
-                SELECT
-                    repo_full_name AS repo,
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END) AS crit,
-                    SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
-                    SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS med,
-                    SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low
-                FROM findings
-                WHERE state IN ('new','acknowledged')
-                GROUP BY repo_full_name
-                ORDER BY total DESC
-                LIMIT 6
-            """).fetchall()
-            out["top_repos"] = [
-                {
-                    "repo": r["repo"],
-                    "total": int(r["total"] or 0),
-                    "crit": int(r["crit"] or 0),
-                    "high": int(r["high"] or 0),
-                    "med": int(r["med"] or 0),
-                    "low": int(r["low"] or 0),
-                }
-                for r in rows
-            ]
-
-            # Top CVEs by priority score (or CVSS), open only
-            cve_rows = conn.execute("""
-                SELECT id, repo_full_name, package_name, cve_id, ghsa_id,
-                       cvss_score, priority_score, is_kev, patch_available,
-                       fixed_version, installed_version
-                FROM findings
-                WHERE state IN ('new','acknowledged')
-                ORDER BY COALESCE(priority_score, 0) DESC,
-                         COALESCE(cvss_score, 0) DESC
-                LIMIT 6
-            """).fetchall()
-            out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
-
-            # 3-month GitHub-style activity heatmap — news items per day
-            hm_rows = conn.execute("""
-                SELECT DATE(fetched_at) AS d, COUNT(*) AS c
-                FROM news_items
-                WHERE fetched_at >= datetime('now', '-95 days')
-                GROUP BY DATE(fetched_at)
-            """).fetchall()
-            counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
-
-            today = date.today()
-            max_count = max(counts.values(), default=1) or 1
-
-            # Align start to the Sunday on or before (today - 90 days)
-            # isoweekday(): Mon=1 … Sun=7 → Sunday offset = isoweekday() % 7
-            start_raw = today - timedelta(days=90)
-            start = start_raw - timedelta(days=start_raw.isoweekday() % 7)
-
-            weeks = []
-            current = start
-            prev_month: str | None = None
-            while current <= today:
-                days = []
-                for i in range(7):
-                    d = current + timedelta(days=i)
-                    if d > today:
-                        days.append(None)
-                    else:
-                        c = counts.get(d.isoformat(), 0)
-                        ratio = c / max_count
-                        lvl = (
-                            0
-                            if c == 0
-                            else (
-                                1
-                                if ratio < 0.25
-                                else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4))
-                            )
-                        )
-                        days.append(
-                            {
-                                "d": d.isoformat(),
-                                "c": c,
-                                "level": lvl,
-                                "label": _cal.month_abbr[d.month] + " " + str(d.day),
-                            }
-                        )
-                month_label = None
-                first = next((x for x in days if x is not None), None)
-                if first:
-                    m = first["d"][:7]
-                    if m != prev_month:
-                        month_label = _cal.month_abbr[int(m[5:7])]
-                        prev_month = m
-                weeks.append({"days": days, "month_label": month_label})
-                current += timedelta(days=7)
-
-            out["heatmap_weeks"] = weeks
-            out["heatmap_max"] = max_count
+        if conn is not None:
+            _dashboard_extras_query(conn, out)
+        else:
+            with db.get_conn() as c:
+                _dashboard_extras_query(c, out)
         return out
     except Exception:
         return out
 
 
-def _findings_summary() -> dict:
+def _dashboard_extras_query(conn: sqlite3.Connection, out: dict) -> None:
+    # Top affected repos by open finding count, with severity breakdown
+    rows = conn.execute("""
+        SELECT
+            repo_full_name AS repo,
+            COUNT(*) AS total,
+            SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END) AS crit,
+            SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS med,
+            SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low
+        FROM findings
+        WHERE state IN ('new','acknowledged')
+        GROUP BY repo_full_name
+        ORDER BY total DESC
+        LIMIT 6
+    """).fetchall()
+    out["top_repos"] = [
+        {
+            "repo": r["repo"],
+            "total": int(r["total"] or 0),
+            "crit": int(r["crit"] or 0),
+            "high": int(r["high"] or 0),
+            "med": int(r["med"] or 0),
+            "low": int(r["low"] or 0),
+        }
+        for r in rows
+    ]
+
+    # Top CVEs by priority score (or CVSS), open only
+    cve_rows = conn.execute("""
+        SELECT id, repo_full_name, package_name, cve_id, ghsa_id,
+               cvss_score, priority_score, is_kev, patch_available,
+               fixed_version, installed_version
+        FROM findings
+        WHERE state IN ('new','acknowledged')
+        ORDER BY COALESCE(priority_score, 0) DESC,
+                 COALESCE(cvss_score, 0) DESC
+        LIMIT 6
+    """).fetchall()
+    out["top_cves"] = [_enrich_finding(r) for r in cve_rows]
+
+    # 3-month GitHub-style activity heatmap — news items per day
+    hm_rows = conn.execute("""
+        SELECT DATE(fetched_at) AS d, COUNT(*) AS c
+        FROM news_items
+        WHERE fetched_at >= datetime('now', '-95 days')
+        GROUP BY DATE(fetched_at)
+    """).fetchall()
+    counts = {r["d"]: int(r["c"] or 0) for r in hm_rows}
+
+    today = date.today()
+    max_count = max(counts.values(), default=1) or 1
+
+    # Align start to the Sunday on or before (today - 90 days)
+    # isoweekday(): Mon=1 … Sun=7 → Sunday offset = isoweekday() % 7
+    start_raw = today - timedelta(days=90)
+    start = start_raw - timedelta(days=start_raw.isoweekday() % 7)
+
+    weeks = []
+    current = start
+    prev_month: str | None = None
+    while current <= today:
+        days = []
+        for i in range(7):
+            d = current + timedelta(days=i)
+            if d > today:
+                days.append(None)
+            else:
+                c = counts.get(d.isoformat(), 0)
+                ratio = c / max_count
+                lvl = (
+                    0
+                    if c == 0
+                    else (1 if ratio < 0.25 else (2 if ratio < 0.5 else (3 if ratio < 0.75 else 4)))
+                )
+                days.append(
+                    {
+                        "d": d.isoformat(),
+                        "c": c,
+                        "level": lvl,
+                        "label": _cal.month_abbr[d.month] + " " + str(d.day),
+                    }
+                )
+        month_label = None
+        first = next((x for x in days if x is not None), None)
+        if first:
+            m = first["d"][:7]
+            if m != prev_month:
+                month_label = _cal.month_abbr[int(m[5:7])]
+                prev_month = m
+        weeks.append({"days": days, "month_label": month_label})
+        current += timedelta(days=7)
+
+    out["heatmap_weeks"] = weeks
+    out["heatmap_max"] = max_count
+
+
+def _findings_summary_query(conn: sqlite3.Connection) -> sqlite3.Row:
+    return conn.execute("""
+        SELECT
+            SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END)                     AS critical,
+            SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
+            SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS medium,
+            SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low,
+            SUM(CASE WHEN state = 'new'          THEN 1 ELSE 0 END)                 AS new,
+            SUM(CASE WHEN state = 'acknowledged'  THEN 1 ELSE 0 END)                AS acknowledged,
+            SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved,
+            SUM(CASE WHEN is_kev = 1 AND state != 'resolved' THEN 1 ELSE 0 END)     AS kev,
+            SUM(CASE WHEN patch_available = 1 AND state != 'resolved' THEN 1 ELSE 0 END) AS patchable
+        FROM findings
+    """).fetchone()
+
+
+def _findings_summary(conn: sqlite3.Connection | None = None) -> dict:
     """Return per-severity and per-state counts from the database."""
     try:
-        with db.get_conn() as conn:
-            row = conn.execute("""
-                SELECT
-                    SUM(CASE WHEN cvss_score >= 9.0 THEN 1 ELSE 0 END)                     AS critical,
-                    SUM(CASE WHEN cvss_score >= 7.0 AND cvss_score < 9.0 THEN 1 ELSE 0 END) AS high,
-                    SUM(CASE WHEN cvss_score >= 4.0 AND cvss_score < 7.0 THEN 1 ELSE 0 END) AS medium,
-                    SUM(CASE WHEN cvss_score IS NOT NULL AND cvss_score < 4.0 THEN 1 ELSE 0 END) AS low,
-                    SUM(CASE WHEN state = 'new'          THEN 1 ELSE 0 END)                 AS new,
-                    SUM(CASE WHEN state = 'acknowledged'  THEN 1 ELSE 0 END)                AS acknowledged,
-                    SUM(CASE WHEN state = 'resolved'      THEN 1 ELSE 0 END)                AS resolved,
-                    SUM(CASE WHEN is_kev = 1 AND state != 'resolved' THEN 1 ELSE 0 END)     AS kev,
-                    SUM(CASE WHEN patch_available = 1 AND state != 'resolved' THEN 1 ELSE 0 END) AS patchable
-                FROM findings
-            """).fetchone()
+        if conn is not None:
+            row = _findings_summary_query(conn)
+        else:
+            with db.get_conn() as c:
+                row = _findings_summary_query(c)
         return {
             "critical": int(row["critical"] or 0),
             "high": int(row["high"] or 0),
@@ -1338,11 +1506,41 @@ def _findings_summary() -> dict:
 # Login / logout routes (unauthenticated)
 # ---------------------------------------------------------------------------
 
+# Simple in-process brute-force deterrent on the login form. There is a
+# single shared dashboard password, so this exists to slow down credential
+# guessing — not to serve as a robust distributed rate limiter. State is
+# in-memory only and resets on restart; that's an accepted trade-off for a
+# single-process, self-hosted app rather than adding a dependency.
+_LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
+_LOGIN_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+_login_attempts: dict[str, list[float]] = {}
+_login_attempts_lock = threading.Lock()
+
+
+def _login_rate_limit_retry_after(client_ip: str) -> int | None:
+    """Return seconds to wait before this client may try again, or None if
+    it's under the limit. Only failed attempts count (see _record_failed_login)
+    so a user who mistypes once and then logs in successfully isn't penalized.
+    """
+    now = time.monotonic()
+    cutoff = now - _LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    with _login_attempts_lock:
+        attempts = [t for t in _login_attempts.get(client_ip, []) if t > cutoff]
+        _login_attempts[client_ip] = attempts
+        if len(attempts) < _LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            return None
+        return int(attempts[0] + _LOGIN_RATE_LIMIT_WINDOW_SECONDS - now) + 1
+
+
+def _record_failed_login(client_ip: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts.setdefault(client_ip, []).append(time.monotonic())
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_get(request: Request, next: str = "/") -> HTMLResponse:
     if _get_session(request).get("authenticated"):
-        return RedirectResponse(url=next, status_code=302)  # type: ignore[return-value]
+        return RedirectResponse(url=_safe_next(next), status_code=302)  # type: ignore[return-value]
     return templates.TemplateResponse(request, "login.html", {"next_url": next, "error": None})
 
 
@@ -1353,6 +1551,15 @@ async def login_post(
     password: str = Form(...),
     next_url: str = Form(default="/"),
 ) -> HTMLResponse:
+    client_ip = request.client.host if request.client else "unknown"
+    retry_after = _login_rate_limit_retry_after(client_ip)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     cfg = _config
     valid = (
         cfg is not None
@@ -1360,6 +1567,7 @@ async def login_post(
         and secrets.compare_digest(password.encode(), cfg.dashboard.password.encode())
     )
     if not valid:
+        _record_failed_login(client_ip)
         return templates.TemplateResponse(
             request,
             "login.html",
@@ -1367,13 +1575,17 @@ async def login_post(
             status_code=401,
         )
     token = _make_session_token({"authenticated": True, "username": username})
-    resp = RedirectResponse(url=next_url if next_url.startswith("/") else "/", status_code=303)
+    resp = RedirectResponse(url=_safe_next(next_url), status_code=303)
     resp.set_cookie(
         _SESSION_COOKIE,
         token,
         httponly=True,
         samesite="lax",
         max_age=_SESSION_MAX_AGE,
+        # Only require HTTPS for the cookie when the request itself arrived
+        # over HTTPS — plain HTTP must keep working for localhost/Tailscale
+        # access, which is the documented deployment model for this app.
+        secure=request.url.scheme == "https",
     )
     return resp  # type: ignore[return-value]
 
@@ -1396,31 +1608,43 @@ async def dashboard(
     _user: Annotated[str, Depends(_require_auth)],
 ) -> HTMLResponse:
     """Main dashboard — recent news + open findings summary."""
-    with db.get_conn() as conn:
-        findings_rows = db.get_findings(conn, state="new", limit=10)
-        news_rows = db.get_recent_items(conn, hours=24, limit=15)
-        bookmarked_ids = db.get_bookmarked_ids(conn)
-
-    extras = _dashboard_extras()
+    d = await asyncio.to_thread(_dashboard_data)
 
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "nav_active": "dashboard",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "recent_findings": [_enrich_finding(r) for r in findings_rows],
-            "news_items": [_enrich_news(r) for r in news_rows],
-            "summary": _findings_summary(),
-            "secrets_summary": _secrets_summary(),
-            "bookmarked_ids": list(bookmarked_ids),
-            "top_repos": extras["top_repos"],
-            "top_cves": extras["top_cves"],
-            "heatmap_weeks": extras["heatmap_weeks"],
-            "heatmap_max": extras["heatmap_max"],
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "recent_findings": [_enrich_finding(r) for r in d["findings_rows"]],
+            "news_items": [_enrich_news(r) for r in d["news_rows"]],
+            "summary": d["summary"],
+            "secrets_summary": d["secrets_summary"],
+            "bookmarked_ids": list(d["bookmarked_ids"]),
+            "top_repos": d["extras"]["top_repos"],
+            "top_cves": d["extras"]["top_cves"],
+            "heatmap_weeks": d["extras"]["heatmap_weeks"],
+            "heatmap_max": d["extras"]["heatmap_max"],
         },
     )
+
+
+def _dashboard_data() -> dict:
+    """All of the dashboard route's DB work, run via asyncio.to_thread so a
+    slow query (e.g. WAL lock contention while the pipeline is running)
+    doesn't block the event loop for every other concurrent request."""
+    with db.get_conn() as conn:
+        return {
+            "findings_rows": db.get_findings(conn, state="new", limit=10),
+            "news_rows": db.get_recent_items(conn, hours=24, limit=15),
+            "bookmarked_ids": db.get_bookmarked_ids(conn),
+            "extras": _dashboard_extras(conn),
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+            "summary": _findings_summary(conn),
+            "secrets_summary": _secrets_summary(conn),
+        }
 
 
 @app.get("/findings", response_class=HTMLResponse)
@@ -1436,6 +1660,26 @@ async def findings_page(
     if state is None:
         state = "unresolved"
 
+    d = await asyncio.to_thread(_findings_page_data, state, repo, page, per_page)
+
+    return templates.TemplateResponse(
+        request,
+        "findings.html",
+        {
+            "nav_active": "findings",
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "findings": [_enrich_finding(r) for r in d["rows"]],
+            "state_filter": state,
+            "repo_filter": repo,
+            "repos": [r["repo_full_name"] for r in d["repo_rows"]],
+            "pagination": d["pagination"],
+        },
+    )
+
+
+def _findings_page_data(state: str, repo: str | None, page: int, per_page: int) -> dict:
+    """All of the /findings route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
         last_run = db.get_last_successful_run(conn)
         last_started = last_run["started_at"] if last_run else None
@@ -1463,21 +1707,13 @@ async def findings_page(
             f"SELECT DISTINCT repo_full_name FROM findings {repo_where} ORDER BY repo_full_name",
             repo_params,
         ).fetchall()
-
-    return templates.TemplateResponse(
-        request,
-        "findings.html",
-        {
-            "nav_active": "findings",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "findings": [_enrich_finding(r) for r in rows],
-            "state_filter": state,
-            "repo_filter": repo,
-            "repos": [r["repo_full_name"] for r in repo_rows],
+        return {
+            "rows": rows,
+            "repo_rows": repo_rows,
             "pagination": pg,
-        },
-    )
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+        }
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -1638,6 +1874,42 @@ async def news_page(
     """All news items with category/severity/source/search filters and pagination."""
     if sort not in ("published_desc", "published_asc"):
         sort = "published_desc"
+
+    d = await asyncio.to_thread(
+        _news_page_data, category, severity, source, search, sort, page, per_page
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "news.html",
+        {
+            "nav_active": "news",
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "news_items": [_enrich_news(r) for r in d["rows"]],
+            "bookmarked_ids": list(d["bookmarked_ids"]),
+            "categories": [r["category"] for r in d["cat_rows"]],
+            "sources": [r["source"] for r in d["src_rows"]],
+            "category_filter": category,
+            "severity_filter": severity,
+            "source_filter": source,
+            "search_filter": search,
+            "sort": sort,
+            "pagination": d["pagination"],
+        },
+    )
+
+
+def _news_page_data(
+    category: str | None,
+    severity: str | None,
+    source: str | None,
+    search: str | None,
+    sort: str,
+    page: int,
+    per_page: int,
+) -> dict:
+    """All of the /news route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
         total = db.get_news_items_count(
             conn, category=category, severity=severity, source=source, search=search
@@ -1660,26 +1932,15 @@ async def news_page(
         src_rows = conn.execute(
             "SELECT DISTINCT source FROM news_items WHERE source IS NOT NULL ORDER BY source"
         ).fetchall()
-
-    return templates.TemplateResponse(
-        request,
-        "news.html",
-        {
-            "nav_active": "news",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "news_items": [_enrich_news(r) for r in rows],
-            "bookmarked_ids": list(bookmarked_ids),
-            "categories": [r["category"] for r in cat_rows],
-            "sources": [r["source"] for r in src_rows],
-            "category_filter": category,
-            "severity_filter": severity,
-            "source_filter": source,
-            "search_filter": search,
-            "sort": sort,
+        return {
+            "rows": rows,
+            "bookmarked_ids": bookmarked_ids,
+            "cat_rows": cat_rows,
+            "src_rows": src_rows,
             "pagination": pg,
-        },
-    )
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+        }
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -1725,14 +1986,22 @@ async def logs_page(
 
 @app.get("/api/health")
 async def health() -> JSONResponse:
-    """Health check — intentionally unauthenticated. Used by Docker HEALTHCHECK."""
+    """Minimal, unauthenticated health check for Docker HEALTHCHECK.
+
+    Deliberately returns nothing about pipeline state — that used to live
+    here and leaked private repo names (step_stats.scan/secrets.failed_repos)
+    and raw exception text (last_error) to anyone who could reach the port,
+    with no auth at all. See /api/status for the full, authenticated payload.
+    """
+    return JSONResponse({"status": "ok", "version": "0.1.0"})
+
+
+@app.get("/api/status")
+async def status(_user: Annotated[str, Depends(_require_auth)]) -> JSONResponse:
+    """Full pipeline/runtime status for the dashboard UI. Authenticated —
+    this is the endpoint /api/health used to be before it was split out."""
     with _pipeline_lock:
-        pipeline = dict(_pipeline_status)
-        # Copy mutable nested structures so callers can't mutate internal state.
-        pipeline["step_history"] = list(pipeline.get("step_history", []))
-        pipeline["step_progress"] = dict(pipeline.get("step_progress", {}))
-        pipeline["step_stats"] = dict(pipeline.get("step_stats", {}))
-        pipeline["step_times"] = dict(pipeline.get("step_times", {}))
+        pipeline = copy.deepcopy(_pipeline_status)
     next_run: str | None = None
     if _scheduler:
         job = _scheduler.get_job("pipeline")
@@ -1748,6 +2017,7 @@ async def health() -> JSONResponse:
             "next_run": next_run,
             "ollama_ok": ollama_ok,
             "active_model": _get_current_model(),
+            "log_drops": _get_dropped_log_count(),
         }
     )
 
@@ -1835,7 +2105,7 @@ async def cancel_run(
     with _pipeline_lock:
         if not _pipeline_status["running"]:
             raise HTTPException(status_code=409, detail="No pipeline is currently running")
-    _pipeline_control["cancel_requested"] = True
+        _pipeline_control["cancel_requested"] = True
     # Release any pause so the runner can observe the cancel flag and exit.
     _pipeline_pause_event.set()
     return JSONResponse({"status": "cancel_requested"})
@@ -1853,40 +2123,34 @@ async def pause_run(
     with _pipeline_lock:
         if not _pipeline_status["running"]:
             raise HTTPException(status_code=409, detail="No pipeline is currently running")
+        _pipeline_control["pause_requested"] = pause
     if pause:
-        _pipeline_control["pause_requested"] = True
         _pipeline_pause_event.clear()
     else:
-        _pipeline_control["pause_requested"] = False
         _pipeline_pause_event.set()
     return JSONResponse({"status": "paused" if pause else "resumed"})
 
 
 @app.post("/api/run")
 async def trigger_run(
-    request: Request,
     _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
 ) -> JSONResponse:
     """Trigger an immediate pipeline run.
 
-    Requires HTTP Basic Auth + X-Run-Token header (CSRF protection).
+    Requires an authenticated session + X-Run-Token header (CSRF protection).
     """
-    run_token = request.headers.get("X-Run-Token", "")
-    try:
-        with db.get_conn() as conn:
-            stored_token = db.get_setting(conn, "run_token")
-    except Exception:
-        stored_token = ""
-
-    if not stored_token or not secrets.compare_digest(run_token, stored_token):
-        raise HTTPException(status_code=403, detail="Invalid or missing X-Run-Token")
-
     with _pipeline_lock:
         if _pipeline_status["running"]:
             return JSONResponse(
                 {"status": "already_running", "message": "Pipeline is already in progress"},
                 status_code=409,
             )
+        # Claim "running" here, under the lock, rather than leaving it to
+        # _run_pipeline() itself — otherwise two near-simultaneous requests
+        # can both observe running=False and both report "started", with the
+        # second silently dying on the pipeline file lock.
+        _pipeline_status["running"] = True
 
     thread = threading.Thread(target=_run_pipeline, daemon=True, name="pipeline-manual")
     thread.start()
@@ -1943,16 +2207,8 @@ async def get_ollama_models(
             "current":   "qwen2.5:3b"
         }
     """
-    installed: list[str] = []
     ollama_host = _config.ollama.host if _config else "http://localhost:11434"
-    try:
-        with httpx.Client(timeout=8) as client:
-            resp = client.get(f"{ollama_host}/api/tags")
-            resp.raise_for_status()
-            data = resp.json()
-        installed = [m["name"] for m in data.get("models", [])]
-    except Exception as exc:
-        logger.warning("Could not reach Ollama for model list: %s", exc)
+    installed = await asyncio.to_thread(_fetch_installed_ollama_models, ollama_host)
 
     return JSONResponse(
         {
@@ -2572,7 +2828,7 @@ async def update_settings(
     if "active_model" in body:
         model = str(body["active_model"]).strip()
         if model:
-            _validate_ollama_model(model)
+            await asyncio.to_thread(_validate_ollama_model, model)
             with db.get_conn() as conn:
                 db.set_setting(conn, "active_model", model)
             logger.info("Active model changed to: %s", model)

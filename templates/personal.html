@@ -5,6 +5,7 @@
 {% block content %}
 <section class="page-heading">
   <div>
+    <h1 class="sr-only">Bookmarks</h1>
     <p class="heading-copy">Bookmarked news articles and annotated vulnerability records.</p>
   </div>
 </section>
@@ -72,19 +73,19 @@
 
     {% if annotated %}
     <div class="table-wrap">
-      <table>
+      <table class="table-stack">
         <thead><tr>
           <th>Repo</th><th>Package</th><th>CVE / GHSA</th><th>Severity</th><th>State</th><th>Note</th>
         </tr></thead>
         <tbody>
           {% for f in annotated %}
           <tr>
-            <td>{{ f.repo_full_name }}</td>
-            <td>{{ f.package_name }}</td>
-            <td>{{ f.cve_id or f.ghsa_id or '—' }}</td>
-            <td><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
-            <td><span class="badge badge-{{ 'new' if f.state == 'new' else ('ack' if f.state == 'acknowledged' else 'resolved') }}">{{ f.state }}</span></td>
-            <td>{{ f.annotation }}</td>
+            <td data-label="Repo">{{ f.repo_full_name }}</td>
+            <td data-label="Package">{{ f.package_name }}</td>
+            <td data-label="CVE / GHSA">{{ f.cve_id or f.ghsa_id or '—' }}</td>
+            <td data-label="Severity"><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
+            <td data-label="State"><span class="badge badge-{{ 'new' if f.state == 'new' else ('ack' if f.state == 'acknowledged' else 'resolved') }}">{{ f.state }}</span></td>
+            <td data-label="Note">{{ f.annotation }}</td>
           </tr>
           {% endfor %}
         </tbody>
@@ -103,16 +104,15 @@
 {% block scripts %}
 <script>
 function removeBookmark(itemId) {
-  apiFetch('/api/news/' + itemId + '/bookmark', { method: 'POST' })
-  .then(r => r.json())
+  DIVE.toggleBookmark(itemId)
   .then(data => {
     if (!data.bookmarked) {
       const el = document.getElementById('bm-' + itemId);
       if (el) el.remove();
-      showToast('Bookmark removed', 'success');
+      DIVE.showToast('Bookmark removed', 'success');
     }
   })
-  .catch(() => showToast('Failed to remove bookmark', 'error'));
+  .catch(() => DIVE.showToast('Failed to remove bookmark', 'error'));
 }
 </script>
 {% endblock %}

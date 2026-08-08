@@ -321,3 +321,102 @@ def test_run_skips_already_issued_findings(in_memory_db):
     # get_repo should never be called — no eligible findings
     mock_gh_cls.return_value.get_repo.assert_not_called()
     assert stats.issues_created == 0
+
+
+# ---------------------------------------------------------------------------
+# run() — N+1 fix: one get_repo/get_issues call per repo, not per finding
+# ---------------------------------------------------------------------------
+
+
+def _insert_finding(conn, **overrides):
+    base = {
+        "repo_full_name": "user/repo",
+        "cve_id": "CVE-2024-0000",
+        "package_name": "pkg",
+        "package_ecosystem": "PyPI",
+        "state": "new",
+        "first_seen_at": "2026-01-01",
+        "last_seen_at": "2026-01-01",
+    }
+    base.update(overrides)
+    cols = ", ".join(base.keys())
+    placeholders = ", ".join(["?"] * len(base))
+    conn.execute(f"INSERT INTO findings ({cols}) VALUES ({placeholders})", list(base.values()))
+    (conn.connection.commit() if hasattr(conn, "connection") else conn.commit())
+
+
+def test_run_fetches_repo_and_issues_once_per_repo_not_per_finding(in_memory_db):
+    """50 new findings in one repo must be exactly one get_repo() call and
+    one get_issues() call — not 50 of each."""
+    for i in range(50):
+        _insert_finding(in_memory_db, cve_id=f"CVE-2024-{i:04d}", package_name=f"pkg{i}")
+
+    mock_issue = MagicMock()
+    mock_issue.html_url = "https://github.com/user/repo/issues/1"
+    mock_repo = MagicMock()
+    mock_repo.get_issues.return_value = []
+    mock_repo.create_issue.return_value = mock_issue
+
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
+        mock_gh_cls.return_value.get_repo.return_value = mock_repo
+        stats = gic.run(in_memory_db, _make_config())
+
+    assert stats.issues_created == 50
+    mock_gh_cls.return_value.get_repo.assert_called_once_with("user/repo")
+    mock_repo.get_issues.assert_called_once()
+
+
+def test_run_groups_findings_across_multiple_repos(in_memory_db):
+    _insert_finding(in_memory_db, repo_full_name="user/repo-a", cve_id="CVE-2024-1111")
+    _insert_finding(in_memory_db, repo_full_name="user/repo-b", cve_id="CVE-2024-2222")
+
+    mock_issue = MagicMock()
+    mock_issue.html_url = "https://github.com/user/repo/issues/1"
+    mock_repo = MagicMock()
+    mock_repo.get_issues.return_value = []
+    mock_repo.create_issue.return_value = mock_issue
+
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
+        mock_gh_cls.return_value.get_repo.return_value = mock_repo
+        stats = gic.run(in_memory_db, _make_config())
+
+    assert stats.issues_created == 2
+    assert mock_gh_cls.return_value.get_repo.call_count == 2
+    called_repos = {c.args[0] for c in mock_gh_cls.return_value.get_repo.call_args_list}
+    assert called_repos == {"user/repo-a", "user/repo-b"}
+
+
+def test_run_stops_early_when_rate_limit_low(in_memory_db):
+    """Below the 10% rate-limit threshold, remaining repos must be deferred
+    to the next run rather than exhausting the token's quota."""
+    _insert_finding(in_memory_db, repo_full_name="user/repo-a", cve_id="CVE-2024-1111")
+    _insert_finding(in_memory_db, repo_full_name="user/repo-b", cve_id="CVE-2024-2222")
+
+    mock_repo = MagicMock()
+    mock_repo.get_issues.return_value = []
+
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
+        mock_gh_cls.return_value.rate_limiting = (50, 5000)  # 1% remaining
+        mock_gh_cls.return_value.get_repo.return_value = mock_repo
+        stats = gic.run(in_memory_db, _make_config())
+
+    assert stats.rate_limit_warning is True
+    mock_gh_cls.return_value.get_repo.assert_not_called()
+
+
+def test_run_continues_when_rate_limit_healthy(in_memory_db):
+    _insert_finding(in_memory_db, repo_full_name="user/repo-a", cve_id="CVE-2024-1111")
+
+    mock_issue = MagicMock()
+    mock_issue.html_url = "https://github.com/user/repo-a/issues/1"
+    mock_repo = MagicMock()
+    mock_repo.get_issues.return_value = []
+    mock_repo.create_issue.return_value = mock_issue
+
+    with patch("dive.github_issue_creator.Github") as mock_gh_cls:
+        mock_gh_cls.return_value.rate_limiting = (5000, 5000)
+        mock_gh_cls.return_value.get_repo.return_value = mock_repo
+        stats = gic.run(in_memory_db, _make_config())
+
+    assert stats.rate_limit_warning is False
+    assert stats.issues_created == 1

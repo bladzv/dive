@@ -31,7 +31,7 @@ A self-hosted security intelligence tool that runs on a Raspberry Pi (or any Lin
 
 - **Docker** and **Docker Compose** (V2)
 - A machine with at least **4 GB RAM** (8 GB recommended for larger models)
-- A **GitHub fine-grained PAT** with *Contents: Read-only* and *Metadata: Read-only* scopes
+- A **GitHub fine-grained PAT** with *Contents: Read-only* and *Metadata: Read-only* scopes, and **repository access explicitly covering every private repo you want scanned** (fine-grained tokens only enumerate repos they've been granted access to — leaving a private repo unselected means it's silently skipped by both the dependency and secrets scanners). A classic PAT with the `repo` scope also works.
 - Internet access for the first model pull (~2 GB); subsequent runs work fully offline
 - `gitleaks` v8.18.4 — included automatically in the Docker image (multi-arch: amd64, arm64, armv7)
 
@@ -74,7 +74,7 @@ open http://localhost:8000   # log in with dashboard.username / dashboard.passwo
 - **KEV enrichment** — findings are cross-referenced with the CISA Known Exploited Vulnerabilities catalogue
 - **Priority scoring** — CVSS × 6 + KEV bonus + patch-availability penalty, clamped to 0–100
 - **Finding lifecycle** — New → Acknowledged → Resolved state machine with automatic resolution and regression detection
-- **Manifest coverage** — `requirements.txt`, `Pipfile`, `pyproject.toml`, `package.json`, `package-lock.json`, GitHub Actions workflows
+- **Manifest coverage** — npm (`package.json`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`), Python (`requirements.txt`, `Pipfile`, `pyproject.toml`, `poetry.lock`, `uv.lock`), Go (`go.mod`), Rust (`Cargo.toml`, `Cargo.lock`), Java (`pom.xml`, `build.gradle`), Ruby (`Gemfile`, `Gemfile.lock`), PHP (`composer.json`, `composer.lock`), .NET (`*.csproj`, `packages.lock.json`), and GitHub Actions workflows
 - **Secrets scanning** — gitleaks-based scanning of shallow repo clones with permanent false-positive suppression
 - **GitHub issue auto-creation** — optional step that opens `[Security]`-prefixed issues in affected repos with deduplication against existing open issues
 - **AI next steps** — optional Ollama-powered remediation suggestions attached to each finding

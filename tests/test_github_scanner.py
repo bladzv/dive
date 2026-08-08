@@ -13,8 +13,10 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from github import GithubException
 
 import dive.db as db
+import dive.github_scanner as gs
 from dive.config import AppConfig, DashboardConfig, GitHubConfig
 from dive.github_scanner import (
     _LATEST_VERSION_REGISTRIES,
@@ -30,6 +32,9 @@ from dive.github_scanner import (
     _parse_build_gradle,
     _parse_cargo_lock,
     _parse_cargo_toml,
+    _parse_composer_json,
+    _parse_composer_lock,
+    _parse_csproj,
     _parse_gemfile,
     _parse_gemfile_lock,
     _parse_github_actions,
@@ -37,12 +42,18 @@ from dive.github_scanner import (
     _parse_next_steps,
     _parse_package_json,
     _parse_package_lock,
+    _parse_packages_lock_json,
     _parse_pipfile,
+    _parse_pnpm_lock,
+    _parse_poetry_lock,
     _parse_pom_xml,
     _parse_pyproject_toml,
     _parse_requirements_txt,
+    _parse_uv_lock,
+    _parse_yarn_lock,
     _priority_score,
     _query_and_store_batch,
+    _RepoTreeUnavailable,
     _store_osv_finding,
 )
 
@@ -524,6 +535,45 @@ def test_upsert_finding_does_not_change_state_on_update(db_conn):
     assert row["state"] == "acknowledged"
 
 
+def test_upsert_finding_stamps_id_on_insert(db_conn):
+    finding = _make_finding()
+    assert "id" not in finding
+    db.upsert_finding(db_conn, finding)
+    row = db_conn.execute(
+        "SELECT id FROM findings WHERE cve_id = ?", (finding["cve_id"],)
+    ).fetchone()
+    assert finding["id"] == row["id"]
+
+
+def test_upsert_finding_stamps_id_on_update(db_conn):
+    first = _make_finding()
+    db.upsert_finding(db_conn, first)
+    inserted_id = first["id"]
+
+    second = _make_finding(installed_version="2.28.1")
+    db.upsert_finding(db_conn, second)
+    assert second["id"] == inserted_id
+
+
+def test_upsert_finding_id_disambiguates_rows_sharing_null_cve_id(db_conn):
+    """Two findings for the same package with cve_id=NULL but different
+    ghsa_id are distinct rows. Threading finding["id"] through (rather than
+    re-querying by natural key on cve_id alone) must resolve to the correct
+    one for each — this is the scenario the old
+    _generate_next_steps_for_finding lookup got wrong.
+    """
+    first = _make_finding(cve_id=None, ghsa_id="GHSA-aaaa-aaaa-aaaa")
+    second = _make_finding(cve_id=None, ghsa_id="GHSA-bbbb-bbbb-bbbb")
+    db.upsert_finding(db_conn, first)
+    db.upsert_finding(db_conn, second)
+
+    assert first["id"] != second["id"]
+    row1 = db_conn.execute("SELECT ghsa_id FROM findings WHERE id = ?", (first["id"],)).fetchone()
+    row2 = db_conn.execute("SELECT ghsa_id FROM findings WHERE id = ?", (second["id"],)).fetchone()
+    assert row1["ghsa_id"] == "GHSA-aaaa-aaaa-aaaa"
+    assert row2["ghsa_id"] == "GHSA-bbbb-bbbb-bbbb"
+
+
 def test_get_kev_cve_ids_from_news_items(db_conn):
     db.insert_news_item(
         db_conn,
@@ -540,6 +590,390 @@ def test_get_kev_cve_ids_from_news_items(db_conn):
 
 def test_get_kev_cve_ids_empty_when_no_kev(db_conn):
     assert db.get_kev_cve_ids(db_conn) == set()
+
+
+def test_kev_survives_news_pruning(db_conn):
+    """is_kev must not regress when news.retention_days prunes the KEV news item."""
+    db.insert_news_item(
+        db_conn,
+        {
+            "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog#CVE-2024-9999",
+            "title": "CVE-2024-9999 — KEV entry",
+            "source": "CISA KEV",
+            "fetched_at": "2024-01-15T00:00:00+00:00",
+        },
+    )
+    db.upsert_kev_entries(db_conn, [("CVE-2024-9999", "2024-01-10")])
+
+    # Simulate retention pruning away the news item entirely.
+    db.clear_news_items(db_conn)
+    assert db_conn.execute("SELECT COUNT(*) FROM news_items").fetchone()[0] == 0
+
+    kev_ids = db.get_kev_cve_ids(db_conn)
+    assert "CVE-2024-9999" in kev_ids
+
+
+def test_upsert_kev_entries_is_idempotent_and_updates_added_at(db_conn):
+    db.upsert_kev_entries(db_conn, [("CVE-2024-1111", "2024-01-01")])
+    db.upsert_kev_entries(db_conn, [("CVE-2024-1111", "2024-02-01")])
+    row = db_conn.execute(
+        "SELECT added_at FROM kev_entries WHERE cve_id = ?", ("CVE-2024-1111",)
+    ).fetchone()
+    assert row["added_at"] == "2024-02-01"
+    count = db_conn.execute("SELECT COUNT(*) FROM kev_entries").fetchone()[0]
+    assert count == 1
+
+
+def test_upsert_kev_entries_uppercases_cve_id(db_conn):
+    db.upsert_kev_entries(db_conn, [("cve-2024-2222", None)])
+    kev_ids = db.get_kev_cve_ids(db_conn)
+    assert "CVE-2024-2222" in kev_ids
+
+
+# ---------------------------------------------------------------------------
+# run() — repo listing must cover private repos
+# ---------------------------------------------------------------------------
+
+
+def test_run_lists_repos_via_authenticated_user_with_type_all(db_conn):
+    """gs.run() must list repos via the AuthenticatedUser (GET /user/repos,
+    type="all") so private repos are included — this is the behaviour
+    secrets_scanner.py was missing (it called gh.get_user(username), a
+    NamedUser, which only returns public repos). Locking this in here so the
+    dependency scanner can't regress to the same bug.
+    """
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = []
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        gs.run(db_conn, config)
+
+    MockGithub.return_value.get_user.assert_called_once_with()
+    mock_user.get_repos.assert_called_once_with(type="all")
+
+
+# ---------------------------------------------------------------------------
+# probe_private_repo_access
+# ---------------------------------------------------------------------------
+
+
+def test_probe_private_repo_access_no_private_repos_makes_no_extra_call():
+    public_repo = MagicMock()
+    public_repo.private = False
+
+    result = gs.probe_private_repo_access([public_repo])
+
+    assert result is None
+    public_repo.get_git_tree.assert_not_called()
+
+
+def test_probe_private_repo_access_403_returns_actionable_message():
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.full_name = "org/secret-repo"
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(403, "Forbidden", None)
+
+    result = gs.probe_private_repo_access([private_repo])
+
+    assert result is not None
+    assert "Contents" in result
+    assert "org/secret-repo" in result
+
+
+def test_probe_private_repo_access_success_returns_none():
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.return_value = MagicMock()
+
+    assert gs.probe_private_repo_access([private_repo]) is None
+
+
+def test_probe_private_repo_access_non_403_error_returns_none():
+    """A 404 or 5xx must not be misdiagnosed as a permission problem."""
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(500, "Server Error", None)
+
+    assert gs.probe_private_repo_access([private_repo]) is None
+
+
+def test_run_sets_token_permission_warning_from_probe(db_conn):
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    private_repo = MagicMock()
+    private_repo.private = True
+    private_repo.full_name = "org/secret-repo"
+    private_repo.default_branch = "main"
+    private_repo.get_git_tree.side_effect = GithubException(403, "Forbidden", None)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [private_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert stats.token_permission_warning is not None
+    assert "Contents" in stats.token_permission_warning
+
+
+# ---------------------------------------------------------------------------
+# run() / _scan_repo — skipped vs. failed repos must be visible, not silent
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_manifest_content_uses_contents_api_for_small_file():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_content = MagicMock()
+    mock_content.decoded_content = b'{"name": "pkg"}'
+    mock_repo.get_contents.return_value = mock_content
+
+    raw = gs._fetch_manifest_content(mock_repo, "package.json", "sha123", 500)
+
+    assert raw == '{"name": "pkg"}'
+    mock_repo.get_contents.assert_called_once_with("package.json")
+    mock_repo.get_git_blob.assert_not_called()
+
+
+def test_fetch_manifest_content_uses_blob_api_above_contents_size_limit():
+    """Regression test: files over ~1MB return encoding="none" from the
+    Contents API and previously yielded zero packages with only a DEBUG log.
+    """
+    import base64
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_blob = MagicMock()
+    mock_blob.content = base64.b64encode(b'{"name": "big-pkg"}').decode()
+    mock_repo.get_git_blob.return_value = mock_blob
+
+    raw = gs._fetch_manifest_content(mock_repo, "package-lock.json", "sha456", 2_000_000)
+
+    assert raw == '{"name": "big-pkg"}'
+    mock_repo.get_git_blob.assert_called_once_with("sha456")
+    mock_repo.get_contents.assert_not_called()
+
+
+def test_fetch_manifest_content_skips_absurdly_large_file():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+
+    raw = gs._fetch_manifest_content(mock_repo, "huge.json", "sha789", 50_000_000)
+
+    assert raw is None
+    mock_repo.get_git_blob.assert_not_called()
+    mock_repo.get_contents.assert_not_called()
+
+
+def test_fetch_manifest_content_handles_directory_response():
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/repo"
+    mock_repo.get_contents.return_value = [MagicMock(), MagicMock()]
+
+    raw = gs._fetch_manifest_content(mock_repo, "some/path", "sha000", 100)
+
+    assert raw is None
+
+
+def test_scan_repo_raises_when_tree_unavailable():
+    from github import GithubException
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/no-tree"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = GithubException(404, "Not Found", None)
+
+    with pytest.raises(_RepoTreeUnavailable):
+        gs._scan_repo(mock_repo)
+
+
+def _tree_element(path, size=100):
+    el = MagicMock()
+    el.type = "blob"
+    el.path = path
+    el.sha = f"sha-{path}"
+    el.size = size
+    return el
+
+
+def test_scan_repo_picks_one_npm_lockfile_when_multiple_present():
+    """A repo mid-migration from Yarn to npm can have both package-lock.json
+    and yarn.lock (plus the loose package.json) — only one should be fetched
+    so packages aren't double-counted."""
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/multi-lock"
+    mock_repo.default_branch = "main"
+
+    tree = MagicMock()
+    tree.truncated = False
+    tree.tree = [
+        _tree_element("package.json"),
+        _tree_element("package-lock.json"),
+        _tree_element("yarn.lock"),
+    ]
+    mock_repo.get_git_tree.return_value = tree
+
+    fetched_paths = []
+
+    def _fake_get_contents(path):
+        fetched_paths.append(path)
+        content = MagicMock()
+        content.decoded_content = b'{"packages": {}}'
+        return content
+
+    mock_repo.get_contents.side_effect = _fake_get_contents
+
+    gs._scan_repo(mock_repo)
+
+    assert fetched_paths == ["package-lock.json"]
+
+
+def test_run_records_repo_in_skipped_repos_when_tree_unavailable(db_conn):
+    from unittest.mock import patch
+
+    from github import GithubException
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/no-tree"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = GithubException(404, "Not Found", None)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [mock_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert stats.skipped_repos == ["user/no-tree"]
+    assert stats.failed_repos == []
+    assert stats.repos_scanned == 0
+
+
+def test_run_records_repo_in_failed_repos_on_unexpected_error(db_conn):
+    """Previously a bare Exception during a repo scan was logged but counted
+    in neither failed_repos nor repos_scanned — a silent gap where a repo
+    just vanished from the run's accounting."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/weird"
+    mock_repo.default_branch = "main"
+    mock_repo.get_git_tree.side_effect = RuntimeError("boom")
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [mock_repo]
+
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(db_conn, config)
+
+    assert "user/weird" in stats.failed_repos
+    assert stats.repos_scanned == 0
+
+
+def test_run_progress_total_excludes_excluded_repos(db_conn):
+    """total_repos previously counted excluded repos too, so with any
+    exclusions configured the progress bar stalled short of 100%."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+
+    repos = []
+    for name in ("user/keep-a", "user/excluded", "user/keep-b"):
+        repo = MagicMock()
+        repo.full_name = name
+        repo.default_branch = "main"
+        tree = MagicMock()
+        tree.truncated = False
+        tree.tree = []
+        repo.get_git_tree.return_value = tree
+        repos.append(repo)
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = repos
+
+    calls = []
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        stats = gs.run(
+            db_conn,
+            config,
+            excluded_repos=["user/excluded"],
+            on_progress=lambda d, t: calls.append((d, t)),
+        )
+
+    totals = {t for _, t in calls}
+    assert totals == {2}
+    assert calls[0] == (0, 2)
+    assert calls[-1] == (2, 2)
+    assert stats.repos_scanned == 2
+
+
+def test_run_progress_reaches_total_even_with_a_failed_repo(db_conn):
+    """A repo that fails (or is skipped) must still count toward `done` so the
+    bar reaches 100% instead of stalling on a run with any failures."""
+    from unittest.mock import patch
+
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="someuser"),
+        dashboard=DashboardConfig(username="admin", password="secret"),
+    )
+
+    good_repo = MagicMock()
+    good_repo.full_name = "user/good"
+    good_repo.default_branch = "main"
+    good_tree = MagicMock()
+    good_tree.truncated = False
+    good_tree.tree = []
+    good_repo.get_git_tree.return_value = good_tree
+
+    bad_repo = MagicMock()
+    bad_repo.full_name = "user/bad"
+    bad_repo.default_branch = "main"
+    bad_repo.get_git_tree.side_effect = RuntimeError("boom")
+
+    mock_user = MagicMock()
+    mock_user.get_repos.return_value = [good_repo, bad_repo]
+
+    calls = []
+    with patch("dive.github_scanner.Github") as MockGithub:
+        MockGithub.return_value.get_user.return_value = mock_user
+        MockGithub.return_value.rate_limiting = (5000, 5000)
+        gs.run(db_conn, config, on_progress=lambda d, t: calls.append((d, t)))
+
+    assert calls[-1] == (2, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +1312,396 @@ def test_parse_gemfile_lock_ecosystem():
 
 
 # ---------------------------------------------------------------------------
+# _parse_yarn_lock — v1 (classic)
+# ---------------------------------------------------------------------------
+
+_YARN_LOCK_V1 = """\
+# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+
+"@babel/code-frame@^7.10.4", "@babel/code-frame@^7.12.11":
+  version "7.16.7"
+  resolved "https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.16.7.tgz"
+  dependencies:
+    "@babel/highlight" "^7.16.7"
+
+lodash@^4.17.0, lodash@^4.17.20:
+  version "4.17.21"
+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"
+"""
+
+
+def test_parse_yarn_lock_v1_extracts_scoped_package():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V1, "yarn.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("@babel/code-frame") == "7.16.7"
+
+
+def test_parse_yarn_lock_v1_extracts_unscoped_package():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V1, "yarn.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("lodash") == "4.17.21"
+
+
+def test_parse_yarn_lock_v1_ecosystem():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V1, "yarn.lock")
+    assert all(p.ecosystem == "npm" for p in pkgs)
+
+
+def test_parse_yarn_lock_v1_does_not_pick_up_dependencies_subblock_version():
+    """The `dependencies:` sub-block under @babel/code-frame has no
+    "version" line at that indent, so only two packages total are found."""
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V1, "yarn.lock")
+    assert len(pkgs) == 2
+
+
+# ---------------------------------------------------------------------------
+# _parse_yarn_lock — v2+ (Berry)
+# ---------------------------------------------------------------------------
+
+_YARN_LOCK_V2 = """\
+# This file is generated by running "yarn install" inside your project.
+__metadata:
+  version: 8
+  cacheKey: 10
+
+"@babel/core@npm:^7.20.0, @babel/core@npm:^7.12.3":
+  version: 7.20.0
+  resolution: "@babel/core@npm:7.20.0"
+  checksum: abc123
+  languageName: node
+  linkType: hard
+
+"lodash@npm:^4.17.0":
+  version: 4.17.21
+  resolution: "lodash@npm:4.17.21"
+  checksum: def456
+  languageName: node
+  linkType: hard
+"""
+
+
+def test_parse_yarn_lock_v2_detected_and_extracts_scoped_package():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V2, "yarn.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("@babel/core") == "7.20.0"
+
+
+def test_parse_yarn_lock_v2_extracts_unscoped_package():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V2, "yarn.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("lodash") == "4.17.21"
+
+
+def test_parse_yarn_lock_v2_skips_metadata_key():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V2, "yarn.lock")
+    names = {p.name for p in pkgs}
+    assert "__metadata" not in names
+
+
+def test_parse_yarn_lock_v2_ecosystem():
+    pkgs = _parse_yarn_lock(_YARN_LOCK_V2, "yarn.lock")
+    assert all(p.ecosystem == "npm" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_pnpm_lock
+# ---------------------------------------------------------------------------
+
+_PNPM_LOCK_OLD_FORMAT = """\
+lockfileVersion: '6.0'
+
+dependencies:
+  express:
+    specifier: ^4.18.0
+    version: 4.18.2
+
+packages:
+  /express/4.18.2:
+    resolution: {integrity: sha512-fake}
+  /@babel/core/7.20.0:
+    resolution: {integrity: sha512-fake}
+"""
+
+_PNPM_LOCK_NEW_FORMAT = """\
+lockfileVersion: '9.0'
+
+packages:
+  express@4.18.2:
+    resolution: {integrity: sha512-fake}
+  '@babel/core@7.20.0':
+    resolution: {integrity: sha512-fake}
+  react-dom@18.2.0(react@18.2.0):
+    resolution: {integrity: sha512-fake}
+"""
+
+
+def test_parse_pnpm_lock_old_format_unscoped():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_OLD_FORMAT, "pnpm-lock.yaml")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("express") == "4.18.2"
+
+
+def test_parse_pnpm_lock_old_format_scoped():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_OLD_FORMAT, "pnpm-lock.yaml")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("@babel/core") == "7.20.0"
+
+
+def test_parse_pnpm_lock_new_format_unscoped():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_NEW_FORMAT, "pnpm-lock.yaml")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("express") == "4.18.2"
+
+
+def test_parse_pnpm_lock_new_format_scoped():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_NEW_FORMAT, "pnpm-lock.yaml")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("@babel/core") == "7.20.0"
+
+
+def test_parse_pnpm_lock_strips_peer_dependency_suffix():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_NEW_FORMAT, "pnpm-lock.yaml")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("react-dom") == "18.2.0"
+
+
+def test_parse_pnpm_lock_ecosystem():
+    pkgs = _parse_pnpm_lock(_PNPM_LOCK_OLD_FORMAT, "pnpm-lock.yaml")
+    assert all(p.ecosystem == "npm" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_poetry_lock / _parse_uv_lock
+# ---------------------------------------------------------------------------
+
+_POETRY_LOCK = """\
+[[package]]
+name = "requests"
+version = "2.28.0"
+description = "Python HTTP for Humans."
+
+[[package]]
+name = "flask"
+version = "2.0.0"
+description = "A simple framework."
+"""
+
+_UV_LOCK = """\
+version = 1
+requires-python = ">=3.9"
+
+[[package]]
+name = "requests"
+version = "2.28.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "click"
+version = "8.1.3"
+source = { registry = "https://pypi.org/simple" }
+"""
+
+
+def test_parse_poetry_lock_extracts_packages():
+    pkgs = _parse_poetry_lock(_POETRY_LOCK, "poetry.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("requests") == "2.28.0"
+    assert names.get("flask") == "2.0.0"
+
+
+def test_parse_poetry_lock_ecosystem():
+    pkgs = _parse_poetry_lock(_POETRY_LOCK, "poetry.lock")
+    assert all(p.ecosystem == "PyPI" for p in pkgs)
+
+
+def test_parse_uv_lock_extracts_packages():
+    pkgs = _parse_uv_lock(_UV_LOCK, "uv.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("requests") == "2.28.0"
+    assert names.get("click") == "8.1.3"
+
+
+def test_parse_uv_lock_ecosystem():
+    pkgs = _parse_uv_lock(_UV_LOCK, "uv.lock")
+    assert all(p.ecosystem == "PyPI" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_composer_json / _parse_composer_lock
+# ---------------------------------------------------------------------------
+
+_COMPOSER_JSON = json.dumps(
+    {
+        "require": {
+            "php": ">=8.0",
+            "monolog/monolog": "^2.0",
+        },
+        "require-dev": {
+            "phpunit/phpunit": "^9.0",
+        },
+    }
+)
+
+_COMPOSER_LOCK = json.dumps(
+    {
+        "packages": [
+            {"name": "monolog/monolog", "version": "v2.5.0"},
+        ],
+        "packages-dev": [
+            {"name": "phpunit/phpunit", "version": "v9.5.0"},
+        ],
+    }
+)
+
+
+def test_parse_composer_json_extracts_packages():
+    pkgs = _parse_composer_json(_COMPOSER_JSON, "composer.json")
+    names = {p.name for p in pkgs}
+    assert "monolog/monolog" in names
+    assert "phpunit/phpunit" in names
+
+
+def test_parse_composer_json_skips_platform_requirements():
+    pkgs = _parse_composer_json(_COMPOSER_JSON, "composer.json")
+    names = {p.name for p in pkgs}
+    assert "php" not in names
+
+
+def test_parse_composer_json_ecosystem():
+    pkgs = _parse_composer_json(_COMPOSER_JSON, "composer.json")
+    assert all(p.ecosystem == "Packagist" for p in pkgs)
+
+
+def test_parse_composer_lock_extracts_packages_and_dev_packages():
+    pkgs = _parse_composer_lock(_COMPOSER_LOCK, "composer.lock")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("monolog/monolog") == "2.5.0"
+    assert names.get("phpunit/phpunit") == "9.5.0"
+
+
+def test_parse_composer_lock_ecosystem():
+    pkgs = _parse_composer_lock(_COMPOSER_LOCK, "composer.lock")
+    assert all(p.ecosystem == "Packagist" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_packages_lock_json (NuGet)
+# ---------------------------------------------------------------------------
+
+_PACKAGES_LOCK_JSON = json.dumps(
+    {
+        "version": 1,
+        "dependencies": {
+            "net6.0": {
+                "Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.1"},
+                "Some.Transitive": {"type": "Transitive", "resolved": "1.2.3"},
+            },
+            "net8.0": {
+                "Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.1"},
+            },
+        },
+    }
+)
+
+
+def test_parse_packages_lock_json_extracts_packages():
+    pkgs = _parse_packages_lock_json(_PACKAGES_LOCK_JSON, "packages.lock.json")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("Newtonsoft.Json") == "13.0.1"
+    assert names.get("Some.Transitive") == "1.2.3"
+
+
+def test_parse_packages_lock_json_dedupes_across_frameworks():
+    pkgs = _parse_packages_lock_json(_PACKAGES_LOCK_JSON, "packages.lock.json")
+    newtonsoft = [p for p in pkgs if p.name == "Newtonsoft.Json"]
+    assert len(newtonsoft) == 1
+
+
+def test_parse_packages_lock_json_ecosystem():
+    pkgs = _parse_packages_lock_json(_PACKAGES_LOCK_JSON, "packages.lock.json")
+    assert all(p.ecosystem == "NuGet" for p in pkgs)
+
+
+# ---------------------------------------------------------------------------
+# _parse_csproj (NuGet)
+# ---------------------------------------------------------------------------
+
+_CSPROJ_SDK_STYLE = """\
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+    <PackageReference Include="Serilog" Version="2.12.0" />
+  </ItemGroup>
+</Project>
+"""
+
+_CSPROJ_NAMESPACED = """\
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json">
+      <Version>13.0.1</Version>
+    </PackageReference>
+  </ItemGroup>
+</Project>
+"""
+
+
+def test_parse_csproj_sdk_style_extracts_packages():
+    pkgs = _parse_csproj(_CSPROJ_SDK_STYLE, "MyProject.csproj")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("Newtonsoft.Json") == "13.0.1"
+    assert names.get("Serilog") == "2.12.0"
+
+
+def test_parse_csproj_sdk_style_ecosystem():
+    pkgs = _parse_csproj(_CSPROJ_SDK_STYLE, "MyProject.csproj")
+    assert all(p.ecosystem == "NuGet" for p in pkgs)
+
+
+def test_parse_csproj_namespaced_with_child_version_element():
+    pkgs = _parse_csproj(_CSPROJ_NAMESPACED, "Legacy.csproj")
+    names = {p.name: p.version for p in pkgs}
+    assert names.get("Newtonsoft.Json") == "13.0.1"
+
+
+# ---------------------------------------------------------------------------
+# _parse_manifest dispatcher — new formats routed correctly
+# ---------------------------------------------------------------------------
+
+
+def test_parse_manifest_routes_pnpm_lock_not_github_actions():
+    """pnpm-lock.yaml ends in .yaml — must not fall through to the generic
+    GitHub Actions workflow parser, which would silently yield zero packages."""
+    pkgs = gs._parse_manifest("pnpm-lock.yaml", _PNPM_LOCK_OLD_FORMAT, "npm")
+    assert len(pkgs) > 0
+
+
+def test_parse_manifest_routes_yarn_lock():
+    pkgs = gs._parse_manifest("yarn.lock", _YARN_LOCK_V1, "npm")
+    assert len(pkgs) > 0
+
+
+def test_parse_manifest_routes_csproj_by_suffix():
+    pkgs = gs._parse_manifest("src/MyProject.csproj", _CSPROJ_SDK_STYLE, "NuGet")
+    assert len(pkgs) > 0
+
+
+def test_parse_manifest_routes_composer_files():
+    assert len(gs._parse_manifest("composer.json", _COMPOSER_JSON, "Packagist")) > 0
+    assert len(gs._parse_manifest("composer.lock", _COMPOSER_LOCK, "Packagist")) > 0
+
+
+def test_parse_manifest_routes_packages_lock_json():
+    pkgs = gs._parse_manifest("packages.lock.json", _PACKAGES_LOCK_JSON, "NuGet")
+    assert len(pkgs) > 0
+
+
+# ---------------------------------------------------------------------------
 # _query_and_store_batch — OSV full-detail fetch
 # ---------------------------------------------------------------------------
 
@@ -936,7 +1760,7 @@ def test_query_and_store_batch_fetches_full_vuln_details(db_conn, tmp_path):
     client.post.return_value = batch_resp
     client.get.return_value = detail_resp
 
-    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
 
     # Full-detail GET must have been called with the vuln ID
     client.get.assert_called_once()
@@ -982,7 +1806,7 @@ def test_query_and_store_batch_deduplicates_vuln_detail_requests(db_conn):
     client.post.return_value = batch_resp
     client.get.return_value = detail_resp
 
-    _query_and_store_batch(db_conn, client, config, pkgs, set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, pkgs, set(), stats)
 
     # Only one detail fetch despite two packages matching the same vuln
     assert client.get.call_count == 1
@@ -1008,12 +1832,86 @@ def test_query_and_store_batch_detail_fetch_failure_stores_with_null_cvss(db_con
     client.get.side_effect = httpx.RequestError("timeout")
 
     # Must not raise
-    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats, "high")
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
 
     # Finding is stored but with NULL cvss_score (unknown severity)
     row = db_conn.execute("SELECT cvss_score FROM findings").fetchone()
     assert row is not None
     assert row["cvss_score"] is None
+
+
+def test_query_and_store_batch_follows_next_page_token(db_conn):
+    """A package with many advisories pages via next_page_token on its own
+    result entry — the batch must be re-queried (carrying page_token
+    forward) until no token remains, or vulns beyond the first page are lost.
+    """
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+    pkg = Package("requests", "2.28.0", "PyPI", "requirements.txt", "user/repo")
+    stats = ScannerStats()
+
+    page1 = MagicMock()
+    page1.raise_for_status = MagicMock()
+    page1.json.return_value = {
+        "results": [
+            {
+                "vulns": [{"id": "GHSA-page1-0001", "modified": "2024-01-01T00:00:00Z"}],
+                "next_page_token": "tok-page-2",
+            }
+        ]
+    }
+    page2 = MagicMock()
+    page2.raise_for_status = MagicMock()
+    page2.json.return_value = {
+        "results": [{"vulns": [{"id": "GHSA-page2-0001", "modified": "2024-01-01T00:00:00Z"}]}]
+    }
+
+    def _fake_get(url, **kwargs):
+        # Distinct, alias-free detail responses — _make_full_vuln hardcodes
+        # the same CVE alias for every vuln, which would make the dedup
+        # logic (correctly) treat these two different vulns as duplicates.
+        vuln_id = url.rsplit("/", 1)[-1]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"id": vuln_id, "aliases": []}
+        return resp
+
+    client = MagicMock()
+    client.post.side_effect = [page1, page2]
+    client.get.side_effect = _fake_get
+
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
+
+    assert client.post.call_count == 2
+    second_call_payload = client.post.call_args_list[1].kwargs["json"]
+    assert second_call_payload["queries"][0]["page_token"] == "tok-page-2"
+
+    findings = db_conn.execute("SELECT ghsa_id FROM findings").fetchall()
+    assert {r["ghsa_id"] for r in findings} == {"GHSA-page1-0001", "GHSA-page2-0001"}
+
+
+def test_query_and_store_batch_respects_page_cap(db_conn):
+    """A next_page_token that never ends must not paginate forever."""
+    config = AppConfig(
+        github=GitHubConfig(token="tok", username="u"),
+        dashboard=DashboardConfig(username="admin", password="pw"),
+    )
+    pkg = Package("requests", "2.28.0", "PyPI", "requirements.txt", "user/repo")
+    stats = ScannerStats()
+
+    looping_resp = MagicMock()
+    looping_resp.raise_for_status = MagicMock()
+    looping_resp.json.return_value = {"results": [{"vulns": [], "next_page_token": "always-more"}]}
+    client = MagicMock()
+    client.post.return_value = looping_resp
+
+    from dive.github_scanner import _OSV_BATCH_MAX_PAGES
+
+    _query_and_store_batch(db_conn, client, config, [pkg], set(), stats)
+
+    assert client.post.call_count == _OSV_BATCH_MAX_PAGES
 
 
 # ---------------------------------------------------------------------------
@@ -1061,7 +1959,7 @@ def test_below_threshold_finding_is_stored_but_not_notified(db_conn):
         "npm",
     )
 
-    _store_osv_finding(db_conn, config, pkg, vuln, set(), stats, severity_threshold="high")
+    _store_osv_finding(db_conn, config, pkg, vuln, set(), stats)
 
     # Row is stored despite being below the high threshold.
     count = db_conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
@@ -1221,3 +2119,46 @@ def test_new_ecosystems_registered():
     assert _LATEST_VERSION_REGISTRIES["Maven"] is _lookup_latest_maven
     assert _LATEST_VERSION_REGISTRIES["NuGet"] is _lookup_latest_nuget
     assert _LATEST_VERSION_REGISTRIES["Packagist"] is _lookup_latest_packagist
+
+
+# ---------------------------------------------------------------------------
+# _enrich_latest_versions — parallel lookup, serialized DB writes
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_latest_versions_updates_db_for_each_package(db_conn, monkeypatch):
+    """Network lookups now run on a thread pool; the DB write for each
+    successful lookup must still land, and only on the calling thread."""
+
+    def _fake_lookup(package, ecosystem, client):
+        return (package, ecosystem, "9.9.9", 0)
+
+    monkeypatch.setattr(gs, "_lookup_one_latest_version", _fake_lookup)
+
+    updates: list[tuple] = []
+    monkeypatch.setattr(
+        db, "update_latest_version_for_package", lambda conn, *args: updates.append(args)
+    )
+
+    gs._enrich_latest_versions(db_conn, {("lodash", "npm"), ("requests", "PyPI")})
+
+    assert set(updates) == {
+        ("lodash", "npm", "9.9.9", 0),
+        ("requests", "PyPI", "9.9.9", 0),
+    }
+
+
+def test_enrich_latest_versions_skips_unknown_ecosystem(db_conn, monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        gs,
+        "_lookup_one_latest_version",
+        lambda package, ecosystem, client: called.append((package, ecosystem)) or None,
+    )
+    gs._enrich_latest_versions(db_conn, {("mystery-pkg", "TotallyUnknownEcosystem")})
+    assert called == [("mystery-pkg", "TotallyUnknownEcosystem")]
+
+
+def test_lookup_one_latest_version_returns_none_for_unregistered_ecosystem():
+    client = MagicMock()
+    assert gs._lookup_one_latest_version("pkg", "NotARealEcosystem", client) is None

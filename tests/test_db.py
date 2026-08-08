@@ -308,6 +308,51 @@ def test_upsert_secret_finding_distinct_secrets_kept(conn):
     assert _secret_count(conn) == 2
 
 
+def test_upsert_secret_finding_fingerprint_collision_across_match_keys_no_crash(conn):
+    """Regression test for a live failure: gitleaks reported two findings at
+    the identical commit/file/rule/line with different secret_type
+    descriptions. Their match_keys differ (secret_type is part of the key)
+    but gitleaks's Fingerprint — the column with the actual UNIQUE
+    constraint — does not depend on secret_type, so it collided. The naive
+    match_key-only lookup missed this and the second INSERT raised
+    sqlite3.IntegrityError instead of updating the existing row.
+    """
+    same_fingerprint = "abc1234:config/settings.py:generic-api-key:12"
+    assert (
+        db.upsert_secret_finding(
+            conn,
+            _make_secret(
+                secret_type="Generic API Key",
+                rule_id="generic-api-key",
+                fingerprint=same_fingerprint,
+            ),
+        )
+        is True
+    )
+
+    # Must not raise, and must not be counted as a second brand-new finding.
+    second = db.upsert_secret_finding(
+        conn,
+        _make_secret(
+            secret_type="AWS Access Key",  # different description, same location
+            rule_id="generic-api-key",
+            fingerprint=same_fingerprint,
+        ),
+    )
+    assert second is False
+    assert _secret_count(conn) == 1
+
+    # match_key and secret_type are both refreshed to the latest sighting, so
+    # the row never stores a match_key that describes a different secret_type
+    # than what's in the secret_type column.
+    row = conn.execute("SELECT match_key, secret_type FROM secret_findings").fetchone()
+    assert row["secret_type"] == "AWS Access Key"
+    expected_key = db.secret_match_key(
+        "owner/repo", "config/settings.py", "generic-api-key", "AWS Access Key", 12
+    )
+    assert row["match_key"] == expected_key
+
+
 def test_migrate_dedupes_existing_secret_duplicates(conn):
     """Rows created before the match_key migration (same secret, different
     commit) must collapse to one when the backfill runs.

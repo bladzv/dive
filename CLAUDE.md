@@ -311,6 +311,62 @@ signal — as `ScanStats.token_permission_warning`. A missing `gitleaks` binary 
 `subprocess.TimeoutExpired` also now set an actionable message instead of failing silently or as a
 bare repo name.
 
+**No `secrets_scanner` failure is ever reported as a bare repo name.** Every branch of `run()`'s
+per-repo `except` chain (`_CloneFailed` → `_GitleaksFailed` → `subprocess.TimeoutExpired` →
+`Exception`, in that order — `_CloneFailed` and `TimeoutExpired` are unrelated exception types, so
+this ordering is not load-bearing, but keep it) appends a reason to `failed_repos`, not just
+`repo.full_name`. An unrecognised clone failure falls back to `_condense_detail(exc.detail)`, which
+picks git's `fatal:` line out of multiline stderr; the generic catch-all includes the exception type
+and message. **`TimeoutExpired.cmd` for a clone timeout is the real argv, which embeds a live
+access token in the clone URL** — `_clone()`'s redaction only covers the non-timeout failure path —
+so only `exc.cmd[0]` (the binary name, to distinguish a git-clone timeout from a gitleaks-scan
+timeout) may ever be read from it; never interpolate `exc.cmd`, `str(exc)`, or `exc.args` into a
+message, a log line, or `failed_repos`.
+
+**A crashed gitleaks run is a failure, not a clean scan.** `_run_gitleaks()` used to return `[]` on
+a non-0/1 exit code and on a malformed report, so `_scan_repo` returned 0 and the repo was counted
+in `repos_scanned` with zero findings — indistinguishable from a repo that is actually clean. It now
+raises `_GitleaksFailed` for those cases (still returning `[]` only for the two genuine no-findings
+cases: an empty report, or valid JSON that isn't a list), which `run()` turns into a `failed_repos`
+entry. This is a deliberate behavior change: repos hitting this path move from `repos_scanned` into
+`failed_repos`, so the drawer's counts will shift for anyone currently affected.
+
+**`db.upsert_secret_finding()` now checks `fingerprint` as a fallback dedup key, not just
+`match_key`.** This bug was found *by* the above changes, on a live run: `secret_findings.fingerprint`
+is the column with the actual `UNIQUE` constraint, but the dedup lookup only checked `match_key`
+(deliberately commit-independent — see the docstring). gitleaks can report two entries for the exact
+same commit/file/rule/line with a different `secret_type` description; those get different
+`match_key`s (which includes `secret_type`) but the *same* `fingerprint` (which doesn't), so the
+second `INSERT` raised `sqlite3.IntegrityError` instead of being recognized as the same row. The
+lookup now falls back to a `fingerprint`-keyed `SELECT` when `match_key` misses, and the `UPDATE`
+path also refreshes `match_key`/`secret_type`/`rule_id` (previously only `commit_sha`/`line_number`/
+`fingerprint`), so a row never ends up with a `match_key` that describes a different `secret_type`
+than what's actually stored.
+
+**The SQLite log handler gets a much longer `busy_timeout`, plus a retry, instead of dropping the
+record.** `_SQLiteLogHandler.emit()` previously treated `sqlite3.OperationalError` ("database is
+locked") the same as a permanently broken connection — one failed insert and the record was gone,
+`self._dropped` incremented, with no consumer anywhere. A pipeline step can hold a write transaction
+open across its **entire run**, not just briefly — `db.upsert_secret_finding()` never commits
+mid-loop, so `secrets_scanner.run()`'s `with db.get_conn() as conn:` in `main.py` keeps one
+transaction open for the whole scan. A live 15-repo run measured this at 48.9s, and lost exactly the
+`ERROR` row for the repo that failed mid-scan even with a first-pass fix that only added a short
+Python-level retry on top of `_make_connection()`'s 5s default `busy_timeout` (~15.75s worst case
+total — still nowhere near 48.9s). The fix is `_LOG_CONN_BUSY_TIMEOUT_MS` (60s): this handler's
+`_get_conn()` overrides the busy_timeout **only on its own dedicated connection**, via `PRAGMA
+busy_timeout=<ms>` right after opening it — request and pipeline connections keep the 5s default
+from `_make_connection()`. This connection runs only on the `QueueListener` thread, which has
+nothing else to do but wait, so a long per-attempt block (and `_LOG_INSERT_ATTEMPTS` of them) cannot
+stall a request or the pipeline. **This mitigates, it does not eliminate** — a step that holds the
+lock longer than the combined retry budget will still drop a record. That is exactly why `log_drops`
+exists: the drop count is surfaced in the authenticated `GET /api/status` payload (via
+`_get_dropped_log_count()`) and rendered in the drawer summary when non-zero — **never add it to
+`GET /api/health`**, which is deliberately minimal. Confirmed live: the drawer showed "1 log
+record(s) dropped" for the exact run where this happened, so the operator sees the gap instead of a
+silent one. Do not "fix" this by raising SQLite's **global** `busy_timeout` — that slows every
+request thread to solve a logging-thread problem; only this handler's connection should ever get a
+non-default value.
+
 ## Deployment targets
 
 Designed to run on low-power hardware (Raspberry Pi 4, 8 GB). The default Ollama model (`qwen2.5:3b`, ~2 GB) is chosen for Pi compatibility. See `docs/models.md` for alternatives and `docs/` for platform-specific setup guides.

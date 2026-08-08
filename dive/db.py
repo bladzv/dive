@@ -1126,6 +1126,21 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     ).fetchone()
 
     if existing is None:
+        # gitleaks can report two entries for the same commit/file/rule/line
+        # with a different secret_type description (observed live: two
+        # findings at an identical location, differing only in the
+        # human-readable Description gitleaks attached), which gives them
+        # different match_keys but the *same* Fingerprint. fingerprint is the
+        # column with the actual UNIQUE constraint, so falling through to an
+        # INSERT here would raise IntegrityError instead of updating the row
+        # that's already there. Check fingerprint too before deciding this is
+        # really new.
+        existing = conn.execute(
+            "SELECT id FROM secret_findings WHERE fingerprint = ?",
+            (finding["fingerprint"],),
+        ).fetchone()
+
+    if existing is None:
         conn.execute(
             """
             INSERT INTO secret_findings
@@ -1152,7 +1167,8 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     conn.execute(
         """
         UPDATE secret_findings
-        SET last_seen_at = ?, commit_sha = ?, line_number = ?, fingerprint = ?
+        SET last_seen_at = ?, commit_sha = ?, line_number = ?, fingerprint = ?,
+            match_key = ?, secret_type = ?, rule_id = ?
         WHERE id = ?
         """,
         (
@@ -1160,6 +1176,9 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
             finding["commit_sha"],
             finding.get("line_number"),
             finding["fingerprint"],
+            match_key,
+            finding["secret_type"],
+            finding["rule_id"],
             existing["id"],
         ),
     )

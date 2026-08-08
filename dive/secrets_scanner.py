@@ -102,23 +102,42 @@ def run(
             stats.secrets_new += new_count
         except _CloneFailed as exc:
             logger.error("Secrets scan failed for %s: %s", repo.full_name, exc)
-            if exc.remediation:
-                stats.failed_repos.append(f"{repo.full_name} — {exc.remediation}")
-                if not stats.token_permission_warning:
-                    stats.token_permission_warning = (
-                        f"Secrets scanner could not clone {repo.full_name}. {exc.remediation}"
-                    )
-            else:
-                stats.failed_repos.append(repo.full_name)
-        except subprocess.TimeoutExpired:
-            logger.error("Secrets scan timed out for %s", repo.full_name)
-            stats.failed_repos.append(
-                f"{repo.full_name} — timed out. Fix: lower secrets_scan_depth in "
-                "Settings → Scanner Settings, or exclude this repo."
-            )
-        except Exception as exc:
+            reason = exc.remediation or f"git clone failed: {_condense_detail(exc.detail)}"
+            stats.failed_repos.append(f"{repo.full_name} — {reason}")
+            if exc.remediation and not stats.token_permission_warning:
+                stats.token_permission_warning = (
+                    f"Secrets scanner could not clone {repo.full_name}. {exc.remediation}"
+                )
+        except _GitleaksFailed as exc:
             logger.error("Secrets scan failed for %s: %s", repo.full_name, exc)
-            stats.failed_repos.append(repo.full_name)
+            stats.failed_repos.append(
+                f"{repo.full_name} — {_condense_detail(exc.detail)}. "
+                "Fix: check the gitleaks version and that the repo cloned completely."
+            )
+        except subprocess.TimeoutExpired as exc:
+            # exc.cmd for a clone timeout is the argv list embedding a live
+            # access token (see _CLONE_TIMEOUT usage in _clone) — never
+            # interpolate exc.cmd/str(exc)/exc.args into a message, log line,
+            # or failed_repos entry. Only the binary name (cmd[0]) is safe.
+            cmd = exc.cmd[0] if isinstance(exc.cmd, (list, tuple)) and exc.cmd else str(exc.cmd)
+            if "gitleaks" in str(cmd):
+                reason = (
+                    f"gitleaks scan timed out after {_SCAN_TIMEOUT}s. Fix: lower "
+                    "secrets_scan_depth in Settings → Scanner Settings, or exclude this repo."
+                )
+            else:
+                reason = (
+                    f"git clone timed out after {_CLONE_TIMEOUT}s. Fix: lower "
+                    "secrets_scan_depth in Settings → Scanner Settings, or check network "
+                    "connectivity to github.com."
+                )
+            logger.error("Secrets scan timed out for %s: %s", repo.full_name, reason)
+            stats.failed_repos.append(f"{repo.full_name} — {reason}")
+        except Exception as exc:
+            logger.error("Secrets scan failed for %s: %s", repo.full_name, exc, exc_info=True)
+            stats.failed_repos.append(
+                f"{repo.full_name} — unexpected {type(exc).__name__}: {str(exc)[:200] or 'no detail'}"
+            )
         if on_progress:
             on_progress(stats.repos_scanned + len(stats.failed_repos), total)
 
@@ -142,6 +161,19 @@ def _get_scan_depth(conn: sqlite3.Connection) -> int:
         return max(1, int(stored))
     except ValueError:
         return _DEFAULT_SCAN_DEPTH
+
+
+def _condense_detail(detail: str) -> str:
+    """Collapse git's/gitleaks's multiline stderr into one short line for UI display.
+
+    Prefers the `fatal:` line (git's actual verdict) when present, since the
+    `remote:` lines above it are usually the server's less specific framing.
+    """
+    lines = [ln.strip() for ln in detail.splitlines() if ln.strip()]
+    if not lines:
+        return "no error output from git"
+    fatal = next((ln for ln in lines if ln.lower().startswith("fatal:")), None)
+    return (fatal or lines[0])[:200]
 
 
 def _explain_clone_failure(detail: str) -> str | None:
@@ -185,6 +217,18 @@ class _CloneFailed(RuntimeError):
         super().__init__(f"git clone failed for {repo_full_name}: {detail}")
         self.detail = detail
         self.remediation = _explain_clone_failure(detail)
+
+
+class _GitleaksFailed(RuntimeError):
+    """Raised when the gitleaks subprocess itself fails — a non-0/1 exit code,
+    or a report file that can't be read back as JSON (including a missing
+    gitleaks binary, which surfaces as OSError). Previously these cases
+    returned an empty finding list, so a crashed scan was indistinguishable
+    from a clean one; this makes it a proper failed_repos entry instead."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"gitleaks failed: {detail}")
+        self.detail = detail
 
 
 def _scan_repo(
@@ -254,8 +298,13 @@ def _clone(url: str, dest: str, depth: int, token: str) -> tuple[bool, str]:
 def _run_gitleaks(source_dir: str) -> list[dict]:
     """Run gitleaks detect on source_dir and return parsed finding dicts.
 
-    Returns an empty list when no leaks are found or on any gitleaks error.
-    gitleaks exits 0 = no leaks, 1 = leaks found; anything else is an error.
+    Returns an empty list only for the two genuine "no findings" cases: an
+    empty report (gitleaks found nothing) or a report that parses as JSON but
+    isn't a list. Raises _GitleaksFailed for everything else — a non-0/1 exit
+    code, an unreadable/malformed report, or a missing gitleaks binary
+    (surfaces as OSError) — so a crashed scan is never mistaken for a clean
+    one. gitleaks exits 0 = no leaks, 1 = leaks found; anything else is an
+    error.
     """
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         report_path = f.name
@@ -281,7 +330,7 @@ def _run_gitleaks(source_dir: str) -> list[dict]:
         if result.returncode not in (0, 1):
             stderr = result.stderr.decode(errors="replace")[:300]
             logger.warning("gitleaks exited %d: %s", result.returncode, stderr)
-            return []
+            raise _GitleaksFailed(f"exited {result.returncode}: {stderr}")
 
         content = Path(report_path).read_text().strip()
         if not content:
@@ -292,6 +341,6 @@ def _run_gitleaks(source_dir: str) -> list[dict]:
 
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read gitleaks report: %s", exc)
-        return []
+        raise _GitleaksFailed(f"unreadable report: {exc}") from exc
     finally:
         Path(report_path).unlink(missing_ok=True)

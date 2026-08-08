@@ -99,17 +99,23 @@ def test_run_gitleaks_no_leaks(tmp_path):
     assert result == []
 
 
-def test_run_gitleaks_error_exit_code(tmp_path):
+def test_run_gitleaks_error_exit_code_raises_gitleaks_failed(tmp_path):
+    """A non-0/1 exit code is a real gitleaks crash, not "no findings" — it
+    must raise so the caller can distinguish it from a clean scan, rather than
+    silently returning an empty list (which previously made a crashed scan
+    indistinguishable from a repo with zero secrets)."""
+
     def fake_run(cmd, **kwargs):
         result = MagicMock()
         result.returncode = 2  # unexpected error
         result.stderr = b"fatal: not a git repository"
         return result
 
-    with patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run):
-        result = ss._run_gitleaks(str(tmp_path))
-
-    assert result == []
+    with (
+        patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run),
+        pytest.raises(ss._GitleaksFailed, match="exited 2"),
+    ):
+        ss._run_gitleaks(str(tmp_path))
 
 
 def test_run_gitleaks_empty_report(tmp_path):
@@ -338,7 +344,9 @@ def test_run_records_failed_repo(in_memory_db):
         stats = ss.run(in_memory_db, config)
 
     assert stats.repos_scanned == 0
-    assert "user/broken" in stats.failed_repos
+    assert len(stats.failed_repos) == 1
+    assert "user/broken" in stats.failed_repos[0]
+    assert "RuntimeError" in stats.failed_repos[0]
 
 
 def test_run_sets_token_permission_warning_from_probe(in_memory_db):
@@ -495,3 +503,210 @@ def test_run_sets_warning_when_gitleaks_missing(in_memory_db):
     assert stats.gitleaks_missing is True
     assert stats.token_permission_warning is not None
     assert "gitleaks" in stats.token_permission_warning.lower()
+
+
+# ---------------------------------------------------------------------------
+# _condense_detail
+# ---------------------------------------------------------------------------
+
+
+def test_condense_detail_prefers_fatal_line():
+    detail = (
+        "remote: Write access to repository not granted.\n"
+        "fatal: unable to access 'https://github.com/u/r.git/': "
+        "The requested URL returned error: 403\n"
+    )
+    result = ss._condense_detail(detail)
+    assert result.startswith("fatal:")
+    assert "403" in result
+
+
+def test_condense_detail_falls_back_to_first_line_without_fatal():
+    result = ss._condense_detail("remote: something went wrong\nmore detail here")
+    assert result == "remote: something went wrong"
+
+
+def test_condense_detail_handles_empty_string():
+    result = ss._condense_detail("")
+    assert result == "no error output from git"
+
+
+# ---------------------------------------------------------------------------
+# run() — no failed_repos entry is ever a bare repo name
+# ---------------------------------------------------------------------------
+
+
+def test_run_unmatched_clone_failure_still_carries_a_reason(in_memory_db):
+    """Regression test for the reported symptom: a clone failure whose stderr
+    matches none of _explain_clone_failure's three patterns previously
+    produced a bare repo name in failed_repos with no indication of cause."""
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/broken"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner._clone",
+            return_value=(False, "fatal: the remote end hung up unexpectedly"),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert len(stats.failed_repos) == 1
+    assert stats.failed_repos[0] != "user/broken"
+    assert "user/broken" in stats.failed_repos[0]
+    assert "remote end hung up" in stats.failed_repos[0]
+    # unrecognised failures are not actionable enough for the aggregate banner
+    assert stats.token_permission_warning is None
+
+
+def test_run_gitleaks_failure_recorded_as_failed_not_scanned(in_memory_db):
+    """A crashed gitleaks run must not be indistinguishable from a clean scan
+    — the repo must land in failed_repos, not repos_scanned."""
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/crashy"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch("dive.secrets_scanner._clone", return_value=(True, "")),
+        patch(
+            "dive.secrets_scanner._run_gitleaks",
+            side_effect=ss._GitleaksFailed("exited 2: fatal: not a git repository"),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert stats.repos_scanned == 0
+    assert len(stats.failed_repos) == 1
+    assert "user/crashy" in stats.failed_repos[0]
+    assert "not a git repository" in stats.failed_repos[0]
+
+
+def test_run_gitleaks_malformed_json_raises_gitleaks_failed(tmp_path):
+    def fake_run(cmd, **kwargs):
+        for i, arg in enumerate(cmd):
+            if arg == "--report-path" and i + 1 < len(cmd):
+                Path(cmd[i + 1]).write_text("{not valid json")
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with (
+        patch("dive.secrets_scanner.subprocess.run", side_effect=fake_run),
+        pytest.raises(ss._GitleaksFailed, match="unreadable report"),
+    ):
+        ss._run_gitleaks(str(tmp_path))
+
+
+def test_run_generic_exception_carries_exception_type_and_message(in_memory_db):
+    """The catch-all handler previously discarded the exception entirely,
+    leaving only a bare repo name."""
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/weird"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch("dive.secrets_scanner._scan_repo", side_effect=ValueError("unexpected shape")),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert len(stats.failed_repos) == 1
+    assert "user/weird" in stats.failed_repos[0]
+    assert "ValueError" in stats.failed_repos[0]
+    assert "unexpected shape" in stats.failed_repos[0]
+
+
+# ---------------------------------------------------------------------------
+# run() — timeout does not leak the embedded access token
+# ---------------------------------------------------------------------------
+
+
+def test_run_clone_timeout_does_not_leak_token(in_memory_db, caplog):
+    """TimeoutExpired.cmd for a clone timeout is the real argv, which embeds a
+    live access token in the clone URL. Neither the failed_repos entry nor
+    the log message may contain it — only the binary name may be extracted
+    from exc.cmd."""
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/slow-clone"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    real_argv = [
+        "git",
+        "clone",
+        "--depth",
+        "31",
+        "--quiet",
+        "https://x-access-token:SUPERSECRETTOKEN@github.com/user/slow-clone.git",
+        "/tmp/whatever",
+    ]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner._scan_repo",
+            side_effect=subprocess.TimeoutExpired(cmd=real_argv, timeout=120),
+        ),
+        caplog.at_level("ERROR"),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert len(stats.failed_repos) == 1
+    assert "SUPERSECRETTOKEN" not in stats.failed_repos[0]
+    assert "x-access-token" not in stats.failed_repos[0]
+    assert "git clone timed out" in stats.failed_repos[0]
+    for record in caplog.records:
+        assert "SUPERSECRETTOKEN" not in record.getMessage()
+        assert "x-access-token" not in record.getMessage()
+
+
+def test_run_gitleaks_timeout_message_differs_from_clone_timeout(in_memory_db):
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/slow-scan"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner._scan_repo",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["gitleaks", "detect", "--source", "/tmp/x"], timeout=180
+            ),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert "gitleaks scan timed out" in stats.failed_repos[0]
+    assert "exclude this repo" in stats.failed_repos[0]

@@ -258,6 +258,24 @@ def test_status_pipeline_shape(client):
     assert "last_status" in pipeline
 
 
+def test_status_includes_log_drops_count(client):
+    """log_drops surfaces _SQLiteLogHandler's internal drop counter, which
+    previously had no consumer anywhere — a silently lost ERROR record (e.g.
+    from a failed secrets scan) was invisible even to an operator checking
+    /api/status."""
+    data = client.get("/api/status").json()
+    assert "log_drops" in data
+    assert isinstance(data["log_drops"], int)
+
+
+def test_health_still_excludes_log_drops():
+    """log_drops must stay behind auth like the rest of the detailed status
+    payload — it is not sensitive on its own, but /api/health is deliberately
+    kept minimal and unauthenticated (Docker healthcheck target)."""
+    data = TestClient(app, raise_server_exceptions=True).get("/api/health").json()
+    assert "log_drops" not in data
+
+
 # ---------------------------------------------------------------------------
 # HTML routes — smoke tests (200, correct content-type)
 # ---------------------------------------------------------------------------

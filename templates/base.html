@@ -478,7 +478,7 @@ function pollStatus() {
       _pollFailures = 0;
       updateStatusBadge(data.pipeline);
       updatePipelineControls(data.pipeline);
-      updatePipelineDrawer(data.pipeline_steps, data.pipeline);
+      updatePipelineDrawer(data.pipeline_steps, data.pipeline, data.log_drops);
 
       const nr = document.getElementById('next-run-text');
       if (nr) nr.textContent = data.next_run ? DIVE.timeUntil(data.next_run) : 'unscheduled';
@@ -638,7 +638,7 @@ document.addEventListener('click', function(e) {
   }
 });
 
-function updatePipelineDrawer(stepDefs, pipeline) {
+function updatePipelineDrawer(stepDefs, pipeline, logDrops) {
   if (!Array.isArray(stepDefs)) return;
 
   const stateEl   = document.getElementById('drawer-state');
@@ -709,7 +709,7 @@ function updatePipelineDrawer(stepDefs, pipeline) {
   const _sig = JSON.stringify([
     pipeline.step_history, pipeline.step_stats, pipeline.step_progress, pipeline.step_times,
     pipeline.current_step, pipeline.running, pipeline.last_status, pipeline.last_completed,
-    pipeline.last_error, pipeline.run_duration_s,
+    pipeline.last_error, pipeline.run_duration_s, logDrops,
   ]);
   if (_sig === _drawerRenderSig) return;
   _drawerRenderSig = _sig;
@@ -796,7 +796,11 @@ function updatePipelineDrawer(stepDefs, pipeline) {
     if (ks.findings_new != null) rows += `<div class="drawer-summary-row"><span>New findings</span><span class="drawer-summary-val">${ks.findings_new}</span></div>`;
     if (ss.secrets_new != null) rows += `<div class="drawer-summary-row"><span>New secrets</span><span class="drawer-summary-val">${ss.secrets_new}</span></div>`;
     if (ls.auto_resolved != null) rows += `<div class="drawer-summary-row"><span>Auto-resolved</span><span class="drawer-summary-val">${ls.auto_resolved}</span></div>`;
-    const content = errorHtml + rows;
+    let dropsHtml = '';
+    if (logDrops) {
+      dropsHtml = `<div class="drawer-step-warn">⚠ ${logDrops} log record(s) dropped — /logs may be incomplete.</div>`;
+    }
+    const content = errorHtml + rows + dropsHtml;
     summaryEl.style.display = content ? '' : 'none';
     summaryEl.innerHTML = content;
   } else {

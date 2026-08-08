@@ -152,7 +152,13 @@ def _process_batch(
     for attempt in range(1, MAX_RETRIES + 1):
         raw_response = _call_ollama(client, config, batch, model)
         if raw_response is None:
-            logger.warning("Ollama call failed (attempt %d/%d)", attempt, MAX_RETRIES)
+            # _call_ollama already logged the specific failure reason (timeout,
+            # HTTP status, connection error) — an unreachable Ollama otherwise
+            # produced two near-duplicate warnings per attempt, which fills
+            # log_entries fast enough (dozens of records in the same second)
+            # to trigger lock contention on the SQLite log handler's writer
+            # connection and lose unrelated ERROR rows from other pipeline
+            # steps running concurrently.
             continue
 
         parsed = _parse_response(raw_response, expected_count=len(batch))

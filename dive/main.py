@@ -89,6 +89,22 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 _log_queue: queue.Queue = queue.Queue(maxsize=2000)
 _log_listener: logging.handlers.QueueListener | None = None
+_sqlite_log_handler: _SQLiteLogHandler | None = None
+
+_LOG_INSERT_ATTEMPTS = 3
+_LOG_INSERT_BACKOFF_S = 0.25
+
+# db._make_connection()'s default PRAGMA busy_timeout is 5000ms, sized for
+# request-handling connections that must not stall a response. The pipeline
+# can hold a write transaction open for an entire step, not just a brief
+# window — a live 15-repo secrets scan measured at 48.9s total, with
+# db.upsert_secret_finding() never committing mid-loop (see main.py's
+# `with db.get_conn() as conn: sec_stats = secrets_scanner.run(conn, ...)`).
+# A 5s busy_timeout plus a short Python-level backoff (~15.75s worst case)
+# was measured losing exactly the ERROR record for a mid-scan failure. This
+# handler's connection is dedicated to a single background thread with
+# nothing else to do but wait, so it gets a much longer budget instead.
+_LOG_CONN_BUSY_TIMEOUT_MS = 60_000
 
 
 class _SQLiteLogHandler(logging.Handler):
@@ -111,34 +127,61 @@ class _SQLiteLogHandler(logging.Handler):
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
             self._conn = db._make_connection(db._DEFAULT_DB_PATH)
+            # Override the request-connection default (5s) — see
+            # _LOG_CONN_BUSY_TIMEOUT_MS above. Only this dedicated background
+            # connection is affected; request/pipeline connections keep the
+            # 5s default from _make_connection().
+            self._conn.execute(f"PRAGMA busy_timeout={_LOG_CONN_BUSY_TIMEOUT_MS}")
         return self._conn
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             ts = datetime.fromtimestamp(record.created, UTC).strftime("%Y-%m-%dT%H:%M:%S")
             msg = self.format(record)
-            conn = self._get_conn()
-            db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
-            conn.commit()
         except Exception:
-            # Never raise from a log handler. Drop the (possibly broken)
-            # connection so the next record gets a fresh one instead of
-            # repeating the same failure forever.
             self._dropped += 1
-            if self._conn is not None:
-                try:
-                    self._conn.close()
-                except Exception:
-                    pass
-                self._conn = None
+            return
+
+        for attempt in range(_LOG_INSERT_ATTEMPTS):
+            try:
+                conn = self._get_conn()
+                db.insert_log_entry(conn, ts, record.levelname, record.name, msg)
+                conn.commit()
+                return
+            except sqlite3.OperationalError:
+                # Each attempt above already blocks for up to
+                # _LOG_CONN_BUSY_TIMEOUT_MS inside SQLite's own busy handler
+                # before raising — this loop is a second layer for the rare
+                # case that budget is *still* not enough (an unusually long
+                # step) or the lock clears in the gap right after giving up.
+                # This runs only on the QueueListener thread, never a request
+                # thread, so several minutes of total worst-case wait here
+                # cannot block a request or the pipeline itself.
+                if attempt == _LOG_INSERT_ATTEMPTS - 1:
+                    break
+                time.sleep(_LOG_INSERT_BACKOFF_S)
+            except Exception:
+                break
+
+        # Never raise from a log handler. Drop the (possibly broken)
+        # connection so the next record gets a fresh one instead of
+        # repeating the same failure forever.
+        self._dropped += 1
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
 
 
 def _setup_sqlite_logging() -> None:
     """Wire the SQLite handler behind a QueueListener so logging never blocks."""
-    global _log_listener
+    global _log_listener, _sqlite_log_handler
     sqlite_handler = _SQLiteLogHandler()
     sqlite_handler.setFormatter(logging.Formatter("%(message)s"))
     sqlite_handler.setLevel(logging.INFO)
+    _sqlite_log_handler = sqlite_handler
     _log_listener = logging.handlers.QueueListener(
         _log_queue, sqlite_handler, respect_handler_level=True
     )
@@ -146,6 +189,13 @@ def _setup_sqlite_logging() -> None:
     queue_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(queue_handler)
     _log_listener.start()
+
+
+def _get_dropped_log_count() -> int:
+    """Number of log records lost by the SQLite handler since startup —
+    surfaced in /api/status as `log_drops` so a silent loss is visible
+    instead of just incrementing an internal counter nobody reads."""
+    return _sqlite_log_handler._dropped if _sqlite_log_handler is not None else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1967,6 +2017,7 @@ async def status(_user: Annotated[str, Depends(_require_auth)]) -> JSONResponse:
             "next_run": next_run,
             "ollama_ok": ollama_ok,
             "active_model": _get_current_model(),
+            "log_drops": _get_dropped_log_count(),
         }
     )
 

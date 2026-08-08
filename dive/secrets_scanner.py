@@ -67,6 +67,11 @@ def run(
             "See https://github.com/gitleaks/gitleaks#installing"
         )
         stats.gitleaks_missing = True
+        stats.token_permission_warning = (
+            "gitleaks binary not found on PATH — secrets scanning was skipped. "
+            "Fix: install gitleaks (https://github.com/gitleaks/gitleaks#installing), "
+            "or run DIVE via docker compose, where the image installs it."
+        )
         return stats
 
     scan_depth = _get_scan_depth(conn)
@@ -95,6 +100,22 @@ def run(
             new_count = _scan_repo(conn, repo, config.github.token, scan_depth, fp_fingerprints)
             stats.repos_scanned += 1
             stats.secrets_new += new_count
+        except _CloneFailed as exc:
+            logger.error("Secrets scan failed for %s: %s", repo.full_name, exc)
+            if exc.remediation:
+                stats.failed_repos.append(f"{repo.full_name} — {exc.remediation}")
+                if not stats.token_permission_warning:
+                    stats.token_permission_warning = (
+                        f"Secrets scanner could not clone {repo.full_name}. {exc.remediation}"
+                    )
+            else:
+                stats.failed_repos.append(repo.full_name)
+        except subprocess.TimeoutExpired:
+            logger.error("Secrets scan timed out for %s", repo.full_name)
+            stats.failed_repos.append(
+                f"{repo.full_name} — timed out. Fix: lower secrets_scan_depth in "
+                "Settings → Scanner Settings, or exclude this repo."
+            )
         except Exception as exc:
             logger.error("Secrets scan failed for %s: %s", repo.full_name, exc)
             stats.failed_repos.append(repo.full_name)
@@ -123,6 +144,49 @@ def _get_scan_depth(conn: sqlite3.Connection) -> int:
         return _DEFAULT_SCAN_DEPTH
 
 
+def _explain_clone_failure(detail: str) -> str | None:
+    """Map git's stderr to an actionable remediation, or None if unrecognised.
+
+    GitHub's git-over-HTTPS endpoint returns "Write access to repository not
+    granted" for *any* 403, including a read-only permission gap. Cloning needs
+    read access only — the message is GitHub's and it is misleading, so it is
+    translated here rather than shown verbatim.
+    """
+    low = detail.lower()
+    if "write access to repository not granted" in low or "403" in low:
+        return (
+            "GitHub token lacks read access to this repository's contents. "
+            "Despite git's wording, cloning does NOT require write access. "
+            "Fix: fine-grained PAT → Repository permissions → Contents: Read-only "
+            "(classic PAT: the 'repo' scope), and make sure this repository is in "
+            "the token's repository access list."
+        )
+    if "repository not found" in low or "404" in low:
+        return (
+            "Repository not found by git — usually the token cannot see it. "
+            "Fix: add it to the token's repository access, or add it to the "
+            "excluded-repos list in Settings → Scanner Settings."
+        )
+    if "could not read username" in low or "authentication failed" in low:
+        return (
+            "GitHub token was rejected by git. "
+            "Fix: check github.token in config.yaml is valid and not expired."
+        )
+    return None
+
+
+class _CloneFailed(RuntimeError):
+    """Raised when git clone fails. Subclasses RuntimeError and preserves the
+    original "git clone failed for X: detail" message so existing callers/tests
+    that match on RuntimeError keep working, while adding a structured
+    `remediation` attribute for callers that want an actionable message."""
+
+    def __init__(self, repo_full_name: str, detail: str) -> None:
+        super().__init__(f"git clone failed for {repo_full_name}: {detail}")
+        self.detail = detail
+        self.remediation = _explain_clone_failure(detail)
+
+
 def _scan_repo(
     conn: sqlite3.Connection,
     repo,
@@ -137,7 +201,7 @@ def _scan_repo(
     with tempfile.TemporaryDirectory() as tmpdir:
         ok, detail = _clone(clone_url, tmpdir, depth, token)
         if not ok:
-            raise RuntimeError(f"git clone failed for {repo.full_name}: {detail}")
+            raise _CloneFailed(repo.full_name, detail)
 
         raw_findings = _run_gitleaks(tmpdir)
 

@@ -278,6 +278,39 @@ registered once on `#drawer-steps`, never re-registered inside `updatePipelineDr
 `last_completed`/`last_error`/`run_duration_s` changed since the last render — placed after the
 state-label and drawer open/close logic, which must run unconditionally on every poll.
 
+## M13 — Progress-total accuracy and actionable clone-failure diagnostics
+
+**Collector progress denominator:** `collector.run()` used to call `on_progress(_sources_done,
+_sources_done)` on every tick — the same counter as both numerator and denominator — so the pipeline
+drawer rendered a moving target (`1/1`, `2/2`, `3/3`, ...) instead of a real fraction. `run()` now
+fetches `settings.get_enabled_feeds(conn)` before starting and computes a fixed
+`total_sources = len(feeds) + 3` (RSS feeds + NVD + KEV + GHSA) up front, primes the drawer with
+`(0, total_sources)`, and every tick reports that constant total. `_run_rss()` takes the
+already-fetched `feeds` list via a keyword arg instead of re-querying it. Any new source group added
+to the collector must be counted in `total_sources`, not left to an ad-hoc tick.
+
+**`github_scanner` progress denominator:** `total_repos` was `len(repos)` measured *before*
+excluding repos, so a run with any excluded repos configured stalled short of 100% — excluded repos
+were skipped inside the loop without incrementing the numerator. `run()` now filters to `scannable`
+repos first and measures `total_repos` from that list; progress also counts failed and skipped repos
+toward the numerator (not just successfully-scanned ones) so a run with failures still reaches
+`done == total`.
+
+**Gitleaks clone failures now translate GitHub's misleading 403 message.** `git clone` over HTTPS
+only needs read access, but GitHub's git-over-HTTPS endpoint returns the generic string `remote:
+Write access to repository not granted` for *any* 403 — including a fine-grained PAT that is simply
+missing `Contents: Read-only` (or a classic PAT missing the `repo` scope). `secrets_scanner.py`'s
+`_explain_clone_failure()` maps that (and repo-not-found / bad-token) stderr patterns to a
+remediation string; do not "fix" future reports of this message by telling users to grant write
+access — that scope is never required for cloning. The remediation is threaded through a
+`_CloneFailed` exception (subclasses `RuntimeError`, preserving the `"git clone failed for X:
+detail"` message so existing tests matching on `RuntimeError` keep passing) and surfaces in two
+places: appended inline to the `failed_repos` entry for that repo, and — unless
+`probe_private_repo_access()` already set a warning, which takes priority as the more specific
+signal — as `ScanStats.token_permission_warning`. A missing `gitleaks` binary and a per-repo
+`subprocess.TimeoutExpired` also now set an actionable message instead of failing silently or as a
+bare repo name.
+
 ## Deployment targets
 
 Designed to run on low-power hardware (Raspberry Pi 4, 8 GB). The default Ollama model (`qwen2.5:3b`, ~2 GB) is chosen for Pi compatibility. See `docs/models.md` for alternatives and `docs/` for platform-specific setup guides.

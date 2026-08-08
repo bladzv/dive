@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -383,3 +384,114 @@ def test_get_scan_depth_invalid_falls_back(in_memory_db):
     db_module.set_setting(in_memory_db, "secrets_scan_depth", "not-a-number")
     in_memory_db.commit()
     assert ss._get_scan_depth(in_memory_db) == 30
+
+
+# ---------------------------------------------------------------------------
+# _explain_clone_failure / clone-failure remediation surfacing
+# ---------------------------------------------------------------------------
+
+
+def test_explain_clone_failure_maps_write_access_403_to_read_access_fix():
+    msg = ss._explain_clone_failure("remote: Write access to repository not granted.")
+    assert msg is not None
+    assert "Contents: Read-only" in msg
+    assert "does NOT require write access" in msg
+
+
+def test_explain_clone_failure_returns_none_for_unrecognised_error():
+    assert ss._explain_clone_failure("fatal: early EOF") is None
+
+
+def test_run_surfaces_clone_permission_failure_inline_and_as_warning(in_memory_db):
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/broken"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner._clone",
+            return_value=(False, "remote: Write access to repository not granted."),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert len(stats.failed_repos) == 1
+    assert "user/broken" in stats.failed_repos[0]
+    assert "Contents" in stats.failed_repos[0]
+    assert stats.token_permission_warning is not None
+    assert "user/broken" in stats.token_permission_warning
+    assert "Contents" in stats.token_permission_warning
+
+
+def test_run_does_not_overwrite_probe_warning_with_clone_failure_warning(in_memory_db):
+    """probe_private_repo_access's warning is set before the scan loop runs and
+    is strictly more informative (it names the exact repo the probe checked) —
+    a later clone failure must not clobber it."""
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/broken"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    sentinel = "GitHub token cannot read private repository contents (403 on org/x)."
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch("dive.secrets_scanner.probe_private_repo_access", return_value=sentinel),
+        patch(
+            "dive.secrets_scanner._clone",
+            return_value=(False, "remote: Write access to repository not granted."),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert stats.token_permission_warning == sentinel
+    # the per-repo entry still carries its own remediation
+    assert "Contents" in stats.failed_repos[0]
+
+
+def test_run_records_timeout_with_actionable_message(in_memory_db):
+    config = _make_config()
+
+    mock_repo = MagicMock()
+    mock_repo.full_name = "user/slow"
+
+    mock_gh_user = MagicMock()
+    mock_gh_user.get_repos.return_value = [mock_repo]
+
+    with (
+        patch("dive.secrets_scanner.shutil.which", return_value="/usr/local/bin/gitleaks"),
+        patch("dive.secrets_scanner.Github") as MockGithub,
+        patch(
+            "dive.secrets_scanner._scan_repo",
+            side_effect=subprocess.TimeoutExpired(cmd="git clone", timeout=120),
+        ),
+    ):
+        MockGithub.return_value.get_user.return_value = mock_gh_user
+        stats = ss.run(in_memory_db, config)
+
+    assert stats.repos_scanned == 0
+    assert len(stats.failed_repos) == 1
+    assert "user/slow" in stats.failed_repos[0]
+    assert "secrets_scan_depth" in stats.failed_repos[0]
+
+
+def test_run_sets_warning_when_gitleaks_missing(in_memory_db):
+    config = _make_config()
+    with patch("dive.secrets_scanner.shutil.which", return_value=None):
+        stats = ss.run(in_memory_db, config)
+
+    assert stats.gitleaks_missing is True
+    assert stats.token_permission_warning is not None
+    assert "gitleaks" in stats.token_permission_warning.lower()

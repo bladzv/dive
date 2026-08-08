@@ -367,6 +367,34 @@ silent one. Do not "fix" this by raising SQLite's **global** `busy_timeout` — 
 request thread to solve a logging-thread problem; only this handler's connection should ever get a
 non-default value.
 
+## M14 — Idle categorization
+
+**Background catch-up job:** `main._run_idle_categorize()` categorizes one batch of pending news
+items on a configurable interval (`idle_categorize_interval_minutes` setting, default 15, clamped
+5–1440 by `settings.get/set_idle_categorize_interval_minutes()`) whenever the pipeline is not
+running. Off by default — gated behind the `idle_categorization` feature toggle (also requires
+`llm_categorizer` to be on) so a Pi-class host is never surprised by background Ollama load.
+Registered unconditionally as an APScheduler job (`id="idle_categorize"`); the toggle check happens
+inside the job body, not at registration, so flipping the toggle takes effect on the next tick
+without a scheduler restart. `POST /api/config/scanner`'s `idle_categorize_interval_minutes` field
+calls `_reschedule_idle_categorize()` immediately, mirroring how `run_interval_hours` reschedules
+the pipeline job.
+
+**`categorizer.run()` gained a `max_items` parameter** (default `None` → the existing 500-item
+pipeline cap). Passing `max_items=batch_size` makes the existing per-batch loop run exactly once,
+which is how the idle job caps itself to a single small batch per tick instead of draining the
+whole backlog.
+
+**Deliberately does not hold the pipeline file lock (`_LOCK_FILE`) for the duration of the batch** —
+it only acquires-and-immediately-releases it to detect a running pipeline, then holds its own
+separate `_IDLE_CATEGORIZE_LOCK_FILE` for the batch. Holding `_LOCK_FILE` itself would make the next
+scheduled pipeline trigger see "already running" and skip an entire run (up to `run_interval_hours`
+of lost coverage — collector, scanner, secrets, notify, everything) just to prevent the small chance
+of one duplicated batch. The accepted residual race: a pipeline run can start between the idle job's
+probe and its batch finishing, and both can select the same rows. `db.update_item_categorization` is
+an id-keyed `UPDATE`, so the only cost is one batch of duplicated Ollama work, never corrupted state.
+Do not "fix" this race by having the idle job hold `_LOCK_FILE` — that trade is worse than the race.
+
 ## Deployment targets
 
 Designed to run on low-power hardware (Raspberry Pi 4, 8 GB). The default Ollama model (`qwen2.5:3b`, ~2 GB) is chosen for Pi compatibility. See `docs/models.md` for alternatives and `docs/` for platform-specific setup guides.

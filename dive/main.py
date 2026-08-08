@@ -262,6 +262,10 @@ _MAX_PAUSE_SECONDS = 1800  # 30 minutes
 # File lock path (prevents concurrent runs across processes / restarts)
 _LOCK_FILE = Path("data/.pipeline.lock")
 
+# Self-exclusion lock for the idle categorization job (prevents two processes
+# from picking the same batch; max_instances=1 covers the in-process case).
+_IDLE_CATEGORIZE_LOCK_FILE = Path("data/.idle_categorize.lock")
+
 # Pagination constants
 _PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 _DEFAULT_PAGE_SIZE = 25
@@ -336,6 +340,63 @@ def _run_log_cleanup() -> None:
                 logger.info("Log retention: deleted %d entries older than %d days", deleted, days)
     except Exception as exc:
         logger.error("Log cleanup failed: %s", exc, exc_info=True)
+
+
+def _run_idle_categorize() -> None:
+    """Categorize one batch of pending news items while the pipeline is idle.
+
+    Fires on a configurable interval (idle_categorize_interval_minutes,
+    default 15). Off unless both the "llm_categorizer" and
+    "idle_categorization" feature toggles are enabled. Deliberately does not
+    hold the pipeline file lock for the duration of the batch — only probes
+    it to detect a running pipeline — because holding it would make the next
+    scheduled pipeline run see "already running" and skip an entire run (up
+    to run_interval_hours of lost coverage) just to avoid the small chance of
+    one duplicated batch. A pipeline run starting mid-batch here can select
+    the same rows; db.update_item_categorization is an id-keyed UPDATE, so
+    the worst outcome is one batch of duplicated Ollama work, not corruption.
+    """
+    if _config is None or not _COLLECTOR_AVAILABLE:
+        return
+
+    with _pipeline_lock:
+        if _pipeline_status["running"]:
+            return
+
+    try:
+        _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        probe = FileLock(str(_LOCK_FILE), timeout=0)
+        try:
+            probe.acquire()
+        except Timeout:
+            return
+        else:
+            probe.release()
+
+        idle_lock = FileLock(str(_IDLE_CATEGORIZE_LOCK_FILE), timeout=0)
+        try:
+            idle_lock.acquire()
+        except Timeout:
+            return
+
+        try:
+            with db.get_conn() as conn:
+                if not st.is_feature_enabled(conn, "llm_categorizer"):
+                    return
+                if not st.is_feature_enabled(conn, "idle_categorization"):
+                    return
+                batch_size = st.get_categorize_batch_size(conn)
+                stats = categorizer_module.run(conn, _config, max_items=batch_size)
+            if stats.total_processed:
+                logger.info(
+                    "Idle categorization: %d categorized, %d uncategorized",
+                    stats.categorized,
+                    stats.uncategorized,
+                )
+        finally:
+            idle_lock.release()
+    except Exception as exc:
+        logger.error("Idle categorization failed: %s", exc, exc_info=True)
 
 
 class _PipelineCancelled(Exception):
@@ -878,6 +939,15 @@ def _reschedule(new_hours: float) -> None:
     logger.info("Pipeline rescheduled: every %.1f hours", new_hours)
 
 
+def _reschedule_idle_categorize(new_minutes: int) -> None:
+    """Replace the idle categorization job with a new interval."""
+    global _scheduler
+    if _scheduler is None:
+        return
+    _scheduler.reschedule_job("idle_categorize", trigger=IntervalTrigger(minutes=new_minutes))
+    logger.info("Idle categorization rescheduled: every %d minutes", new_minutes)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI lifespan
 # ---------------------------------------------------------------------------
@@ -920,6 +990,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         db.reconcile_interrupted_runs(conn)
         snapshot = db.get_pipeline_snapshot(conn)
         recent_runs = None if snapshot else db.get_run_history(conn, limit=1)
+        idle_categorize_minutes = st.get_idle_categorize_interval_minutes(conn)
 
     _session_serializer = URLSafeTimedSerializer(session_secret)
 
@@ -978,6 +1049,14 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         trigger=CronTrigger(hour=3, minute=10),
         id="log_cleanup",
         name="Log retention cleanup",
+        max_instances=1,
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _run_idle_categorize,
+        trigger=IntervalTrigger(minutes=idle_categorize_minutes),
+        id="idle_categorize",
+        name="Idle news categorization",
         max_instances=1,
         replace_existing=True,
     )
@@ -2686,6 +2765,7 @@ async def get_scanner_settings(
                 "categorize_batch_size": st.get_categorize_batch_size(conn),
                 "news_retention_days": st.get_news_retention_days(conn),
                 "log_retention_days": st.get_log_retention_days(conn),
+                "idle_categorize_interval_minutes": st.get_idle_categorize_interval_minutes(conn),
             }
         )
 
@@ -2734,6 +2814,13 @@ async def update_scanner_settings(
                 st.set_log_retention_days(conn, int(body["log_retention_days"]))
             except (TypeError, ValueError) as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
+        if "idle_categorize_interval_minutes" in body:
+            try:
+                idle_minutes = int(body["idle_categorize_interval_minutes"])
+                st.set_idle_categorize_interval_minutes(conn, idle_minutes)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            _reschedule_idle_categorize(idle_minutes)
     return JSONResponse({"status": "updated"})
 
 

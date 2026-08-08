@@ -43,6 +43,10 @@ FEATURE_TOGGLES: dict[str, dict] = {
         "label": "AI remediation steps for new findings (Ollama)",
         "default": True,
     },
+    "idle_categorization": {
+        "label": "Categorize news in the background between pipeline runs (Ollama)",
+        "default": False,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -77,6 +81,37 @@ def set_categorize_batch_size(conn: sqlite3.Connection, size: int) -> None:
             f"and {_CATEGORIZE_BATCH_SIZE_MAX}"
         )
     db.set_setting(conn, "categorize_batch_size", str(size))
+
+
+# ---------------------------------------------------------------------------
+# Idle categorization settings
+# ---------------------------------------------------------------------------
+
+DEFAULT_IDLE_CATEGORIZE_INTERVAL_MINUTES = 15
+_IDLE_CATEGORIZE_INTERVAL_MIN = 5
+_IDLE_CATEGORIZE_INTERVAL_MAX = 1440
+
+
+def get_idle_categorize_interval_minutes(conn: sqlite3.Connection) -> int:
+    raw = db.get_setting(
+        conn,
+        "idle_categorize_interval_minutes",
+        str(DEFAULT_IDLE_CATEGORIZE_INTERVAL_MINUTES),
+    )
+    try:
+        minutes = int(raw)
+        return max(_IDLE_CATEGORIZE_INTERVAL_MIN, min(_IDLE_CATEGORIZE_INTERVAL_MAX, minutes))
+    except ValueError:
+        return DEFAULT_IDLE_CATEGORIZE_INTERVAL_MINUTES
+
+
+def set_idle_categorize_interval_minutes(conn: sqlite3.Connection, minutes: int) -> None:
+    if not (_IDLE_CATEGORIZE_INTERVAL_MIN <= minutes <= _IDLE_CATEGORIZE_INTERVAL_MAX):
+        raise ValueError(
+            f"idle_categorize_interval_minutes must be between "
+            f"{_IDLE_CATEGORIZE_INTERVAL_MIN} and {_IDLE_CATEGORIZE_INTERVAL_MAX}"
+        )
+    db.set_setting(conn, "idle_categorize_interval_minutes", str(minutes))
 
 
 # ---------------------------------------------------------------------------

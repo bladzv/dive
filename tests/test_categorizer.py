@@ -300,6 +300,43 @@ def test_run_splits_into_correct_batches(db_conn):
     assert stats.uncategorized == 0
 
 
+def test_run_max_items_caps_fetch_and_batch_count(db_conn):
+    """max_items should cap the fetch limit; passing the batch size runs one batch."""
+    for i in range(11):
+        db.insert_news_item(
+            db_conn,
+            {
+                "url": f"https://example.com/item{i}",
+                "title": f"Security item {i}",
+                "source": "Test",
+                "fetched_at": "2024-01-15T00:00:00+00:00",
+                "content": f"Description {i}",
+            },
+        )
+
+    call_count = 0
+
+    def fake_call_ollama(client, config, batch, model):
+        nonlocal call_count
+        call_count += 1
+        return json.dumps([_valid_result() for _ in batch])
+
+    config = MagicMock()
+    config.ollama.host = "http://localhost:11434"
+    config.ollama.model = "qwen2.5:3b"
+
+    with patch("dive.categorizer._call_ollama", side_effect=fake_call_ollama):
+        stats = categorizer.run(db_conn, config, max_items=10)
+
+    assert call_count == 1
+    assert stats.categorized == 10
+    assert stats.uncategorized == 0
+    remaining = db_conn.execute(
+        "SELECT COUNT(*) AS c FROM news_items WHERE category IS NULL OR category = 'Uncategorized'"
+    ).fetchone()["c"]
+    assert remaining == 1
+
+
 def test_run_falls_back_on_ollama_failure(db_conn):
     """When Ollama fails all retries, items should be stored as Uncategorized."""
     db.insert_news_item(

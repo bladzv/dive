@@ -215,6 +215,12 @@
                oninput="markDirty('ai')">
         <p class="form-hint">News items sent to Ollama per request (1–20, default 10). Smaller batches give richer context and recover better from failures.</p>
       </div>
+      <div class="form-group">
+        <label class="form-label" for="idle-categorize-interval">Idle catch-up interval (minutes)</label>
+        <input type="number" id="idle-categorize-interval" min="5" max="1440" step="1" class="form-input-narrow"
+               oninput="markDirty('ai')">
+        <p class="form-hint">How often to categorize a pending batch between pipeline runs (5–1440, default 15). Requires the "Categorize news in the background" toggle in Pipeline → Feature toggles.</p>
+      </div>
     </div>
 
   </div>
@@ -605,6 +611,7 @@ function loadScannerSettings() {
       document.getElementById('news-retention-days').value = data.news_retention_days ?? 0;
       document.getElementById('log-retention-days').value = data.log_retention_days ?? 30;
       document.getElementById('categorize-batch-size').value = data.categorize_batch_size ?? 10;
+      document.getElementById('idle-categorize-interval').value = data.idle_categorize_interval_minutes ?? 15;
     })
     .catch(() => {});
 }
@@ -659,10 +666,18 @@ function saveScannerSettings() {
 
 function saveCategorizeSettings() {
   const batchSize = parseInt(document.getElementById('categorize-batch-size').value, 10);
+  const idleInterval = _validateRangeField(document.getElementById('idle-categorize-interval'), 5, 1440);
+  if (idleInterval === null) {
+    DIVE.showToast('Fix the highlighted fields before saving', 'error');
+    return Promise.reject(new Error('Invalid AI settings'));
+  }
   return DIVE.apiFetch('/api/config/scanner', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categorize_batch_size: batchSize })
+    body: JSON.stringify({
+      categorize_batch_size: batchSize,
+      idle_categorize_interval_minutes: idleInterval
+    })
   })
   .then(r => {
     if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });

@@ -168,6 +168,180 @@
     document.querySelectorAll('.modal-backdrop.open').forEach((m) => closeModal(m));
   });
 
+  /* ── Shared menu/dropdown component ────────────────────
+   * Every consolidated control (export, state filter, row actions, column
+   * headers) is one `.menu` element: a `.menu-trigger` button plus a
+   * `.menu-panel[role=menu]` of `[role=menuitem]` children, toggled via the
+   * `open` class (see static/style.css). Two listeners registered once here
+   * — a click listener and a keydown listener — drive every menu, current
+   * and future, and survive PJAX navigation because this file loads without
+   * data-pjax (see base.html's runPageScripts).
+   *
+   * Menus inside a table need `data-menu="portal"`: `.table-wrap` is
+   * `overflow-x:auto` and the findings/secrets card is `overflow:hidden`, so
+   * a plain `position:absolute` panel gets clipped (the same trap CLAUDE.md
+   * documents for [data-tip] tooltips). Portal mode moves the panel into
+   * #menu-layer (a body-level div, see base.html) and positions it
+   * `position:fixed` from the trigger's bounding rect instead.
+   */
+  const _menuState = new WeakMap();
+  let _openMenuEl = null;
+
+  function _ensureMenuState(menuEl) {
+    let st = _menuState.get(menuEl);
+    if (!st) {
+      const panel = menuEl.querySelector('.menu-panel');
+      st = {
+        panel,
+        homeParent: panel ? panel.parentNode : null,
+        homeNext: panel ? panel.nextSibling : null,
+        portal: menuEl.dataset.menu === 'portal',
+        scrollHandler: null,
+        resizeHandler: null,
+      };
+      _menuState.set(menuEl, st);
+    }
+    return st;
+  }
+
+  function _menuItems(panel) {
+    if (!panel) return [];
+    // getClientRects() (not offsetParent, which is always null for
+    // position:fixed descendants — i.e. every portal-mode panel) is what
+    // correctly reports "actually rendered" for both positioning schemes.
+    return Array.from(panel.querySelectorAll('[role="menuitem"]')).filter(
+      (el) => el.getClientRects().length > 0
+    );
+  }
+
+  function _positionPortalPanel(menuEl, st) {
+    const trigger = menuEl.querySelector('.menu-trigger');
+    const panel = st.panel;
+    if (!trigger || !panel) return;
+    const rect = trigger.getBoundingClientRect();
+    panel.classList.remove('anchor-right');
+    panel.style.position = 'fixed';
+    panel.style.left = rect.left + 'px';
+    panel.style.right = 'auto';
+    panel.style.top = (rect.bottom + 6) + 'px';
+    const pw = panel.offsetWidth;
+    const ph = panel.offsetHeight;
+    if (rect.left + pw > window.innerWidth - 8) {
+      panel.style.left = 'auto';
+      panel.style.right = Math.max(8, window.innerWidth - rect.right) + 'px';
+      panel.classList.add('anchor-right');
+    }
+    let top = rect.bottom + 6;
+    if (top + ph > window.innerHeight - 8 && rect.top - ph - 6 > 0) {
+      top = rect.top - ph - 6;
+    }
+    panel.style.top = top + 'px';
+  }
+
+  function openMenu(menuEl) {
+    if (!menuEl || menuEl.classList.contains('open')) return;
+    closeAllMenus();
+    const st = _ensureMenuState(menuEl);
+    if (!st.panel) return;
+    const trigger = menuEl.querySelector('.menu-trigger');
+    if (st.portal) {
+      const layer = document.getElementById('menu-layer');
+      if (layer) layer.appendChild(st.panel);
+      st.panel.classList.add('is-open');
+    }
+    menuEl.classList.add('open');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    if (st.portal) {
+      _positionPortalPanel(menuEl, st);
+      st.scrollHandler = () => _positionPortalPanel(menuEl, st);
+      st.resizeHandler = st.scrollHandler;
+      window.addEventListener('scroll', st.scrollHandler, true);
+      window.addEventListener('resize', st.resizeHandler);
+    } else {
+      st.panel.classList.remove('anchor-right');
+      const rect = st.panel.getBoundingClientRect();
+      if (rect.right > window.innerWidth - 8) st.panel.classList.add('anchor-right');
+    }
+    _openMenuEl = menuEl;
+    const items = _menuItems(st.panel);
+    if (items[0]) items[0].focus();
+  }
+
+  function closeMenu(menuEl, opts) {
+    opts = opts || {};
+    if (!menuEl || !menuEl.classList.contains('open')) return;
+    const st = _menuState.get(menuEl);
+    const trigger = menuEl.querySelector('.menu-trigger');
+    const focusWasInside = !!(st && st.panel &&
+      (st.panel.contains(document.activeElement) || document.activeElement === trigger));
+    menuEl.classList.remove('open');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (st) {
+      if (st.portal && st.panel) {
+        st.panel.classList.remove('is-open', 'anchor-right');
+        st.panel.style.position = '';
+        st.panel.style.top = '';
+        st.panel.style.left = '';
+        st.panel.style.right = '';
+        if (st.homeParent) st.homeParent.insertBefore(st.panel, st.homeNext);
+      } else if (st.panel) {
+        st.panel.classList.remove('anchor-right');
+      }
+      if (st.scrollHandler) { window.removeEventListener('scroll', st.scrollHandler, true); st.scrollHandler = null; }
+      if (st.resizeHandler) { window.removeEventListener('resize', st.resizeHandler); st.resizeHandler = null; }
+    }
+    if (_openMenuEl === menuEl) _openMenuEl = null;
+    if ((opts.restoreFocus || focusWasInside) && trigger) trigger.focus();
+  }
+
+  function closeAllMenus() {
+    document.querySelectorAll('.menu.open').forEach((m) => closeMenu(m));
+  }
+
+  document.addEventListener('click', function (e) {
+    const trigger = e.target.closest('.menu-trigger');
+    if (trigger && trigger.closest('.menu')) {
+      const menuEl = trigger.closest('.menu');
+      if (menuEl.classList.contains('open')) closeMenu(menuEl);
+      else openMenu(menuEl);
+      return;
+    }
+    const panel = e.target.closest('.menu-panel');
+    if (panel) {
+      // A click anywhere inside the panel is never "outside" — but
+      // activating an item closes its menu (unless it opts out via
+      // data-keep-open, for multi-select filter menus).
+      const item = e.target.closest('[role="menuitem"]');
+      if (item && !item.hasAttribute('data-keep-open') && _openMenuEl) {
+        closeMenu(_openMenuEl);
+      }
+      return;
+    }
+    if (_openMenuEl) closeAllMenus();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (_openMenuEl) closeMenu(_openMenuEl, { restoreFocus: true });
+      return;
+    }
+    if (!_openMenuEl) return;
+    const st = _menuState.get(_openMenuEl);
+    const panel = st && st.panel;
+    if (!panel) return;
+    const trigger = _openMenuEl.querySelector('.menu-trigger');
+    const withinMenu = panel.contains(document.activeElement) || document.activeElement === trigger;
+    if (!withinMenu) return;
+    if (e.key === 'Tab') { closeMenu(_openMenuEl); return; }
+    const items = _menuItems(panel);
+    if (!items.length) return;
+    const idx = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); items[(idx + 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); items[(idx - 1 + items.length) % items.length].focus(); }
+    else if (e.key === 'Home') { e.preventDefault(); items[0].focus(); }
+    else if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus(); }
+  });
+
   /* Minimal confirm modal reusing the shared component — covers the common
    * "sure you want to do X?" case that findings/secrets/settings each used
    * to build inline with their own markup and no dialog semantics.
@@ -204,5 +378,6 @@
     apiFetch, showToast, timeAgo, timeUntil, escapeHtml,
     setPageSize, toggleBookmark, confirmModal, openModal, closeModal,
     setFieldError, clearFieldError,
+    openMenu, closeMenu, closeAllMenus,
   };
 })();

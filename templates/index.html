@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Dashboard — DIVE{% endblock %}
 {% block topbar_title %}Dashboard{% endblock %}
 
@@ -240,7 +241,7 @@
         <h2>Open findings</h2>
       </div>
       <div class="panel-actions">
-        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+        {{ ui.export_menu('/api/export/findings') }}
         <a href="/findings?state=new" class="btn btn-primary btn-sm">View All</a>
       </div>
     </div>
@@ -312,7 +313,7 @@
       <h2>Security news</h2>
     </div>
     <div class="panel-actions">
-      <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+      {{ ui.export_menu('/api/export/news') }}
       <a href="/news" class="btn btn-outline btn-sm">Open feed</a>
     </div>
   </div>

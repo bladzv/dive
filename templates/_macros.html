@@ -1,0 +1,20 @@
+{# Shared Jinja macros for the menu-based UI controls (see static/app.js DIVE.menu
+   and the "Menu component" block in static/style.css). Import with:
+     {% import "_macros.html" as ui %}
+#}
+
+{% macro menu_caret() -%}
+<svg class="menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+{%- endmacro %}
+
+{% macro export_menu(base_url, extra_qs='', label='Export') -%}
+<div class="menu" data-menu>
+  <button type="button" class="btn btn-outline btn-sm menu-trigger" aria-haspopup="menu" aria-expanded="false">
+    {{ label }} {{ menu_caret() }}
+  </button>
+  <div class="menu-panel" role="menu">
+    <a role="menuitem" style="--i:0" href="{{ base_url }}?format=json{{ extra_qs }}">Download JSON</a>
+    <a role="menuitem" style="--i:1" href="{{ base_url }}?format=csv{{ extra_qs }}">Download CSV</a>
+  </div>
+</div>
+{%- endmacro %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Bookmarks — DIVE{% endblock %}
 {% block topbar_title %}Bookmarks{% endblock %}
 
@@ -19,8 +20,7 @@
       </div>
       {% if bookmarks %}
       <div class="panel-actions">
-        <a href="/api/export/news?format=json" class="btn btn-outline btn-sm">JSON</a>
-        <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">CSV</a>
+        {{ ui.export_menu('/api/export/news') }}
       </div>
       {% endif %}
     </div>
@@ -65,17 +65,18 @@
       </div>
       {% if annotated %}
       <div class="panel-actions">
-        <a href="/api/export/findings?format=json" class="btn btn-outline btn-sm">JSON</a>
-        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm">CSV</a>
+        {{ ui.export_menu('/api/export/findings') }}
       </div>
       {% endif %}
     </div>
 
     {% if annotated %}
+    {% set _severity_rank = {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'unknown': 0} %}
     <div class="table-wrap">
-      <table class="table-stack">
+      <table class="table-stack" data-table-tools="personal-findings" data-mode="client">
         <thead><tr>
-          <th>Repo</th><th>Package</th><th>CVE / GHSA</th><th>Severity</th><th>State</th><th>Note</th>
+          <th data-col="repo">Repo</th><th data-col="package">Package</th><th>CVE / GHSA</th>
+          <th data-col="severity">Severity</th><th data-col="state">State</th><th data-col="note">Note</th>
         </tr></thead>
         <tbody>
           {% for f in annotated %}
@@ -83,7 +84,7 @@
             <td data-label="Repo">{{ f.repo_full_name }}</td>
             <td data-label="Package">{{ f.package_name }}</td>
             <td data-label="CVE / GHSA">{{ f.cve_id or f.ghsa_id or '—' }}</td>
-            <td data-label="Severity"><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
+            <td data-label="Severity" data-sort-value="{{ _severity_rank.get(f.severity_class, 0) }}"><span class="badge badge-{{ f.severity_class }}">{{ f.severity_label }}</span></td>
             <td data-label="State"><span class="badge badge-{{ 'new' if f.state == 'new' else ('ack' if f.state == 'acknowledged' else 'resolved') }}">{{ f.state }}</span></td>
             <td data-label="Note">{{ f.annotation }}</td>
           </tr>
@@ -102,6 +103,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/table-tools.js" data-pjax></script>
 <script>
 function removeBookmark(itemId) {
   DIVE.toggleBookmark(itemId)

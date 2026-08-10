@@ -48,9 +48,10 @@
     </div>
     {% if digest.top_findings %}
     <div class="table-wrap">
-      <table class="table-stack">
+      <table class="table-stack" data-table-tools="weekly-findings" data-mode="client">
         <thead><tr>
-          <th>Repo</th><th>ID</th><th>Package</th><th>CVSS</th><th>Flags</th><th>State</th>
+          <th data-col="repo">Repo</th><th data-col="id">ID</th><th data-col="package">Package</th>
+          <th data-col="cvss">CVSS</th><th>Flags</th><th data-col="state">State</th>
         </tr></thead>
         <tbody>
           {% for f in digest.top_findings %}
@@ -58,7 +59,7 @@
             <td data-label="Repo">{{ f.repo }}</td>
             <td data-label="ID" style="font-family:monospace">{{ f.id }}</td>
             <td data-label="Package">{{ f.package }}</td>
-            <td data-label="CVSS">
+            <td data-label="CVSS" data-sort-value="{{ f.cvss if f.cvss is not none else '' }}">
               {% if f.cvss is not none %}
               <span class="{{ 'text-critical' if f.cvss >= 9 else ('text-high' if f.cvss >= 7 else ('text-medium' if f.cvss >= 4 else 'text-low')) }}">{{ "%.1f"|format(f.cvss) }}</span>
               {% else %}
@@ -104,4 +105,8 @@
   </aside>
 </section>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/table-tools.js" data-pjax></script>
 {% endblock %}

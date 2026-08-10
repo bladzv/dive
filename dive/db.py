@@ -696,12 +696,25 @@ def insert_log_entry(
     )
 
 
+_LOGS_SORTS: dict[str, str] = {
+    # id (not the TEXT `timestamp` column) — monotonic, indexed as the
+    # primary key, and exactly matches insertion order.
+    "timestamp": "id",
+    "level": "level",
+    "logger": "logger_name",
+    "message": "message",
+}
+_LOGS_SORT_DEFAULT = "timestamp"
+
+
 def get_log_entries(
     conn: sqlite3.Connection,
     page: int = 1,
     per_page: int = 25,
     level: str = "",
     search: str = "",
+    sort: str | None = None,
+    direction: str | None = None,
 ) -> list[sqlite3.Row]:
     params: list[Any] = []
     where_clauses: list[str] = []
@@ -713,10 +726,11 @@ def get_log_entries(
         like = f"%{search}%"
         params.extend([like, like])
     where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    order = _order_by(_LOGS_SORTS, _LOGS_SORT_DEFAULT, sort, direction)
     offset = (page - 1) * per_page
     params.extend([per_page, offset])
     return conn.execute(
-        f"SELECT * FROM log_entries {where} ORDER BY id DESC LIMIT ? OFFSET ?",  # noqa: S608
+        f"SELECT * FROM log_entries {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -946,16 +960,65 @@ def update_latest_version_for_package(
     )
 
 
+# Public sort key -> SQL column/expression. This dict (and its siblings
+# below for secrets/logs) is the ONLY thing that may ever be interpolated
+# into an ORDER BY — SQLite can't bind an ORDER BY expression as a query
+# parameter, so an unrecognised or hostile `sort` value must fall back to
+# the table's default rather than reach the SQL string. See _order_by().
+_FINDINGS_SORTS: dict[str, str] = {
+    "priority": "priority_score",
+    "repo": "repo_full_name",
+    "package": "package_name",
+    "installed": "installed_version",
+    "fixed": "fixed_version",
+    "cvss": "cvss_score",
+    "state": "state",
+    "first_seen": "first_seen_at",
+}
+_FINDINGS_SORT_DEFAULT = "priority"
+
+# cvss_score thresholds mirror main._cvss_severity() exactly — keep both in
+# sync if the bands ever change. These are fixed literal strings selected by
+# a dict lookup on a known-safe key, never interpolated user input.
+_SEVERITY_RANGES: dict[str, str] = {
+    "critical": "cvss_score >= 9.0",
+    "high": "cvss_score >= 7.0 AND cvss_score < 9.0",
+    "medium": "cvss_score >= 4.0 AND cvss_score < 7.0",
+    "low": "cvss_score IS NOT NULL AND cvss_score < 4.0",
+    "unknown": "cvss_score IS NULL",
+}
+
+
+def _order_by(sorts: dict[str, str], default: str, sort: str | None, direction: str | None) -> str:
+    """Build a safe `ORDER BY` clause from a whitelist.
+
+    `sort` and `direction` are arbitrary query-string input — only a key
+    already present in `sorts` (or `default`, which always is) may select a
+    column; direction is reduced to a fixed ASC/DESC literal. A trailing
+    `id DESC` tiebreak keeps pagination stable when many rows share a sort
+    value (without it, rows can repeat or vanish across pages).
+    """
+    column = sorts.get(sort or "", sorts[default])
+    desc = (direction or "desc").lower() != "asc"
+    dir_sql = "DESC" if desc else "ASC"
+    nulls = " NULLS LAST" if desc else ""
+    return f"ORDER BY {column} {dir_sql}{nulls}, id DESC"
+
+
 def _findings_where(
     state: str | None,
     repo: str | None,
     since: str | None = None,
     until: str | None = None,
+    severity: str | None = None,
 ) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause for findings list/count/export queries.
 
     Pseudo-states: 'unresolved' expands to state IN ('new','acknowledged');
     'all' is treated as no state filter. since/until bound first_seen_at.
+    severity is a key into _SEVERITY_RANGES (a derived cvss_score band, not
+    a real column) — an unrecognised key is silently ignored rather than
+    raising, matching how an unrecognised state/repo behaves here.
     """
     clauses: list[str] = []
     params: list[Any] = []
@@ -973,6 +1036,8 @@ def _findings_where(
     if repo:
         clauses.append("repo_full_name = ?")
         params.append(repo)
+    if severity and severity in _SEVERITY_RANGES:
+        clauses.append(_SEVERITY_RANGES[severity])
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -984,14 +1049,18 @@ def get_findings(
     repo: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    severity: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return findings, optionally filtered by state and/or repo."""
-    where, params = _findings_where(state, repo, since=since, until=until)
+    where, params = _findings_where(state, repo, since=since, until=until, severity=severity)
+    order = _order_by(_FINDINGS_SORTS, _FINDINGS_SORT_DEFAULT, sort, direction)
     params.extend([limit, offset])
     return conn.execute(
-        f"SELECT * FROM findings {where} ORDER BY priority_score DESC NULLS LAST LIMIT ? OFFSET ?",
+        f"SELECT * FROM findings {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -1003,9 +1072,10 @@ def get_findings_count(
     repo: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    severity: str | None = None,
 ) -> int:
     """Return total count of findings matching the given filters."""
-    where, params = _findings_where(state, repo, since=since, until=until)
+    where, params = _findings_where(state, repo, since=since, until=until, severity=severity)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()
     return int(row["n"] or 0)
 
@@ -1185,6 +1255,18 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     return False
 
 
+_SECRETS_SORTS: dict[str, str] = {
+    "repo": "repo_full_name",
+    "secret_type": "secret_type",
+    "file": "file_path",
+    "line": "line_number",
+    "commit": "commit_sha",
+    "first_seen": "first_seen_at",
+    "state": "state",
+}
+_SECRETS_SORT_DEFAULT = "first_seen"
+
+
 def _secrets_where(
     state: str | None,
     repo: str | None,
@@ -1223,14 +1305,17 @@ def get_secret_findings(
     repo: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return secret findings, optionally filtered by state and/or repo."""
     where, params = _secrets_where(state, repo, since=since, until=until)
+    order = _order_by(_SECRETS_SORTS, _SECRETS_SORT_DEFAULT, sort, direction)
     params.extend([limit, offset])
     return conn.execute(
-        f"SELECT * FROM secret_findings {where} ORDER BY first_seen_at DESC LIMIT ? OFFSET ?",
+        f"SELECT * FROM secret_findings {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -1721,10 +1806,11 @@ def get_findings_for_export(
     *,
     state: str | None = None,
     repo: str | None = None,
+    severity: str | None = None,
 ) -> list[sqlite3.Row]:
     """Return findings for data export (JSON/CSV), honoring the same filters
     as the findings list view so an export matches what the user is viewing."""
-    where, params = _findings_where(state, repo)
+    where, params = _findings_where(state, repo, severity=severity)
     return conn.execute(
         f"""
         SELECT id, repo_full_name, cve_id, ghsa_id, package_name,

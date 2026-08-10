@@ -121,17 +121,16 @@
         Keywords are highlighted in the news feed and can be used for filtering.
       </p>
 
-      <div id="keywords-list" class="chip-list">
+      <div class="tag-field" id="keywords-field">
         <div class="skeleton skeleton-chip"></div>
         <div class="skeleton skeleton-chip"></div>
         <div class="skeleton skeleton-chip"></div>
+        <input type="text" id="new-keyword" class="tag-input"
+               placeholder="Add keyword…" aria-label="Add keyword">
       </div>
-
-      <div class="inline-add-row">
-        <input type="text" id="new-keyword" placeholder="e.g. nginx, Kubernetes"
-               onkeydown="if(event.key==='Enter')addKeyword()">
-        <button class="btn btn-primary btn-sm" onclick="addKeyword()">Add</button>
-      </div>
+      <p class="card-desc" style="margin-top:0.4rem">
+        Press Enter to add · Backspace on an empty field removes the last one.
+      </p>
     </div>
 
   </div>
@@ -542,38 +541,52 @@ function addFeed(btn) {
 
 /* ── Keywords ──────────────────────────────────────── */
 function loadKeywords() {
-  fetch('/api/config/keywords', { credentials: 'same-origin' })
+  DIVE.apiFetch('/api/config/keywords')
     .then(r => {
       if (!r.ok) throw new Error('Request failed');
       return r.json();
     })
     .then(renderKeywords)
     .catch(() => {
-      document.getElementById('keywords-list').innerHTML =
-        '<p style="color:var(--error);font-size:0.85rem">Could not load keywords.</p>';
+      DIVE.setFieldError(document.getElementById('new-keyword'), 'Could not load keywords.');
     });
 }
 
+function _makeTagPill(id, keyword) {
+  const tag = document.createElement('span');
+  tag.className = 'tag';
+  tag.dataset.id = id;
+  const label = document.createTextNode(keyword);
+  tag.appendChild(label);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tag-x';
+  btn.setAttribute('aria-label', 'Remove ' + keyword);
+  btn.textContent = '×';
+  btn.onclick = () => deleteKeyword(tag);
+  tag.appendChild(btn);
+  return tag;
+}
+
 function renderKeywords(keywords) {
-  const el = document.getElementById('keywords-list');
-  if (!keywords.length) {
-    el.innerHTML = '<span style="font-size:0.82rem;color:var(--text-dim)">No keywords yet.</span>';
-    return;
-  }
-  el.innerHTML = keywords.map(k =>
-    `<span class="badge badge-unknown" style="font-size:0.78rem;padding:0.25rem 0.6rem;gap:0.4rem">
-      ${DIVE.escapeHtml(k.keyword)}
-      <button onclick="deleteKeyword(${k.id})"
-              style="background:none;border:none;color:inherit;cursor:pointer;padding:0;font-size:0.8rem;line-height:1"
-              title="Remove">×</button>
-    </span>`
-  ).join('');
+  const field = document.getElementById('keywords-field');
+  const input = document.getElementById('new-keyword');
+  field.querySelectorAll('.tag, .skeleton-chip').forEach(el => el.remove());
+  keywords.forEach(k => field.insertBefore(_makeTagPill(k.id, k.keyword), input));
 }
 
 function addKeyword() {
   const input = document.getElementById('new-keyword');
   const keyword = input.value.trim();
   if (!keyword) return;
+  DIVE.clearFieldError(input);
+  input.value = '';
+
+  // Optimistic: pop the pill in immediately, reconcile with the server
+  // response (or roll back) once the request settles.
+  const tag = _makeTagPill('pending', keyword);
+  input.parentElement.insertBefore(tag, input);
+
   DIVE.apiFetch('/api/config/keywords', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -583,19 +596,54 @@ function addKeyword() {
     if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
     return r.json();
   })
-  .then(() => { input.value = ''; DIVE.showToast('Keyword added', 'success'); loadKeywords(); })
-  .catch(err => DIVE.showToast(err.message, 'error'));
+  .then(row => {
+    tag.dataset.id = row.id;
+    tag.querySelector('.tag-x').onclick = () => deleteKeyword(tag);
+  })
+  .catch(err => {
+    tag.remove();
+    DIVE.showToast(err.message, 'error');
+  });
 }
 
-function deleteKeyword(id) {
+function deleteKeyword(tag) {
+  const id = tag.dataset.id;
+  tag.classList.add('removing');
+  // The reduced-motion media query in style.css sets `animation: none` on
+  // .removing, which means animationend never fires — remove immediately
+  // in that case instead of leaking a stuck pill.
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    tag.remove();
+  } else {
+    tag.addEventListener('animationend', () => tag.remove(), { once: true });
+  }
+
   DIVE.apiFetch('/api/config/keywords/' + id, { method: 'DELETE' })
   .then(r => {
     if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
     return r.json();
   })
-  .then(() => { DIVE.showToast('Keyword removed', 'success'); loadKeywords(); })
-  .catch(err => DIVE.showToast(err.message, 'error'));
+  .catch(err => {
+    // The pill is already animating out — the simplest correct recovery is
+    // to reload the real list rather than try to un-animate it in place.
+    DIVE.showToast(err.message, 'error');
+    loadKeywords();
+  });
 }
+
+document.getElementById('new-keyword').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addKeyword();
+  } else if (e.key === 'Backspace' && !this.value) {
+    const tags = document.querySelectorAll('#keywords-field .tag');
+    const last = tags[tags.length - 1];
+    if (last) {
+      DIVE.showToast('Removed "' + last.textContent.replace(/×$/, '').trim() + '"', 'info');
+      deleteKeyword(last);
+    }
+  }
+});
 
 /* ── Scanner Settings ──────────────────────────────── */
 function loadScannerSettings() {

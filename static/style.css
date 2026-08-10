@@ -2575,12 +2575,6 @@ html.sidebar-collapsed .page-footer {
   background: var(--panel);
 }
 
-.search-inline {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-}
-
 /* ─── Form controls ────────────────────────────────── */
 select,
 input[type="text"],
@@ -2672,15 +2666,140 @@ input[type="checkbox"] {
 
 /* News filter bar — narrower controls so the bar stays compact */
 .filter-bar select                { max-width: 200px; }
-.filter-bar .search-inline input  { max-width: 400px; }
-.filter-bar .news-search-form input { max-width: 340px; width: 340px; }
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }
-#new-keyword           { max-width: 240px; }
 #new-feed-name         { max-width: 200px; }
 #new-feed-url          { max-width: 360px; }
 #excluded-repos        { max-width: 460px; }
+
+/* ─── Expanding pill search ──────────────────────────
+   Collapsed to just its icon (~56px); expands to full width on hover or
+   while focused, or permanently while a search term is active (server-
+   driven pages re-render with the term already in `value=`, so `.is-active`
+   is what keeps the pill visibly expanded after navigation — without it an
+   active search would look like no search at all). Only `width` animates;
+   `overflow: hidden` clips the input text while collapsed. The whole thing
+   is a <label>/<form> so clicking the icon focuses the input. */
+.search-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 56px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.search-pill:hover,
+.search-pill:focus-within,
+.search-pill.is-active {
+  width: 260px;
+}
+.search-pill:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.search-pill .search-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-left: 1.05rem;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.search-pill input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  padding: 0.4rem 0.2rem;
+  min-height: 0;
+}
+.search-pill input::-webkit-search-cancel-button { display: none; }
+.search-pill .search-clear {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  margin-right: 0.35rem;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 0.3rem;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.search-pill.is-active .search-clear { display: inline-flex; }
+.search-pill .search-clear:hover { color: var(--error); }
+
+/* ─── Tag / token input ──────────────────────────────
+   Replaces a bare <input> + Add button with pills living in the same
+   bordered, focus-highlighted container as the input itself (see the
+   keyword watchlist in Settings). Pills spring in with an overshoot ease on
+   add and fade-scale out on remove; JS (settings.html) drives .removing and
+   waits for animationend before detaching the node. */
+.tag-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.4rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  cursor: text;
+}
+.tag-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  font-size: var(--fs-xs);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--text);
+  animation: tag-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.tag.removing {
+  animation: tag-out 0.24s ease forwards;
+}
+.tag-x {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.9rem;
+}
+.tag-x:hover { color: var(--error); }
+.tag-input {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  padding: 0.3rem 0.2rem;
+  min-height: 0;
+  max-width: none;
+}
+@keyframes tag-pop { from { transform: scale(0.4); opacity: 0; } }
+@keyframes tag-out { to   { transform: scale(0.4); opacity: 0; } }
 
 .form-group { margin-bottom: 1.1rem; }
 
@@ -2742,6 +2861,92 @@ thead th {
   letter-spacing: 0.08em;
   white-space: nowrap;
 }
+
+/* ── Sortable headers (table-tools.js) ────────────────
+   table-tools.js replaces a plain [data-col] <th>'s text with `.th-flex`
+   (a row-level flex wrapper — NOT display:flex on the <th> itself, which
+   would break its table-cell participation): `.th-sort-btn` fills the
+   available space as the primary click target, and — on server-mode
+   tables (findings/secrets/logs) only — `.th-menu` adds a small per-column
+   Sort/filter dropdown alongside it. */
+th[data-col] { padding: 0; }
+.th-flex { display: flex; align-items: center; width: 100%; }
+.th-sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.62rem 0.85rem;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+}
+.th-sort-btn:hover { color: var(--text-bright); }
+.th-sort-caret {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  opacity: 0.4;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+th[aria-sort="descending"] .th-sort-btn,
+th[aria-sort="ascending"] .th-sort-btn { color: var(--text-bright); }
+th[aria-sort="descending"] .th-sort-caret,
+th[aria-sort="ascending"] .th-sort-caret { opacity: 1; }
+th[aria-sort="ascending"] .th-sort-caret { transform: rotate(180deg); }
+
+.th-menu-trigger {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-right: 0.4rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-subtle);
+  cursor: pointer;
+}
+.th-menu-trigger svg { width: 10px; height: 10px; }
+.th-menu-trigger:hover,
+.th-menu-trigger[aria-expanded="true"] { color: var(--text-bright); background: var(--hover); }
+.th-menu-trigger.has-filter { color: var(--accent); }
+
+/* ── Column resize (table-tools.js) ───────────────────
+   thead th is already `position: sticky` (above), which is enough of a
+   positioning context for this absolutely-positioned handle — no need for
+   an extra `position: relative` on every <th>. Disabled below 700px in JS
+   (table-tools.js's DESKTOP_QUERY check), where .table-stack hides <thead>
+   entirely and a stored pixel width would be meaningless. */
+.col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+  z-index: 3;
+}
+.col-resize:hover,
+.col-resize.dragging { background: var(--accent); opacity: 0.5; }
+
+/* Applied by table-tools.js the moment a column is first dragged — table-
+   layout: auto (the default here) treats a <th>/<col> width as a hint the
+   browser is free to override from cell content, so an explicit resize
+   only becomes authoritative once every column's current width is snapshot
+   into a <colgroup> and the table switches to fixed layout. Tables no one
+   has resized stay in auto layout, unaffected. */
+.tt-fixed { table-layout: fixed; }
 
 tbody tr {
   border-bottom: 1px solid var(--border);
@@ -2984,6 +3189,9 @@ thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton::after { animation: none; }
+  .menu-panel, .menu-panel [role="menuitem"], .menu-caret { transition: none !important; }
+  .tag, .tag.removing { animation: none !important; }
+  .th-sort-caret { transition: none !important; }
 }
 
 /* ─── Model picker ─────────────────────────────────── */
@@ -3318,14 +3526,19 @@ body:has(.login-card) {
 
   .hero-actions,
   .panel-actions,
-  .filter-bar,
-  #search-form { width: 100%; }
+  .filter-bar { width: 100%; }
   .hero-actions .btn,
-  .panel-actions .btn,
-  #search-form .btn { flex: 1 1 auto; }
+  .panel-actions .btn { flex: 1 1 auto; }
   .filter-bar select,
-  .filter-bar input,
-  #search-form input { max-width: none !important; }
+  .filter-bar input { max-width: none !important; }
+
+  /* A 56px pill is worse than useless on a phone — always show it expanded,
+     full-width, at this breakpoint. */
+  .search-pill,
+  .search-pill:hover,
+  .search-pill:focus-within {
+    width: 100%;
+  }
 
   #bulk-inline {
     flex: 0 0 100%;
@@ -3437,6 +3650,89 @@ body:has(.login-card) {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ─── Menu component ─────────────────────────────────
+   Single anchored-dropdown primitive backing every consolidated control
+   (export, state filter, row actions, column headers). Markup contract:
+   `.menu[data-menu] > .menu-trigger + .menu-panel[role=menu] > [role=menuitem]`.
+   Behavior (open/close, focus, keyboard, portal escape from overflow:hidden
+   ancestors) lives in DIVE.openMenu/closeMenu/closeAllMenus (static/app.js).
+
+   `data-menu="portal"` moves the panel into #menu-layer (body-level, see
+   base.html) and positions it `position:fixed` from JS — required for any
+   menu inside a `.table-wrap` (overflow-x:auto) or the findings/secrets
+   card (overflow:hidden), which would otherwise clip a plain
+   position:absolute panel (the same trap as [data-tip] tooltips, below). */
+.menu { position: relative; display: inline-flex; }
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 180px;
+  padding: 0.35rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  clip-path: inset(0 0 100% 0 round var(--radius-xl));
+  transition: clip-path 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+.menu.open .menu-panel,
+.menu-panel.is-open {
+  clip-path: inset(0 round var(--radius-xl));
+  pointer-events: auto;
+}
+.menu-panel.anchor-right { left: auto; right: 0; }
+
+.menu-panel [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: calc(var(--i, 0) * 28ms);
+}
+.menu.open .menu-panel [role="menuitem"],
+.menu-panel.is-open [role="menuitem"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+.menu-panel [role="menuitem"]:hover,
+.menu-panel [role="menuitem"]:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.menu-panel [role="menuitem"][aria-current="true"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+.menu-panel [role="menuitem"].is-danger { color: var(--error); }
+.menu-panel [role="menuitem"].is-success { color: var(--success); }
+.menu-sep { height: 1px; margin: 0.3rem 0; background: var(--border); }
+
+.menu-caret { width: 12px; height: 12px; transition: transform 0.2s ease; flex: 0 0 auto; }
+.menu.open .menu-caret { transform: rotate(180deg); }
+
+/* Row-action triggers (⋯) reuse .btn-icon sizing but need no visible caret. */
+.menu-trigger.btn-icon .menu-caret { display: none; }
+
+#menu-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+#menu-layer .menu-panel { pointer-events: none; }
+#menu-layer .menu-panel.is-open { pointer-events: auto; }
 
 /* ─── Confirmation modal ────────────────────────────── */
 .modal-backdrop {

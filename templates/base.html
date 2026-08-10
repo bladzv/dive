@@ -924,6 +924,11 @@ pollStatus();
   async function navigate(url) {
     if (busy) return;
     busy = true;
+    // Close any open menu before swapping .page-main — a portal-mode menu
+    // panel (see DIVE.menu in app.js) lives in #menu-layer, OUTSIDE
+    // .page-main, so it would otherwise survive the innerHTML swap below as
+    // an orphaned, unclosable panel.
+    if (window.DIVE && DIVE.closeAllMenus) DIVE.closeAllMenus();
     _unsavedDirty = false;
     _unsavedOnSave = null;
     try {
@@ -993,6 +998,7 @@ pollStatus();
   async function refreshCurrentPage() {
     if (busy) return;
     busy = true;
+    if (window.DIVE && DIVE.closeAllMenus) DIVE.closeAllMenus();
     const scrollY = window.scrollY;
     try {
       const res = await fetch(currentUrl, { credentials: 'same-origin' });
@@ -1047,5 +1053,10 @@ function triggerRun() {
 
 <script id="page-scripts-fence"></script>
 {% block scripts %}{% endblock %}
+
+<!-- Portal target for menu panels that would otherwise be clipped by an
+     ancestor's overflow:hidden/auto (table cards, .table-wrap). See
+     DIVE.menu (static/app.js) and the "Menu component" block in style.css. -->
+<div id="menu-layer"></div>
 </body>
 </html>

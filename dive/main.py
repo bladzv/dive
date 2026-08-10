@@ -1732,6 +1732,9 @@ async def findings_page(
     _user: Annotated[str, Depends(_require_auth)],
     state: str | None = None,
     repo: str | None = None,
+    severity: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     page: int = 1,
     per_page: int = 25,
 ) -> HTMLResponse:
@@ -1739,7 +1742,9 @@ async def findings_page(
     if state is None:
         state = "unresolved"
 
-    d = await asyncio.to_thread(_findings_page_data, state, repo, page, per_page)
+    d = await asyncio.to_thread(
+        _findings_page_data, state, repo, severity, sort, direction, page, per_page
+    )
 
     return templates.TemplateResponse(
         request,
@@ -1751,13 +1756,24 @@ async def findings_page(
             "findings": [_enrich_finding(r) for r in d["rows"]],
             "state_filter": state,
             "repo_filter": repo,
+            "severity_filter": severity,
+            "sort": sort,
+            "direction": direction,
             "repos": [r["repo_full_name"] for r in d["repo_rows"]],
             "pagination": d["pagination"],
         },
     )
 
 
-def _findings_page_data(state: str, repo: str | None, page: int, per_page: int) -> dict:
+def _findings_page_data(
+    state: str,
+    repo: str | None,
+    severity: str | None,
+    sort: str | None,
+    direction: str | None,
+    page: int,
+    per_page: int,
+) -> dict:
     """All of the /findings route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
         last_run = db.get_last_successful_run(conn)
@@ -1770,7 +1786,9 @@ def _findings_page_data(state: str, repo: str | None, page: int, per_page: int) 
         elif state == "unresolved":
             until = last_started
 
-        total = db.get_findings_count(conn, state=state, repo=repo, since=since, until=until)
+        total = db.get_findings_count(
+            conn, state=state, repo=repo, since=since, until=until, severity=severity
+        )
         pg = _paginate(page, per_page, total)
         rows = db.get_findings(
             conn,
@@ -1778,6 +1796,9 @@ def _findings_page_data(state: str, repo: str | None, page: int, per_page: int) 
             repo=repo,
             since=since,
             until=until,
+            severity=severity,
+            sort=sort,
+            direction=direction,
             limit=pg["per_page"],
             offset=pg["offset"],
         )
@@ -1824,6 +1845,8 @@ async def secrets_page(
     _user: Annotated[str, Depends(_require_auth)],
     state: str | None = None,
     repo: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     page: int = 1,
     per_page: int = 25,
 ) -> HTMLResponse:
@@ -1850,6 +1873,8 @@ async def secrets_page(
             repo=repo,
             since=since,
             until=until,
+            sort=sort,
+            direction=direction,
             limit=pg["per_page"],
             offset=pg["offset"],
         )
@@ -1869,6 +1894,8 @@ async def secrets_page(
             "secrets": [dict(r) for r in rows],
             "state_filter": state,
             "repo_filter": repo,
+            "sort": sort,
+            "direction": direction,
             "repos": [r["repo_full_name"] for r in repo_rows],
             "pagination": pg,
         },
@@ -2028,6 +2055,8 @@ async def logs_page(
     _user: Annotated[str, Depends(_require_auth)],
     level: str = "",
     search: str = "",
+    sort: str | None = None,
+    direction: str | None = None,
     page: int = 1,
     per_page: int = 25,
 ) -> HTMLResponse:
@@ -2042,6 +2071,8 @@ async def logs_page(
             per_page=pg["per_page"],
             level=level,
             search=search,
+            sort=sort,
+            direction=direction,
         )
     return templates.TemplateResponse(
         request,
@@ -2053,6 +2084,8 @@ async def logs_page(
             "log_entries": [dict(r) for r in rows],
             "level_filter": level,
             "search_filter": search,
+            "sort": sort,
+            "direction": direction,
             "pagination": pg,
         },
     )
@@ -3033,11 +3066,13 @@ async def export_findings(
     format: str = "json",
     state: str | None = None,
     repo: str | None = None,
+    severity: str | None = None,
 ) -> StreamingResponse:
-    """Export findings as JSON or CSV, honoring the same state/repo filters as
-    the findings list view (so a filtered export matches what's on screen)."""
+    """Export findings as JSON or CSV, honoring the same state/repo/severity
+    filters as the findings list view (so a filtered export matches what's
+    on screen)."""
     with db.get_conn() as conn:
-        rows = db.get_findings_for_export(conn, state=state, repo=repo)
+        rows = db.get_findings_for_export(conn, state=state, repo=repo, severity=severity)
 
     if format == "csv":
         content = _findings_to_csv(rows)

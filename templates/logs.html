@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Logs — DIVE{% endblock %}
 {% block topbar_title %}Logs{% endblock %}
 
@@ -14,39 +15,49 @@
 </section>
 
 <!-- ── Filter bar ────────────────────────────────────── -->
+{% set _s_and = ('&search=' ~ search_filter|urlencode) if search_filter else '' %}
+{% set _s_first = ('?search=' ~ search_filter|urlencode) if search_filter else '' %}
+{% set _level_options = [('', 'All'), ('INFO', 'INFO'), ('WARNING', 'WARNING'), ('ERROR', 'ERROR')] %}
+{% set _level_label = level_filter if level_filter else 'All' %}
 <div class="filter-bar">
-  <a href="/logs{% if search_filter %}?search={{ search_filter|urlencode }}{% endif %}"
-     class="btn btn-sm {{ 'btn-primary' if not level_filter else 'btn-outline' }}">All</a>
-  <a href="/logs?level=INFO{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
-     class="btn btn-sm {{ 'btn-primary' if level_filter == 'INFO' else 'btn-outline' }}">INFO</a>
-  <a href="/logs?level=WARNING{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
-     class="btn btn-sm {{ 'btn-primary' if level_filter == 'WARNING' else 'btn-outline' }}">WARNING</a>
-  <a href="/logs?level=ERROR{% if search_filter %}&search={{ search_filter|urlencode }}{% endif %}"
-     class="btn btn-sm {{ 'btn-primary' if level_filter == 'ERROR' else 'btn-outline' }}">ERROR</a>
+  <div class="menu" data-menu>
+    <button type="button" class="btn btn-outline btn-sm menu-trigger" aria-haspopup="menu" aria-expanded="false">
+      Level: {{ _level_label }} {{ ui.menu_caret() }}
+    </button>
+    <div class="menu-panel" role="menu">
+      {% for key, label in _level_options %}
+      <a role="menuitem" style="--i:{{ loop.index0 }}"
+         href="/logs{{ ('?level=' ~ key ~ _s_and) if key else _s_first }}"
+         {{ 'aria-current="true"' if level_filter == key else '' }}>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </div>
 
-  <form method="get" action="/logs" style="display:contents">
+  <form method="get" action="/logs"
+        class="search-pill{{ ' is-active' if search_filter else '' }}" style="margin-left:auto">
     {% if level_filter %}<input type="hidden" name="level" value="{{ level_filter }}">{% endif %}
-    <input type="search" name="search" value="{{ search_filter or '' }}"
-           placeholder="Search messages…" class="filter-search" aria-label="Search log messages"
-           style="margin-left:auto"
-           onkeydown="if(event.key==='Enter'){this.form.submit()}">
-    {% if search_filter %}
-    <a href="/logs{% if level_filter %}?level={{ level_filter }}{% endif %}"
-       class="btn btn-sm btn-outline" title="Clear search">✕</a>
-    {% endif %}
+    <label for="log-search-input" class="sr-only">Search log messages</label>
+    <svg class="search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <input type="search" id="log-search-input" name="search" value="{{ search_filter or '' }}"
+           placeholder="Search messages…">
+    <button type="button" class="search-clear" onclick="clearLogSearch()" aria-label="Clear search">✕</button>
   </form>
 </div>
 
 <!-- ── Log table ─────────────────────────────────────── -->
 {% if log_entries %}
 <div class="table-wrap">
-  <table class="table-stack">
+  <table class="table-stack" data-table-tools="logs" data-mode="server"
+         data-default-sort="timestamp" data-default-direction="desc">
     <thead>
       <tr>
-        <th style="width:11rem">Timestamp</th>
-        <th style="width:6rem">Level</th>
-        <th style="width:14rem">Logger</th>
-        <th>Message</th>
+        <th style="width:11rem" data-col="timestamp">Timestamp</th>
+        <th style="width:6rem" data-col="level" data-filter="level">Level</th>
+        <th style="width:14rem" data-col="logger">Logger</th>
+        <th data-col="message">Message</th>
       </tr>
     </thead>
     <tbody>
@@ -120,4 +131,14 @@
   </div>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/table-tools.js" data-pjax></script>
+<script>
+function clearLogSearch() {
+  const level = document.querySelector('#log-search-input').form.querySelector('input[name="level"]');
+  window.location = '/logs' + (level ? '?level=' + encodeURIComponent(level.value) : '');
+}
+</script>
 {% endblock %}

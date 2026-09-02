@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Settings — DIVE{% endblock %}
 {% block topbar_title %}Settings{% endblock %}
 
@@ -34,13 +35,19 @@
     <div class="card">
       <div class="card-title">Pipeline schedule</div>
       <div class="form-group">
-        <label class="form-label" for="interval-select">Run every</label>
-        <select id="interval-select" onchange="handleIntervalChange(this.value); markDirty('pipeline')">
-          {% for val, label in interval_options %}
-          <option value="{{ val }}" {{ 'selected' if val == current_interval else '' }}>{{ label }}</option>
-          {% endfor %}
-          <option value="custom" {{ 'selected' if current_interval not in interval_values else '' }}>Custom…</option>
-        </select>
+        {# field_menu, not <select>: the native popup covers its own control.
+           The label points at the TRIGGER, not the id — the id is now a
+           hidden <input> mirror, which is not focusable, so a label aimed at
+           it would be inert. The onchange moves onto the mirror verbatim and
+           still fires (app.js dispatches a synthetic 'change'), so
+           handleIntervalChange and markDirty need no changes. #}
+        <label class="form-label" for="interval-select-trigger">Run every</label>
+        {% set _interval_opts = interval_options | list + [('custom', 'Custom…')] %}
+        {{ ui.field_menu('interval-select', _interval_opts,
+                         current_interval if current_interval in interval_values else 'custom',
+                         onchange="handleIntervalChange(this.value); markDirty('pipeline')",
+                         label_text='Run every',
+                         trigger_class='btn btn-outline btn-sm is-field') }}
         <div id="custom-interval-row" class="custom-interval-row">
           <input type="number" id="custom-hours" min="1" max="8760" placeholder="hours"
                  value="{{ current_interval if current_interval not in interval_values else '' }}"
@@ -72,14 +79,20 @@
       <div class="card-title">Scanner settings</div>
 
       <div class="form-group">
-        <label class="form-label" for="severity-select">Minimum severity for notifications</label>
-        <select id="severity-select" onchange="markDirty('scanner')">
-          <option value="critical">Critical only</option>
-          <option value="high">High and above (default)</option>
-          <option value="medium">Medium and above</option>
-          <option value="low">Low and above</option>
-          <option value="all">All findings</option>
-        </select>
+        {# Value is written programmatically by loadScannerSettings(), so that
+           call site MUST follow the write with DIVE.syncMenuField() or the
+           trigger keeps showing the server-rendered label. #}
+        <label class="form-label" for="severity-select-trigger">Minimum severity for notifications</label>
+        {{ ui.field_menu('severity-select',
+                         [('critical', 'Critical only'),
+                          ('high', 'High and above (default)'),
+                          ('medium', 'Medium and above'),
+                          ('low', 'Low and above'),
+                          ('all', 'All findings')],
+                         'high',
+                         onchange="markDirty('scanner')",
+                         label_text='Minimum severity for notifications',
+                         trigger_class='btn btn-outline btn-sm is-field') }}
         <p class="form-hint">Findings below this threshold are recorded but do not trigger alerts.</p>
       </div>
 
@@ -653,7 +666,12 @@ function loadScannerSettings() {
       return r.json();
     })
     .then(data => {
+      // severity-select is a field_menu: its id is a hidden <input> mirror
+      // with no visible box, so writing .value alone would leave the menu
+      // trigger showing the stale server-rendered label while the stored
+      // value has changed. syncMenuField repaints trigger + aria-current.
       document.getElementById('severity-select').value = data.severity_threshold || 'high';
+      DIVE.syncMenuField('severity-select');
       document.getElementById('excluded-repos').value  = (data.excluded_repos || []).join('\n');
       document.getElementById('secrets-scan-depth').value = data.secrets_scan_depth ?? 30;
       document.getElementById('news-retention-days').value = data.news_retention_days ?? 0;
@@ -937,5 +955,6 @@ loadFeeds();
 loadKeywords();
 loadScannerSettings();
 loadModels();
+DIVE.staggerIn('.settings-section');
 </script>
 {% endblock %}

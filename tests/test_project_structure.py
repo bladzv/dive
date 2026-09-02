@@ -68,3 +68,24 @@ def test_gitignore_excludes_secrets():
     content = open(gitignore_path).read()
     assert "config.yaml" in content, "config.yaml not in .gitignore"
     assert ".env" in content, ".env not in .gitignore"
+
+
+def test_no_native_select_in_templates():
+    """Every native <select> was converted to a .menu (ui.param_menu /
+    ui.field_menu, see templates/_macros.html) — its OS-drawn popup covers
+    its own trigger, which CSS cannot fix. A cheap permanent guard against a
+    new one creeping back in.
+
+    Strips {# Jinja comments #} first — several templates explain the
+    conversion in prose that names <select> by tag."""
+    import glob
+    import re
+
+    offenders = []
+    for path in glob.glob(os.path.join(ROOT, "templates", "*.html")):
+        with open(path) as fh:
+            content = fh.read()
+        content = re.sub(r"\{#.*?#\}", "", content, flags=re.DOTALL)
+        if "<select" in content:
+            offenders.append(os.path.relpath(path, ROOT))
+    assert not offenders, f"native <select> found in: {offenders}"

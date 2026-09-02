@@ -179,14 +179,23 @@
     panel.setAttribute('role', 'menu');
 
     let i = 0;
-    function addItem(label, onClick, current) {
-      const item = document.createElement('button');
-      item.type = 'button';
+    /* `href` renders a real <a> instead of a button. Filter options scraped
+     * from a filter-bar param_menu carry one, which means the column menu
+     * inherits that menu's with_params param-preservation and is routed by
+     * base.html's pjax router — rather than applyParam()'s full-page
+     * window.location assignment. Sort items keep the button path. */
+    function addItem(label, onClick, current, href) {
+      const item = document.createElement(href ? 'a' : 'button');
+      if (href) {
+        item.href = href;
+      } else {
+        item.type = 'button';
+        item.addEventListener('click', onClick);
+      }
       item.setAttribute('role', 'menuitem');
       item.style.setProperty('--i', i++);
       item.textContent = label;
       if (current) item.setAttribute('aria-current', 'true');
-      item.addEventListener('click', onClick);
       panel.appendChild(item);
     }
     function addSep() {
@@ -207,7 +216,7 @@
       options.forEach((opt) => {
         const isCurrent = opt.value === current;
         if (isCurrent && opt.value) anyActive = true;
-        addItem(opt.label, () => applyParam(filterKind, opt.value), isCurrent);
+        addItem(opt.label, () => applyParam(filterKind, opt.value), isCurrent, opt.href);
       });
       trigger.classList.toggle('has-filter', anyActive);
     }
@@ -225,11 +234,22 @@
 
   function _filterOptions(kind) {
     if (kind === 'repo') {
-      const select = document.querySelector('select[aria-label="Filter by repository"]');
-      if (!select) return [];
-      return Array.from(select.options).map((o) => ({
-        value: o.value,
-        label: o.textContent.trim(),
+      /* Scraped from the filter-bar repo menu, which declares itself with
+       * data-filter-source="repo" (see ui.param_menu in _macros.html). The
+       * repo list is server-rendered and varies per deployment, so it can't
+       * be a literal here like severity/level below.
+       *
+       * This used to read `select[aria-label="Filter by repository"]`. That
+       * select is now a .menu, and the old selector would return null → []
+       * → the Repo column-header menu would silently lose its entire filter
+       * section with no error and no failing test. If you change the
+       * filter-bar markup, change this together with it. */
+      const menu = document.querySelector('[data-filter-source="repo"]');
+      if (!menu) return [];
+      return Array.from(menu.querySelectorAll('[role="menuitem"]')).map((el) => ({
+        value: el.dataset.value || '',
+        label: el.textContent.trim(),
+        href: el.getAttribute('href') || null,
       }));
     }
     if (kind === 'severity') {

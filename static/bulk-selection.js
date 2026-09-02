@@ -45,14 +45,7 @@ function _updateBulkBar() {
   }
 }
 
-function applyRepoFilter(repo) {
-  const params = new URLSearchParams(window.location.search);
-  if (repo) params.set('repo', repo);
-  else params.delete('repo');
-  params.delete('page');
-  window.location = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
-}
-
-/* setPageSize is now the shared DIVE.setPageSize from static/app.js — it
-   was defined here (and, separately, in news.html and logs.html) three
-   times with subtly different implementations. */
+/* applyRepoFilter() and setPageSize() are both gone: the repo and per-page
+ * controls they drove are now ui.param_menu link menus (see _macros.html)
+ * whose hrefs are built server-side by the with_params Jinja filter and
+ * navigated via base.html's pjax router — not window.location. */

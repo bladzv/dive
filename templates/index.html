@@ -362,5 +362,7 @@ function toggleBookmark(itemId) {
   })
   .catch(() => DIVE.showToast('Failed to toggle bookmark', 'error'));
 }
+
+DIVE.staggerIn('.exposure-pill');
 </script>
 {% endblock %}

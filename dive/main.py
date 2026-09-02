@@ -1105,7 +1105,42 @@ def _replace_query_param(url: Any, key: str, value: Any) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
+def _with_params(url: Any, **changes: Any) -> str:
+    """Jinja2 filter: return `url` with `changes` applied to its query string,
+    preserving every param not named.
+
+    A None or "" value DELETES the param — that is how "All repos" / "no
+    severity filter" / "clear this chip" is expressed. `page` is ALWAYS
+    dropped, because any filter change invalidates the current page offset
+    (the same rule table-tools.js's _navigate() applies).
+
+    Returns a path+query rather than an absolute URL so the result stays
+    origin-agnostic behind a reverse proxy, and so the pjax router in
+    base.html treats it as same-origin and intercepts it.
+
+    This is what fixes filter params being silently dropped: a state-tab
+    href built through here keeps severity/sort/direction/per_page instead
+    of discarding them.
+
+    Distinct from _replace_query_param above, which sets exactly one key,
+    cannot delete, and keeps `page` — that one still backs pagination links.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlparse
+
+    parsed = urlparse(str(url))
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in changes.items():
+        if value is None or value == "":
+            params.pop(key, None)
+        else:
+            params[key] = str(value)
+    params.pop("page", None)
+    query = urlencode(params)
+    return parsed.path + (f"?{query}" if query else "")
+
+
 templates.env.filters["replace_query_param"] = _replace_query_param
+templates.env.filters["with_params"] = _with_params
 templates.env.globals["nav_badges"] = lambda: _nav_badges()
 
 
@@ -1375,6 +1410,29 @@ def _paginate(page: int, per_page: int, total: int) -> dict:
     }
 
 
+def _state_window(conn: sqlite3.Connection, state: str | None) -> str | None:
+    """The `first_seen_at >= ?` bound implied by a pseudo-state, or None.
+
+    Only 'new' is time-bounded — it means "first seen in the latest
+    successful run". Every other state, 'unresolved' included, is unbounded,
+    which is what makes Unresolved a strict *superset* of New: a finding
+    first seen in the latest run shows up under both. (It used to carry an
+    upper bound of the same timestamp, which made the two tabs disjoint and
+    hid brand-new findings from the Unresolved view entirely.)
+
+    The 9999 sentinel means "no successful run has ever completed", which
+    must show nothing rather than everything.
+
+    This is the single source of truth for what the New tab means. The page
+    routes and the export routes all call it, so the on-screen row set and
+    the exported row set cannot drift apart.
+    """
+    if state != "new":
+        return None
+    last_run = db.get_last_successful_run(conn)
+    return last_run["started_at"] if last_run else "9999-01-01"
+
+
 def _secrets_summary(conn: sqlite3.Connection | None = None) -> dict:
     """Return per-state counts from secret_findings."""
     try:
@@ -1633,9 +1691,18 @@ async def login_post(
     client_ip = request.client.host if request.client else "unknown"
     retry_after = _login_rate_limit_retry_after(client_ip)
     if retry_after is not None:
-        raise HTTPException(
+        # Render the styled login template rather than raising HTTPException:
+        # a raw FastAPI JSON error page is the worst possible thing to show
+        # right when the user is already locked out and confused. Retry-After
+        # is kept as the one machine-readable part of the response.
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "next_url": next_url,
+                "error": f"Too many attempts. Try again in {retry_after}s.",
+            },
             status_code=429,
-            detail="Too many login attempts. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
 
@@ -1759,7 +1826,7 @@ async def findings_page(
             "severity_filter": severity,
             "sort": sort,
             "direction": direction,
-            "repos": [r["repo_full_name"] for r in d["repo_rows"]],
+            "repos": d["repos"],
             "pagination": d["pagination"],
         },
     )
@@ -1776,40 +1843,24 @@ def _findings_page_data(
 ) -> dict:
     """All of the /findings route's DB work, run via asyncio.to_thread."""
     with db.get_conn() as conn:
-        last_run = db.get_last_successful_run(conn)
-        last_started = last_run["started_at"] if last_run else None
+        since = _state_window(conn, state)
 
-        since: str | None = None
-        until: str | None = None
-        if state == "new":
-            since = last_started or "9999-01-01"
-        elif state == "unresolved":
-            until = last_started
-
-        total = db.get_findings_count(
-            conn, state=state, repo=repo, since=since, until=until, severity=severity
-        )
+        total = db.get_findings_count(conn, state=state, repo=repo, since=since, severity=severity)
         pg = _paginate(page, per_page, total)
         rows = db.get_findings(
             conn,
             state=state,
             repo=repo,
             since=since,
-            until=until,
             severity=severity,
             sort=sort,
             direction=direction,
             limit=pg["per_page"],
             offset=pg["offset"],
         )
-        repo_where, repo_params = db._findings_where(state, repo=None, since=since, until=until)
-        repo_rows = conn.execute(
-            f"SELECT DISTINCT repo_full_name FROM findings {repo_where} ORDER BY repo_full_name",
-            repo_params,
-        ).fetchall()
         return {
             "rows": rows,
-            "repo_rows": repo_rows,
+            "repos": db.get_finding_repos(conn, state=state, since=since),
             "pagination": pg,
             "run_token": _get_run_token(conn),
             "current_model": _get_current_model(conn),
@@ -1854,52 +1905,63 @@ async def secrets_page(
     if state is None:
         state = "unresolved"
 
-    with db.get_conn() as conn:
-        last_run = db.get_last_successful_run(conn)
-        last_started = last_run["started_at"] if last_run else None
-
-        since: str | None = None
-        until: str | None = None
-        if state == "new":
-            since = last_started or "9999-01-01"
-        elif state == "unresolved":
-            until = last_started
-
-        total = db.get_secret_findings_count(conn, state=state, repo=repo, since=since, until=until)
-        pg = _paginate(page, per_page, total)
-        rows = db.get_secret_findings(
-            conn,
-            state=state,
-            repo=repo,
-            since=since,
-            until=until,
-            sort=sort,
-            direction=direction,
-            limit=pg["per_page"],
-            offset=pg["offset"],
-        )
-        repo_where, repo_params = db._secrets_where(state, repo=None, since=since, until=until)
-        repo_rows = conn.execute(
-            f"SELECT DISTINCT repo_full_name FROM secret_findings {repo_where} ORDER BY repo_full_name",
-            repo_params,
-        ).fetchall()
+    d = await asyncio.to_thread(_secrets_page_data, state, repo, sort, direction, page, per_page)
 
     return templates.TemplateResponse(
         request,
         "secrets.html",
         {
             "nav_active": "secrets",
-            "run_token": _get_run_token(),
-            "current_model": _get_current_model(),
-            "secrets": [dict(r) for r in rows],
+            "run_token": d["run_token"],
+            "current_model": d["current_model"],
+            "secrets": [dict(r) for r in d["rows"]],
             "state_filter": state,
             "repo_filter": repo,
             "sort": sort,
             "direction": direction,
-            "repos": [r["repo_full_name"] for r in repo_rows],
-            "pagination": pg,
+            "repos": d["repos"],
+            "pagination": d["pagination"],
         },
     )
+
+
+def _secrets_page_data(
+    state: str,
+    repo: str | None,
+    sort: str | None,
+    direction: str | None,
+    page: int,
+    per_page: int,
+) -> dict:
+    """All of the /secrets route's DB work, run via asyncio.to_thread.
+
+    Mirrors _findings_page_data. This used to run inline on the event loop,
+    which stalled every concurrent request — including the 5s status poll —
+    for the duration of the query on a Pi-class host with a large
+    secret_findings table.
+    """
+    with db.get_conn() as conn:
+        since = _state_window(conn, state)
+
+        total = db.get_secret_findings_count(conn, state=state, repo=repo, since=since)
+        pg = _paginate(page, per_page, total)
+        rows = db.get_secret_findings(
+            conn,
+            state=state,
+            repo=repo,
+            since=since,
+            sort=sort,
+            direction=direction,
+            limit=pg["per_page"],
+            offset=pg["offset"],
+        )
+        return {
+            "rows": rows,
+            "repos": db.get_secret_repos(conn, state=state, since=since),
+            "pagination": pg,
+            "run_token": _get_run_token(conn),
+            "current_model": _get_current_model(conn),
+        }
 
 
 @app.get("/personal", response_class=HTMLResponse)
@@ -2571,6 +2633,25 @@ async def resolve_secret_finding(
     return JSONResponse({"status": "resolved", "finding_id": finding_id})
 
 
+@app.post("/api/secrets/{finding_id}/reopen")
+async def reopen_secret_finding(
+    finding_id: int,
+    _user: Annotated[str, Depends(_require_auth)],
+    _csrf: Annotated[None, Depends(_require_csrf)],
+) -> JSONResponse:
+    """Revert a resolved secret finding back to 'new'.
+
+    A resolved secret previously had no way back — the UI offered Reveal and
+    nothing else — while dependency findings have always had Reopen. Also
+    the undo target for the Resolve action.
+    """
+    with db.get_conn() as conn:
+        updated = db.reopen_secret_finding(conn, finding_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Finding not found or not resolved")
+    return JSONResponse({"status": "new", "finding_id": finding_id})
+
+
 @app.post("/api/secrets/bulk")
 async def bulk_secrets_action(
     request: Request,
@@ -3060,6 +3141,35 @@ def _news_to_csv(rows) -> str:
     return output.getvalue()
 
 
+def _secrets_to_csv(rows) -> str:
+    """Serialise secret findings to CSV — redacted metadata only.
+
+    extrasaction="ignore" is load-bearing, not incidental: it is the
+    structural guarantee that widening the SELECT in
+    db.get_secret_findings_for_export() (or a schema migration adding a
+    column) cannot silently widen this file.
+    """
+    output = io.StringIO()
+    fieldnames = [
+        "id",
+        "repo_full_name",
+        "file_path",
+        "line_number",
+        "commit_sha",
+        "secret_type",
+        "rule_id",
+        "state",
+        "first_seen_at",
+        "last_seen_at",
+        "notified_at",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(dict(r))
+    return output.getvalue()
+
+
 @app.get("/api/export/findings")
 async def export_findings(
     _user: Annotated[str, Depends(_require_auth)],
@@ -3067,12 +3177,34 @@ async def export_findings(
     state: str | None = None,
     repo: str | None = None,
     severity: str | None = None,
+    annotated: bool = False,
 ) -> StreamingResponse:
     """Export findings as JSON or CSV, honoring the same state/repo/severity
-    filters as the findings list view (so a filtered export matches what's
-    on screen)."""
+    filters as the findings list view.
+
+    The pseudo-state window comes from _state_window(), the same helper the
+    page route uses — that shared call is what keeps `?state=new` here
+    meaning the same rows the New tab shows, rather than every all-time row
+    in state='new'. The window is deliberately NOT a URL parameter: a raw
+    run timestamp in a bookmarkable export link would silently go stale as
+    soon as the next run moved the boundary.
+
+    `annotated=1` narrows to findings carrying a note (the /personal page's
+    "Findings with notes" export).
+
+    Row *set* matches the view; row *order* does not — the export is always
+    priority-ordered and ignores the view's sort/direction, since consumers
+    re-sort anyway.
+    """
     with db.get_conn() as conn:
-        rows = db.get_findings_for_export(conn, state=state, repo=repo, severity=severity)
+        rows = db.get_findings_for_export(
+            conn,
+            state=state,
+            repo=repo,
+            severity=severity,
+            since=_state_window(conn, state),
+            annotated=annotated,
+        )
 
     if format == "csv":
         content = _findings_to_csv(rows)
@@ -3099,12 +3231,22 @@ async def export_news(
     severity: str | None = None,
     source: str | None = None,
     search: str | None = None,
+    bookmarked: bool = False,
 ) -> StreamingResponse:
     """Export news as JSON or CSV, honoring the same category/severity/source/
-    search filters as the news list view (filtered export matches the screen)."""
+    search filters as the news list view (filtered export matches the screen).
+
+    `bookmarked=1` narrows to saved items (the /personal page's "Bookmarks"
+    export).
+    """
     with db.get_conn() as conn:
         rows = db.get_news_items_for_export(
-            conn, category=category, severity=severity, source=source, search=search
+            conn,
+            category=category,
+            severity=severity,
+            source=source,
+            search=search,
+            bookmarked=bookmarked,
         )
 
     if format == "csv":
@@ -3121,6 +3263,47 @@ async def export_news(
         io.StringIO(content),
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=news.json"},
+    )
+
+
+@app.get("/api/export/secrets")
+async def export_secrets(
+    _user: Annotated[str, Depends(_require_auth)],
+    format: str = "json",
+    state: str | None = None,
+    repo: str | None = None,
+) -> StreamingResponse:
+    """Export secret findings as JSON or CSV, honoring the same state/repo
+    filters as the secrets list view.
+
+    Redacted metadata only — never the credential itself. gitleaks runs with
+    --redact so no secret_findings column holds secret text in the first
+    place; the live secret exists only behind GET /api/secrets/{id}/snippet,
+    which fetches it from GitHub per request. Do NOT "enrich" this export
+    with snippet data: it would turn a metadata download into a bulk
+    credential dump.
+
+    No `severity` parameter — secret_findings has no severity column.
+    """
+    with db.get_conn() as conn:
+        rows = db.get_secret_findings_for_export(
+            conn, state=state, repo=repo, since=_state_window(conn, state)
+        )
+
+    if format == "csv":
+        content = _secrets_to_csv(rows)
+        return StreamingResponse(
+            io.StringIO(content),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=secrets.csv"},
+        )
+
+    data = [dict(r) for r in rows]
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    return StreamingResponse(
+        io.StringIO(content),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=secrets.json"},
     )
 
 

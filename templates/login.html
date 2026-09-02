@@ -30,15 +30,35 @@
       font-size: 0.82rem;
     }
 
-    .login-field { margin-bottom: 0.95rem; }
+    /* Floating label: the label sits inside the input like a placeholder at
+       rest, then floats up into the input's top padding on focus or once
+       filled. Requires input to carry placeholder=" " so :placeholder-shown
+       reflects real emptiness, and the label to be the input's very next
+       sibling so the `input:focus + label` / `:not(:placeholder-shown) +
+       label` adjacency selectors match — see the markup below. */
+    .login-field { position: relative; margin-bottom: 1.3rem; }
+    .login-field input { max-width: 100%; padding-top: 0.85rem; padding-bottom: 0.25rem; }
     .login-field label {
-      display: block;
-      margin-bottom: 0.32rem;
-      color: var(--text-bright);
-      font-size: 0.8rem;
+      position: absolute;
+      left: 0.7rem;
+      top: 50%;
+      transform: translateY(-50%);
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 0.84rem;
       font-weight: 600;
+      pointer-events: none;
+      transition: top 0.2s var(--ease-glide), transform 0.2s var(--ease-glide),
+                  font-size 0.2s var(--ease-glide), color 0.2s var(--ease-glide);
     }
-    .login-field input { max-width: 100%; }
+    .login-field input:focus + label,
+    .login-field input:not(:placeholder-shown) + label,
+    .login-field input:-webkit-autofill + label,
+    .login-field input:autofill + label {
+      top: 0.6rem;
+      transform: translateY(-50%) scale(0.78);
+      color: var(--accent);
+    }
 
     /* Password field with mask/unmask toggle */
     .login-pw-wrap {
@@ -80,6 +100,24 @@
       font-size: 0.82rem;
     }
     .login-btn { width: 100%; margin-top: 0.4rem; }
+
+    /* Retriggerable shake: applied to the whole card on a server-rendered
+       auth failure (see the conditional class below), and to a single
+       .login-field on a client-side blank-submit — see the reflow trick in
+       the script, which is what lets the same class fire twice in a row. */
+    @keyframes shake-x {
+      10%, 90% { transform: translateX(-1px); }
+      20%, 80% { transform: translateX(2px); }
+      30%, 50%, 70% { transform: translateX(-4px); }
+      40%, 60% { transform: translateX(4px); }
+    }
+    .login-card.shake,
+    .login-field.shake {
+      animation: shake-x 0.45s var(--ease-shake) both;
+    }
+    .login-field input[aria-invalid="true"] {
+      border-color: var(--critical);
+    }
   </style>
 </head>
 <body>
@@ -98,7 +136,7 @@
   </defs>
 </svg>
 
-<div class="login-card">
+<div class="login-card{{ ' shake' if error else '' }}">
   <div class="login-head">
     <h1 class="login-brand">DIVE</h1>
     <p class="login-sub">Dependency Intelligence for Vulnerability Exposure</p>
@@ -111,15 +149,17 @@
   <form method="post" action="/login">
     <input type="hidden" name="next_url" value="{{ next_url }}">
     <div class="login-field">
+      <input type="text" id="username" name="username" placeholder=" "
+             autofocus autocomplete="username" required spellcheck="false"
+             {% if error %}aria-invalid="true"{% endif %}>
       <label for="username">Username</label>
-      <input type="text" id="username" name="username"
-             autofocus autocomplete="username" required spellcheck="false">
     </div>
     <div class="login-field">
-      <label for="password">Password</label>
       <div class="login-pw-wrap">
-        <input type="password" id="password" name="password"
-               autocomplete="current-password" required>
+        <input type="password" id="password" name="password" placeholder=" "
+               autocomplete="current-password" required
+               {% if error %}aria-invalid="true"{% endif %}>
+        <label for="password">Password</label>
         <button type="button" class="pw-toggle" id="pw-toggle"
                 aria-label="Show password" aria-pressed="false"
                 onclick="togglePassword()">
@@ -142,6 +182,53 @@ function togglePassword() {
   btn.setAttribute('aria-pressed', showing ? 'false' : 'true');
   icon.innerHTML = '<use href="#' + (showing ? 'i-eye' : 'i-eye-off') + '"/>';
 }
+
+// This page loads without static/app.js (pre-auth, kept deliberately
+// standalone — see CLAUDE.md), so its motion/validation JS is self-contained
+// rather than reusing window.DIVE helpers.
+(function () {
+  var form = document.querySelector('form');
+  if (!form) return;
+
+  // A blank required field fires the browser's native 'invalid' event before
+  // 'submit' — preventDefault() there suppresses the native validation
+  // bubble so our shake is the only feedback, and the field-level (not
+  // whole-card) shake keeps the signal localized to the actual problem.
+  // 'invalid' doesn't bubble, so each input needs its own listener; when
+  // BOTH fields are blank the browser fires 'invalid' on each of them for
+  // the same submit attempt, in DOM order — this flag keeps focus on only
+  // the first one, matching native single-field-focus behavior, while every
+  // invalid field still gets its own shake + aria-invalid.
+  var focusedThisAttempt = false;
+  form.querySelectorAll('.login-field input[required]').forEach(function (input) {
+    input.addEventListener('invalid', function (e) {
+      e.preventDefault();
+      var field = input.closest('.login-field');
+      input.setAttribute('aria-invalid', 'true');
+      field.classList.remove('shake');
+      void field.offsetWidth; // reflow, so re-adding the class retriggers the CSS animation
+      field.classList.add('shake');
+      if (!focusedThisAttempt) {
+        focusedThisAttempt = true;
+        input.focus();
+        setTimeout(function () { focusedThisAttempt = false; }, 0);
+      }
+    });
+    input.addEventListener('input', function () {
+      input.removeAttribute('aria-invalid');
+      var field = input.closest('.login-field');
+      field.classList.remove('shake');
+    });
+  });
+
+  // Only reached once every field passes constraint validation, so this is
+  // exactly the "valid submit" case — the loading state never shows for a
+  // submit the browser is about to block.
+  form.addEventListener('submit', function () {
+    var btn = form.querySelector('.login-btn');
+    if (btn) btn.classList.add('is-loading');
+  });
+})();
 </script>
 </body>
 </html>

@@ -20,7 +20,9 @@
       </div>
       {% if bookmarks %}
       <div class="panel-actions">
-        {{ ui.export_menu('/api/export/news') }}
+        {# Scoped to bookmarks — this panel's export must not dump the
+           entire news table, which is what it used to do. #}
+        {{ ui.export_menu('/api/export/news', '&bookmarked=1') }}
       </div>
       {% endif %}
     </div>
@@ -65,7 +67,8 @@
       </div>
       {% if annotated %}
       <div class="panel-actions">
-        {{ ui.export_menu('/api/export/findings') }}
+        {# Scoped to annotated findings — see the bookmarks panel above. #}
+        {{ ui.export_menu('/api/export/findings', '&annotated=1') }}
       </div>
       {% endif %}
     </div>

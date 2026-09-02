@@ -295,3 +295,64 @@ def test_get_findings_for_export_honors_severity(conn):
 
     rows = db.get_findings_for_export(conn, severity="critical")
     assert [r["package_name"] for r in rows] == ["crit"]
+
+
+# ---------------------------------------------------------------------------
+# The state window — `since` only, no upper bound
+#
+# _findings_where/_secrets_where used to also accept `until`, which the page
+# routes set for the 'unresolved' tab and which made Open and New disjoint.
+# `until` is gone; these pin the remaining one-sided clause.
+# ---------------------------------------------------------------------------
+
+
+def test_findings_where_no_longer_accepts_until(conn):
+    """A resurrected upper bound is how the disjoint-tabs bug would come back."""
+    with pytest.raises(TypeError):
+        db.get_findings(conn, until="2026-01-01T00:00:00+00:00")
+    with pytest.raises(TypeError):
+        db.get_findings_count(conn, until="2026-01-01T00:00:00+00:00")
+
+
+def test_secrets_where_no_longer_accepts_until(conn):
+    with pytest.raises(TypeError):
+        db.get_secret_findings(conn, until="2026-01-01T00:00:00+00:00")
+    with pytest.raises(TypeError):
+        db.get_secret_findings_count(conn, until="2026-01-01T00:00:00+00:00")
+
+
+def test_findings_since_is_inclusive_lower_bound(conn):
+    """`since` uses >=, so a finding first seen exactly at the run's start
+    timestamp counts as part of that run rather than falling through."""
+    boundary = "2026-01-02T00:00:00+00:00"
+    conn.execute(
+        """
+        INSERT INTO findings
+            (repo_full_name, package_name, package_ecosystem, cve_id,
+             state, first_seen_at, last_seen_at)
+        VALUES ('owner/a', 'exactly-at-boundary', 'PyPI', 'CVE-1', 'new', ?, ?)
+        """,
+        (boundary, boundary),
+    )
+    rows = db.get_findings(conn, state="new", since=boundary)
+    assert [r["package_name"] for r in rows] == ["exactly-at-boundary"]
+
+
+def test_unresolved_ignores_since_window_in_the_route_contract(conn):
+    """state='unresolved' has no time bound of its own: passing since=None
+    (what main._state_window returns for it) returns every open row."""
+    for pkg, first_seen in (
+        ("fresh", "2026-01-05T00:00:00+00:00"),
+        ("stale", "2020-01-01T00:00:00+00:00"),
+    ):
+        conn.execute(
+            """
+            INSERT INTO findings
+                (repo_full_name, package_name, package_ecosystem, cve_id,
+                 state, first_seen_at, last_seen_at)
+            VALUES ('owner/a', ?, 'PyPI', ?, 'new', ?, ?)
+            """,
+            (pkg, f"CVE-{pkg}", first_seen, first_seen),
+        )
+    rows = db.get_findings(conn, state="unresolved", since=None)
+    assert sorted(r["package_name"] for r in rows) == ["fresh", "stale"]

@@ -75,3 +75,6 @@ PLAN.md
 
 # Third-party design reference repos (cloned locally, not DIVE assets)
 designs/
+
+# Local-only docs
+/docs/motion-examples-full.md

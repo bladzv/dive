@@ -121,6 +121,16 @@
   --shadow:    0 4px 14px rgba(0, 0, 0, 0.40);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
 
+  /* Motion — new call sites should use these instead of freehand
+     cubic-bezier()/duration values. Existing declarations are migrated
+     incrementally, not en masse (see CLAUDE.md). */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);    /* overshoot: hover, drawer */
+  --ease-glide:  cubic-bezier(0.16, 1, 0.3, 1);        /* decel: modal, menu, bar */
+  --ease-shake:  cubic-bezier(0.36, 0.07, 0.19, 0.97); /* error oscillation */
+  --dur-fast: 0.12s;
+  --dur-base: 0.22s;
+  --dur-slow: 0.45s;
+
   /* Layout */
   --sidebar:          232px;
   --sidebar-collapsed: 78px;
@@ -354,6 +364,62 @@ html.sidebar-collapsed .workspace-topbar {
   left: var(--sidebar-collapsed);
 }
 
+/* Run progress, drawn on the topbar's bottom border edge. Hidden (opacity 0)
+   until body[data-run] is set by _updateRunBar() (base.html) — "running"
+   draws a determinate fill via the --run-progress custom property, absent a
+   step total "indeterminate" sweeps instead. .workspace-topbar is already
+   position:fixed, which is itself a positioning context, so no extra
+   position:relative is needed here. */
+.run-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.run-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  background: var(--accent);
+  transform-origin: left;
+  transform: scaleX(0);
+}
+body[data-run="running"] .run-bar,
+body[data-run="indeterminate"] .run-bar {
+  opacity: 1;
+}
+body[data-run="running"] .run-bar::after {
+  transition: transform var(--dur-base) var(--ease-glide);
+  transform: scaleX(var(--run-progress, 0));
+}
+body[data-run="indeterminate"] .run-bar::after {
+  width: 40%;
+  transform: translateX(-100%);
+  animation: run-bar-sweep 1.4s var(--ease-glide) infinite;
+}
+@keyframes run-bar-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(320%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The blanket reduced-motion rule above collapses the sweep to its first
+     frame, which is translateX(-100%) — fully off the left edge, i.e. an
+     invisible bar that reads as "nothing happening" during an active run.
+     Show a static full-width low-opacity track instead: still legible as
+     work in progress, with no motion. */
+  body[data-run="indeterminate"] .run-bar::after {
+    width: 100%;
+    transform: none;
+    opacity: 0.35;
+  }
+}
+
 /* ─── Pipeline drawer ───────────────────────────────── */
 @keyframes step-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }
@@ -372,10 +438,46 @@ html.sidebar-collapsed .workspace-topbar {
   background: var(--panel);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
-  transition: right 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: right 0.32s var(--ease-glide);
   overflow: hidden;
 }
 .pipeline-drawer.open { right: 0; }
+
+/* Border beam while a run is in progress, keyed off the same body[data-run]
+   attribute the topbar run bar uses (see _updateRunBar in base.html) — one
+   source of truth for "a run is happening" rather than a second poll. A
+   single ::after with a masked gradient sweep; .pipeline-drawer already has
+   position:fixed (a containing block) and overflow:hidden, so no extra
+   wrapper markup is needed for the ring shape. */
+body[data-run="running"] .pipeline-drawer::after,
+body[data-run="indeterminate"] .pipeline-drawer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 200% 100%;
+  animation: border-beam-sweep 2.4s linear infinite;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+@keyframes border-beam-sweep {
+  to { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Drop the animated ring entirely rather than trying to freeze it — a
+     static accent tint on the drawer's own existing left border reads as
+     "a run is happening" with no motion at all. */
+  body[data-run="running"] .pipeline-drawer::after,
+  body[data-run="indeterminate"] .pipeline-drawer::after {
+    display: none;
+  }
+  body[data-run="running"] .pipeline-drawer,
+  body[data-run="indeterminate"] .pipeline-drawer {
+    border-left-color: var(--accent);
+  }
+}
 
 .drawer-header {
   display: flex;
@@ -965,6 +1067,29 @@ html.sidebar-collapsed .page-footer {
   border: 0;
 }
 
+/* First focusable element on every page, ahead of the sidebar/topbar —
+   keyboard and screen-reader users otherwise had no way to reach
+   .page-main without tabbing through the entire nav on every single
+   navigation. Reveals itself as a normal visible link on :focus and
+   reverts to .sr-only's clipped state otherwise. */
+.skip-link:focus {
+  position: fixed;
+  top: 0.6rem;
+  left: 0.6rem;
+  z-index: 500;
+  width: auto;
+  height: auto;
+  padding: 0.55rem 0.9rem;
+  clip: auto;
+  overflow: visible;
+  white-space: normal;
+  background: var(--panel);
+  color: var(--text-bright);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
 /* ─── Page heading ─────────────────────────────────── */
 .page-heading {
   display: flex;
@@ -1081,7 +1206,7 @@ html.sidebar-collapsed .page-footer {
   left: var(--seg-start, 0%);
   width: var(--seg-width, 0%);
   height: 100%;
-  transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1), left 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.5s var(--ease-glide), left 0.5s var(--ease-glide);
 }
 
 .exposure-stack-seg.is-critical { background: var(--critical); }
@@ -1902,13 +2027,22 @@ html.sidebar-collapsed .page-footer {
 .dive-switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
 .dive-switch input:disabled { cursor: not-allowed; }
 
-.chip-list {
+/* Active-filter chip row (ui.filter_chips in templates/_macros.html).
+   Replaces a .chip-list rule that no template ever referenced.
+
+   `.tag` carries `animation: tag-pop` for the settings keyword field, where
+   a chip genuinely appears on demand. Here every chip is server-rendered on
+   every page load, so inheriting that animation would bounce the whole row
+   on each navigation — hence the explicit `animation: none`. */
+.filter-chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.4rem;
-  min-height: 1.8rem;
-  margin-bottom: 0.85rem;
+  margin: -0.4rem 0 1rem;
 }
+.filter-chips .tag { animation: none; }
+.filter-chips .tag-x { text-decoration: none; }
 
 .inline-add-row {
   display: flex;
@@ -2146,7 +2280,7 @@ html.sidebar-collapsed .page-footer {
 }
 .triage-table tbody tr {
   border-bottom: 1px solid var(--border);
-  transition: background 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: background 0.25s var(--ease-spring);
 }
 .triage-table tbody tr:last-child { border-bottom: none; }
 .triage-table tbody tr:hover { background: var(--hover); }
@@ -2488,8 +2622,8 @@ html.sidebar-collapsed .page-footer {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   transition: background 0.35s, border-color 0.35s, color 0.35s,
-              transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
-              box-shadow 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+              transform 0.35s var(--ease-spring),
+              box-shadow 0.35s var(--ease-spring);
 }
 .btn-run svg { width: 12px; height: 12px; }
 .btn-run:hover:not(:disabled) {
@@ -2638,19 +2772,12 @@ textarea:focus {
   border-radius: var(--radius-sm);
 }
 
-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-  background-position:
-    calc(100% - 14px) 50%,
-    calc(100% - 9px) 50%;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  padding-right: 1.85rem;
-}
+/* The select-only caret-sprite rule that used to live here is gone: every
+   <select> in the app was converted to a .menu (param_menu/field_menu, see
+   _macros.html) whose own caret is an inline SVG (.menu-caret). The shared
+   select/input/textarea/focus rules above stay — select remains a valid
+   generic form-control selector even though nothing in this app currently
+   renders one. */
 
 input[type="checkbox"] {
   width: 1rem;
@@ -2661,11 +2788,24 @@ input[type="checkbox"] {
 /* Per-field width overrides — picked to fit the largest expected value plus
    a little breathing room. IDs are used so we beat the global default
    (max-width: 340px) on specificity instead of resorting to !important. */
-#interval-select       { max-width: 220px; }   /* "Custom…" etc. */
-#severity-select       { max-width: 260px; }   /* "High and above (default)" */
+/* These two are now field_menu triggers, not <select>s — the bare ids are
+   hidden <input> mirrors with no box to size, so the width has to land on
+   the trigger and on the .menu wrapper that stretches with it. */
+.menu:has(#interval-select-trigger),
+#interval-select-trigger { max-width: 220px; }  /* "Custom…" etc. */
+.menu:has(#severity-select-trigger),
+#severity-select-trigger { max-width: 260px; }  /* "High and above (default)" */
+.menu:has(#days-select-trigger),
+#days-select-trigger { max-width: 120px; }  /* history.html window picker */
 
-/* News filter bar — narrower controls so the bar stays compact */
-.filter-bar select                { max-width: 200px; }
+/* Filter bar — narrower controls so the bar stays compact. Every filter-bar
+   <select> is gone (converted to a .menu), so only the trigger rule remains. */
+.filter-bar .menu-trigger { max-width: 220px; }
+.filter-bar .menu-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 #custom-hours,
 #secrets-scan-depth    { width: 110px; max-width: 110px; min-width: 0; }
 #clear-days            { width: 150px; max-width: 150px; min-width: 0; }
@@ -2690,7 +2830,7 @@ input[type="checkbox"] {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--panel-2);
-  transition: width 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: width 0.4s var(--ease-glide);
 }
 .search-pill:hover,
 .search-pill:focus-within,
@@ -2771,7 +2911,7 @@ input[type="checkbox"] {
   border-radius: 999px;
   background: var(--panel-3);
   color: var(--text);
-  animation: tag-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: tag-pop 0.4s var(--ease-spring);
 }
 .tag.removing {
   animation: tag-out 0.24s ease forwards;
@@ -2950,11 +3090,11 @@ th[aria-sort="ascending"] .th-sort-caret { transform: rotate(180deg); }
 
 tbody tr {
   border-bottom: 1px solid var(--border);
-  /* Spring easing (designs/kinetics' --spring token, cubic-bezier(0.34,
-     1.56, 0.64, 1) — a plain numeric easing curve, not copyrightable
-     expression, so used directly rather than rewritten) over the flat
-     `ease` this used to be. */
-  transition: background 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* --ease-spring (a plain numeric easing curve, not copyrightable
+     expression — originally borrowed from designs/kinetics' --spring
+     token, used directly rather than rewritten) over the flat `ease`
+     this used to be. */
+  transition: background 0.25s var(--ease-spring);
 }
 tbody tr:last-child { border-bottom: none; }
 
@@ -3320,13 +3460,24 @@ thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
   height: 14px;
 }
 
-/* ─── Toast ────────────────────────────────────────── */
-#toast {
+/* ─── Toast stack ──────────────────────────────────── */
+/* Container: pure layout, no visual chrome of its own — each .toast-item
+   carries the card styling that #toast used to have directly. Newest item
+   is appended last and stacks above earlier ones (column-reverse would put
+   it at the bottom instead, which read as the wrong order in testing). */
+.toast-stack {
   position: fixed;
   right: 1.25rem;
   bottom: 1.25rem;
   z-index: 1000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.5rem;
   max-width: min(360px, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.toast-item {
   padding: 0.7rem 1rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -3340,13 +3491,232 @@ thead [data-tip]:hover::before,  thead [data-tip]:focus-visible::before {
      numeric easing values only, not copyrightable expression, used
      directly — over the flat `ease` this used to be. */
   transition: opacity 0.2s ease, transform 0.4s cubic-bezier(0.18, 1.25, 0.4, 1);
-  pointer-events: none;
+}
+.toast-item.show { opacity: 1; transform: translateY(0); }
+.toast-item.leaving { opacity: 0; transform: translateY(0.4rem); transition-duration: 0.15s; }
+.toast-item.toast-success { border-color: rgba(52, 211, 153, 0.45); }
+.toast-item.toast-error   { border-color: rgba(248, 113, 113, 0.50); }
+.toast-item.toast-info    { border-color: var(--border-strong); }
+
+/* ─── Stagger entrance (DIVE.staggerIn) ─────────────── */
+/* Classes are added/removed entirely from JS (see static/app.js) — no
+   template needs its own markup for this, just a DIVE.staggerIn(selector)
+   call. Deliberately only used on small, once-per-page-load card grids
+   (dashboard metric tiles, settings sections): NOT table rows, where
+   staggering 25 rows on every pjax swap would be a real cost on a Pi for no
+   informational gain. */
+.stagger-pending {
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.45s var(--ease-glide), transform 0.45s var(--ease-glide);
+}
+.stagger-pending.stagger-in { opacity: 1; transform: translateY(0); }
+
+/* ─── ⌘K command palette ───────────────────────────── */
+/* Bloom entrance (catalog "Command Palette Bloom"): the panel is revealed by
+   a rounded clip-path wipe and its rows stagger upward, the same technique
+   .menu-panel uses. An `animation` rather than a `transition` for the same
+   reason .modal-panel documents — display:none gives no interpolable
+   "before" state to transition from.
+
+   Under prefers-reduced-motion the global blanket rule collapses both to a
+   single frame; the end state is the visible one, so it degrades to a plain
+   show/hide with nothing lost. */
+.command-palette { display: none; }
+.command-palette.open {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 300; /* above .modal-backdrop (200) — the palette never opens
+                   over a modal, but if one ever appears underneath it must
+                   not paint on top of the palette. */
+}
+.command-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 15, 26, 0.72);
+}
+.command-panel {
+  position: relative;
+  width: min(560px, calc(100vw - 2rem));
+  margin: 12vh auto 0;
+  padding: 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: var(--panel-2);
+  box-shadow: var(--shadow-lg);
+  animation: command-bloom 0.42s var(--ease-glide);
+}
+@keyframes command-bloom {
+  from { clip-path: inset(0 0 100% 0 round var(--radius-xl)); opacity: 0.6; }
+  to   { clip-path: inset(0 round var(--radius-xl)); opacity: 1; }
 }
 
-#toast.show { opacity: 1; transform: translateY(0); }
-#toast.toast-success { border-color: rgba(52, 211, 153, 0.45); }
-#toast.toast-error   { border-color: rgba(248, 113, 113, 0.50); }
-#toast.toast-info    { border-color: var(--border-strong); }
+/* Scoped under .command-panel so it outspecifies the global
+   `input[type="text"], …` form-control rule (0,0,1,1), which would
+   otherwise cap this at max-width: 340px inside a 560px panel. */
+.command-panel .command-input {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-bright);
+  font-size: 0.95rem;
+  padding: 0.6rem 0.7rem;
+}
+.command-panel .command-input:focus {
+  outline: none;
+  box-shadow: none;
+  border-color: var(--border-strong);
+}
+
+.command-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  max-height: min(50vh, 380px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.command-group {
+  padding: 0.45rem 0.7rem 0.2rem;
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.command-option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.22s ease, transform 0.22s var(--ease-glide);
+  transition-delay: calc(var(--i, 0) * 22ms);
+}
+.command-palette.open .command-option { opacity: 1; transform: translateY(0); }
+.command-option[aria-selected="true"] { background: var(--hover); }
+.command-option-label { color: var(--text-bright); }
+.command-option-hint {
+  color: var(--text-subtle);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.command-empty {
+  margin: 0;
+  padding: 0.9rem 0.7rem;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 700px) {
+  .command-panel { margin-top: 6vh; }
+  .command-option { padding: 0.65rem 0.7rem; }
+  .command-option-hint { display: none; }
+}
+
+/* ─── Undo snackbar ────────────────────────────────── */
+/* Bottom-center, distinct from the toast stack's bottom-right corner, so an
+   actionable prompt (has a button, blocks nothing but wants a click) never
+   visually collides with a passive confirmation. */
+.undo-snackbar {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text-bright);
+  font-size: 0.84rem;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  opacity: 0;
+  transform: translate(-50%, 0.8rem);
+  transition: opacity 0.2s ease, transform 0.4s var(--ease-spring);
+}
+.undo-snackbar.show { opacity: 1; transform: translate(-50%, 0); }
+.undo-snackbar-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.undo-snackbar-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.undo-snackbar-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left;
+  transform: scaleX(1);
+  /* transition-duration is set inline per call (durationMs), matching the
+     actual undo window instead of a fixed guess. */
+  transition-property: transform;
+  transition-timing-function: var(--ease-glide);
+}
+/* JS skips the scaleX(0) trigger under reduced motion (an inline style
+   can't be overridden by a class rule without !important) and leaves the
+   bar full-width instead, relying on .undo-snackbar-count for the numeric
+   countdown — same fallback pattern as the topbar run-bar. */
+.undo-snackbar.reduce-motion .undo-snackbar-progress { opacity: 0.35; }
+
+/* ─── Row quick actions ────────────────────────────── */
+/* The single most common action for a row's state, promoted out of the ⋯
+   menu to one click. Revealed on hover/focus on desktop (nothing becomes
+   hover-only reachable — the ⋯ menu still has every action); always visible
+   below 700px, where there is no hover and .table-stack already reflows
+   each cell into its own labelled row. */
+.row-quick {
+  display: inline-flex;
+  gap: 0.3rem;
+  margin-right: 0.35rem;
+  opacity: 0;
+  transform: translateX(4px);
+  transition: opacity 0.15s ease, transform 0.15s var(--ease-glide);
+}
+tr:hover .row-quick,
+tr:focus-within .row-quick {
+  opacity: 1;
+  transform: translateX(0);
+}
+@media (max-width: 700px) {
+  .row-quick { opacity: 1; transform: none; margin: 0 0 0.35rem; }
+}
+
+/* ─── Button checkmark (DIVE.submitButton) ──────────── */
+.btn-check-icon {
+  width: 14px;
+  height: 14px;
+  vertical-align: -2px;
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 0.35s var(--ease-glide);
+}
+.btn.drawn .btn-check-icon { stroke-dashoffset: 0; }
+.btn.is-done {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
 
 /* ─── Login page ───────────────────────────────────── */
 body:has(.login-card) {
@@ -3529,7 +3899,10 @@ body:has(.login-card) {
   .filter-bar { width: 100%; }
   .hero-actions .btn,
   .panel-actions .btn { flex: 1 1 auto; }
-  .filter-bar select,
+  /* select is gone from .filter-bar entirely; .menu/.menu-trigger replace
+     it here so the old "full width on mobile" behavior still holds. */
+  .filter-bar .menu,
+  .filter-bar .menu-trigger,
   .filter-bar input { max-width: none !important; }
 
   /* A 56px pill is worse than useless on a phone — always show it expanded,
@@ -3665,19 +4038,53 @@ body:has(.login-card) {
    position:absolute panel (the same trap as [data-tip] tooltips, below). */
 .menu { position: relative; display: inline-flex; }
 
+/* Field-shaped trigger — for a menu that replaced a form <select> (see the
+   field_menu macro). A .btn-outline trigger reads as an action button, which
+   is wrong next to <label class="form-label"> and a text input; this matches
+   the input/select box instead. Deliberately NOT applied to filter-bar
+   menus, where the button look is correct and already established. */
+.menu-trigger.is-field {
+  justify-content: space-between;
+  width: 100%;
+  max-width: 340px;
+  min-height: 2.15rem;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 400;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+[data-theme="light"] .menu-trigger.is-field { background: var(--panel); }
+.menu-trigger.is-field:hover { border-color: var(--border-strong); }
+.menu.open .menu-trigger.is-field {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+/* The field trigger stretches, so its .menu wrapper must too — otherwise
+   inline-flex shrink-wraps it to the label width. */
+.menu:has(.menu-trigger.is-field) { display: flex; width: 100%; max-width: 340px; }
+
 .menu-panel {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
   z-index: 60;
   min-width: 180px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.35rem;
   background: var(--panel-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow);
   clip-path: inset(0 0 100% 0 round var(--radius-xl));
-  transition: clip-path 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: clip-path 0.32s var(--ease-glide);
   pointer-events: none;
 }
 .menu.open .menu-panel,
@@ -3703,7 +4110,7 @@ body:has(.login-card) {
   border-radius: var(--radius-sm);
   opacity: 0;
   transform: translateY(-6px);
-  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.22s ease, transform 0.22s var(--ease-glide);
   transition-delay: calc(var(--i, 0) * 28ms);
 }
 .menu.open .menu-panel [role="menuitem"],
@@ -3734,6 +4141,11 @@ body:has(.login-card) {
 #menu-layer .menu-panel { pointer-events: none; }
 #menu-layer .menu-panel.is-open { pointer-events: auto; }
 
+@media (max-width: 700px) {
+  /* Bigger tap targets once a mouse can no longer be assumed. */
+  .menu-panel [role="menuitem"] { padding: 0.65rem 0.7rem; }
+}
+
 /* ─── Confirmation modal ────────────────────────────── */
 .modal-backdrop {
   display: none;
@@ -3760,7 +4172,7 @@ body:has(.login-card) {
      need a "before" state to interpolate from, which display:none never
      provides. Gentle decel curve (designs/kinetics' "Stagger Entrance"
      easing — a plain numeric value, not copyrightable expression). */
-  animation: modal-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: modal-in 0.3s var(--ease-glide);
 }
 @keyframes modal-in {
   from { opacity: 0; transform: translateY(14px) scale(0.98); }

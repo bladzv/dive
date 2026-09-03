@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}News — DIVE{% endblock %}
 {% block topbar_title %}News{% endblock %}
 
@@ -15,48 +16,50 @@
               ~ (('&search='   ~ search_filter|urlencode)   if search_filter   else '') %}
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} items</span>
-    <a href="/api/export/news?format=csv{{ _exp }}" class="btn btn-outline btn-sm">Export CSV</a>
-    <a href="/api/export/news?format=json{{ _exp }}" class="btn btn-outline btn-sm">Export JSON</a>
+    {{ ui.export_menu('/api/export/news', _exp) }}
   </div>
 </section>
 
+{# Native <select> popups cover their own control, so every filter is a
+   .menu instead (ui.param_menu). Each item is a real href built through the
+   with_params filter, which preserves every other active param, resets
+   `page`, and stays same-origin so base.html's pjax router intercepts it —
+   the old applyFilter() assigned window.location and full-reloaded. #}
 <div class="filter-bar">
-  <select onchange="applyFilter('category', this.value)" aria-label="Filter by category">
-    <option value="">All categories</option>
-    {% for cat in categories %}
-    <option value="{{ cat }}" {{ 'selected' if category_filter == cat else '' }}>{{ cat }}</option>
-    {% endfor %}
-  </select>
+  {{ ui.param_menu(request.url, 'category', categories, category_filter or '',
+                   empty_label='All categories', aria_label='Filter by category') }}
 
-  <select onchange="applyFilter('severity', this.value)" aria-label="Filter by severity">
-    <option value="">All severities</option>
-    {% for sev in ['Critical','High','Medium','Low','Info'] %}
-    <option value="{{ sev }}" {{ 'selected' if severity_filter == sev else '' }}>{{ sev }}</option>
-    {% endfor %}
-  </select>
+  {{ ui.param_menu(request.url, 'severity', ['Critical','High','Medium','Low','Info'],
+                   severity_filter or '', empty_label='All severities',
+                   aria_label='Filter by severity') }}
 
-  <select onchange="applyFilter('source', this.value)" aria-label="Filter by source">
-    <option value="">All sources</option>
-    {% for src in sources %}
-    <option value="{{ src }}" {{ 'selected' if source_filter == src else '' }}>{{ src }}</option>
-    {% endfor %}
-  </select>
+  {{ ui.param_menu(request.url, 'source', sources, source_filter or '',
+                   empty_label='All sources', aria_label='Filter by source') }}
 
-  <select onchange="applyFilter('sort', this.value)" aria-label="Sort order">
-    <option value="published_desc" {{ 'selected' if sort == 'published_desc' else '' }}>Newest first</option>
-    <option value="published_asc"  {{ 'selected' if sort == 'published_asc'  else '' }}>Oldest first</option>
-  </select>
+  {{ ui.param_menu(request.url, 'sort',
+                   [('published_desc','Newest first'), ('published_asc','Oldest first')],
+                   sort or 'published_desc', aria_label='Sort order') }}
 
-  <form id="search-form" onsubmit="applySearch(event)" class="search-inline news-search-form">
+  <form id="search-form" onsubmit="applySearch(event)"
+        class="search-pill{{ ' is-active' if search_filter else '' }}">
     <label for="search-input" class="sr-only">Search title or summary</label>
-    <input type="text" id="search-input" placeholder="Search title or summary" value="{{ search_filter or '' }}">
-    <button type="submit" class="btn btn-outline btn-sm">Search</button>
+    <svg class="search-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <input type="search" id="search-input" placeholder="Search news…" value="{{ search_filter or '' }}">
+    <button type="button" class="search-clear" onclick="clearSearch()" aria-label="Clear search">✕</button>
   </form>
 
-  {% if category_filter or severity_filter or source_filter or search_filter %}
-  <a href="/news" class="btn btn-outline btn-sm">Clear</a>
-  {% endif %}
 </div>
+
+{# Active-filter chips: each ✕ drops just that one param and keeps the rest. #}
+{% set _chips = [] %}
+{% if category_filter %}{% set _ = _chips.append({'label': 'Category: ' ~ category_filter, 'href': request.url | with_params(category=None)}) %}{% endif %}
+{% if severity_filter %}{% set _ = _chips.append({'label': 'Severity: ' ~ severity_filter, 'href': request.url | with_params(severity=None)}) %}{% endif %}
+{% if source_filter %}{% set _ = _chips.append({'label': 'Source: ' ~ source_filter, 'href': request.url | with_params(source=None)}) %}{% endif %}
+{% if search_filter %}{% set _ = _chips.append({'label': 'Search: ' ~ search_filter, 'href': request.url | with_params(search=None)}) %}{% endif %}
+{{ ui.filter_chips(_chips, '/news') }}
 
 {% if news_items %}
 <section class="record-list intel-feed">
@@ -120,11 +123,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page" aria-label="Rows per page">
-      {% for s in pagination.page_size_options %}
-      <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
-      {% endfor %}
-    </select>
+    {{ ui.page_size_menu(request.url, pagination) }}
   </div>
 </div>
 {% endif %}
@@ -132,20 +131,25 @@
 
 {% block scripts %}
 <script>
-function applyFilter(key, value) {
-  const params = new URLSearchParams(window.location.search);
-  if (value) params.set(key, value);
-  else params.delete(key);
-  params.delete('page');
-  window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
-}
-
+/* applyFilter() is gone: every filter is now a ui.param_menu whose items are
+   real hrefs built server-side by the with_params filter. applySearch and
+   clearSearch stay because the search box is a text field, not a menu — but
+   note they still assign window.location, so a search submit is a full
+   reload rather than a pjax swap. */
 function applySearch(e) {
   e.preventDefault();
   const value = document.getElementById('search-input').value.trim();
   const params = new URLSearchParams(window.location.search);
   if (value) params.set('search', value);
   else params.delete('search');
+  params.delete('page');
+  window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
+}
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  const params = new URLSearchParams(window.location.search);
+  params.delete('search');
   params.delete('page');
   window.location = '/news' + (params.toString() ? '?' + params.toString() : '');
 }

@@ -398,3 +398,37 @@ class TestNewsRetention:
     def test_corrupt_value_falls_back_to_default(self, conn):
         db.set_setting(conn, "news.retention_days", "not-a-number")
         assert settings.get_news_retention_days(conn) == 0
+
+
+class TestIdleCategorizeInterval:
+    def test_default_is_fifteen(self, conn):
+        assert settings.get_idle_categorize_interval_minutes(conn) == 15
+
+    def test_roundtrip(self, conn):
+        settings.set_idle_categorize_interval_minutes(conn, 30)
+        assert settings.get_idle_categorize_interval_minutes(conn) == 30
+
+    def test_rejects_below_min(self, conn):
+        with pytest.raises(ValueError):
+            settings.set_idle_categorize_interval_minutes(conn, 4)
+
+    def test_rejects_above_max(self, conn):
+        with pytest.raises(ValueError):
+            settings.set_idle_categorize_interval_minutes(conn, 1441)
+
+    def test_corrupt_value_falls_back_to_default(self, conn):
+        db.set_setting(conn, "idle_categorize_interval_minutes", "not-a-number")
+        assert settings.get_idle_categorize_interval_minutes(conn) == 15
+
+    def test_out_of_range_stored_value_is_clamped(self, conn):
+        db.set_setting(conn, "idle_categorize_interval_minutes", "99999")
+        assert settings.get_idle_categorize_interval_minutes(conn) == 1440
+
+
+class TestIdleCategorizationToggle:
+    def test_present_in_feature_toggles(self):
+        assert "idle_categorization" in settings.FEATURE_TOGGLES
+
+    def test_default_is_disabled(self, conn):
+        toggles = settings.get_feature_toggles(conn)
+        assert toggles["idle_categorization"] is False

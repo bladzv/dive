@@ -544,3 +544,199 @@ def test_get_findings_for_export_filters(conn):
     rows = db.get_findings_for_export(conn, repo="owner/a")
     assert [r["repo_full_name"] for r in rows] == ["owner/a"]
     assert len(db.get_findings_for_export(conn)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Repo dropdown helpers (replaced a reach-in to db._findings_where from main)
+# ---------------------------------------------------------------------------
+
+
+def _insert_finding_row(conn, cve, first_seen_at, state="new", repo="owner/a"):
+    conn.execute(
+        """
+        INSERT INTO findings
+            (repo_full_name, package_name, package_ecosystem, cve_id,
+             state, first_seen_at, last_seen_at)
+        VALUES (?, 'pkg', 'PyPI', ?, ?, ?, ?)
+        """,
+        (repo, cve, state, first_seen_at, first_seen_at),
+    )
+
+
+def _insert_secret_row(conn, file_path, first_seen_at, state="new", repo="owner/a"):
+    conn.execute(
+        """
+        INSERT INTO secret_findings
+            (repo_full_name, file_path, line_number, commit_sha, secret_type,
+             rule_id, fingerprint, state, first_seen_at, last_seen_at)
+        VALUES (?, ?, 1, 'abc', 'AWS Key', 'aws-key', ?, ?, ?, ?)
+        """,
+        (repo, file_path, f"fp-{repo}-{file_path}", state, first_seen_at, first_seen_at),
+    )
+
+
+def test_get_finding_repos_is_sorted_and_deduped(conn):
+    _insert_finding_row(conn, "CVE-1", "2026-01-01T00:00:00+00:00", repo="owner/b")
+    _insert_finding_row(conn, "CVE-2", "2026-01-01T00:00:00+00:00", repo="owner/a")
+    _insert_finding_row(conn, "CVE-3", "2026-01-01T00:00:00+00:00", repo="owner/a")
+    assert db.get_finding_repos(conn) == ["owner/a", "owner/b"]
+
+
+def test_get_finding_repos_excludes_repo_with_only_resolved_under_unresolved(conn):
+    _insert_finding_row(conn, "CVE-1", "2026-01-01T00:00:00+00:00", state="new", repo="owner/open")
+    _insert_finding_row(
+        conn, "CVE-2", "2026-01-01T00:00:00+00:00", state="resolved", repo="owner/done"
+    )
+    assert db.get_finding_repos(conn, state="unresolved") == ["owner/open"]
+    # ...but 'all' still offers both.
+    assert db.get_finding_repos(conn, state=None) == ["owner/done", "owner/open"]
+
+
+def test_get_finding_repos_honors_since(conn):
+    _insert_finding_row(conn, "CVE-1", "2026-01-05T00:00:00+00:00", repo="owner/fresh")
+    _insert_finding_row(conn, "CVE-2", "2025-01-01T00:00:00+00:00", repo="owner/stale")
+    assert db.get_finding_repos(conn, since="2026-01-01T00:00:00+00:00") == ["owner/fresh"]
+
+
+def test_get_secret_repos_honors_state_and_since(conn):
+    _insert_secret_row(conn, "a.py", "2026-01-05T00:00:00+00:00", repo="owner/fresh")
+    _insert_secret_row(conn, "b.py", "2025-01-01T00:00:00+00:00", repo="owner/stale")
+    _insert_secret_row(
+        conn, "c.py", "2026-01-05T00:00:00+00:00", state="resolved", repo="owner/done"
+    )
+
+    assert db.get_secret_repos(conn) == ["owner/done", "owner/fresh", "owner/stale"]
+    assert db.get_secret_repos(conn, state="unresolved") == ["owner/fresh", "owner/stale"]
+    assert db.get_secret_repos(conn, since="2026-01-01T00:00:00+00:00") == [
+        "owner/done",
+        "owner/fresh",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Secrets state machine — bulk/single parity and reopen
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_resolve_accepts_false_positive_rows(conn):
+    """Bulk resolve guarded on state='new', so a false_positive row silently
+    stayed put while the single-item route resolved it fine."""
+    _insert_secret_row(conn, "fp.py", "2026-01-01T00:00:00+00:00", state="false_positive")
+    _insert_secret_row(conn, "open.py", "2026-01-01T00:00:00+00:00", state="new")
+    ids = [r["id"] for r in conn.execute("SELECT id FROM secret_findings").fetchall()]
+
+    assert db.bulk_update_secret_state(conn, ids, "resolve") == 2
+    states = {r["state"] for r in conn.execute("SELECT state FROM secret_findings").fetchall()}
+    assert states == {"resolved"}
+
+
+def test_bulk_resolve_skips_already_resolved(conn):
+    _insert_secret_row(conn, "done.py", "2026-01-01T00:00:00+00:00", state="resolved")
+    ids = [r["id"] for r in conn.execute("SELECT id FROM secret_findings").fetchall()]
+    assert db.bulk_update_secret_state(conn, ids, "resolve") == 0
+
+
+def test_reopen_secret_finding_clears_notified_at(conn):
+    _insert_secret_row(conn, "leak.py", "2026-01-01T00:00:00+00:00", state="resolved")
+    sid = conn.execute("SELECT id FROM secret_findings").fetchone()["id"]
+    conn.execute("UPDATE secret_findings SET notified_at = ? WHERE id = ?", ("2026-01-01", sid))
+
+    assert db.reopen_secret_finding(conn, sid) is True
+    row = conn.execute(
+        "SELECT state, notified_at FROM secret_findings WHERE id = ?", (sid,)
+    ).fetchone()
+    assert row["state"] == "new"
+    # Cleared so the notifier re-alerts, matching findings' reopen.
+    assert row["notified_at"] is None
+
+
+def test_reopen_secret_finding_only_applies_to_resolved(conn):
+    _insert_secret_row(conn, "leak.py", "2026-01-01T00:00:00+00:00", state="new")
+    sid = conn.execute("SELECT id FROM secret_findings").fetchone()["id"]
+    assert db.reopen_secret_finding(conn, sid) is False
+
+
+# ---------------------------------------------------------------------------
+# Export column contracts
+# ---------------------------------------------------------------------------
+
+
+def test_get_secret_findings_for_export_column_contract(conn):
+    """Explicit column list — adding a secret_findings column must not
+    silently widen the export, and the dedup keys must stay out."""
+    _insert_secret_row(conn, "leak.py", "2026-01-01T00:00:00+00:00")
+    rows = db.get_secret_findings_for_export(conn)
+    assert len(rows) == 1
+    assert sorted(rows[0].keys()) == sorted(
+        [
+            "id",
+            "repo_full_name",
+            "file_path",
+            "line_number",
+            "commit_sha",
+            "secret_type",
+            "rule_id",
+            "state",
+            "first_seen_at",
+            "last_seen_at",
+            "notified_at",
+        ]
+    )
+    assert "fingerprint" not in rows[0].keys()
+    assert "match_key" not in rows[0].keys()
+
+
+def test_get_secret_findings_for_export_honors_filters(conn):
+    _insert_secret_row(conn, "a.py", "2026-01-05T00:00:00+00:00", repo="owner/a")
+    _insert_secret_row(conn, "b.py", "2026-01-05T00:00:00+00:00", repo="owner/b")
+    _insert_secret_row(conn, "c.py", "2026-01-05T00:00:00+00:00", state="resolved", repo="owner/a")
+
+    assert sorted(
+        r["file_path"] for r in db.get_secret_findings_for_export(conn, repo="owner/a")
+    ) == ["a.py", "c.py"]
+    assert sorted(
+        r["file_path"] for r in db.get_secret_findings_for_export(conn, state="unresolved")
+    ) == ["a.py", "b.py"]
+
+
+def test_get_secret_findings_for_export_order_is_newest_first(conn):
+    """ORDER BY first_seen_at DESC, id DESC — the id tiebreak keeps the order
+    stable when two rows share a timestamp."""
+    _insert_secret_row(conn, "old.py", "2025-01-01T00:00:00+00:00")
+    _insert_secret_row(conn, "tie-first.py", "2026-01-05T00:00:00+00:00")
+    _insert_secret_row(conn, "tie-second.py", "2026-01-05T00:00:00+00:00")
+
+    order = [r["file_path"] for r in db.get_secret_findings_for_export(conn)]
+    assert order == ["tie-second.py", "tie-first.py", "old.py"]
+
+
+def test_get_findings_for_export_honors_since(conn):
+    _insert_finding_row(conn, "CVE-FRESH", "2026-01-05T00:00:00+00:00")
+    _insert_finding_row(conn, "CVE-STALE", "2025-01-01T00:00:00+00:00")
+    rows = db.get_findings_for_export(conn, since="2026-01-01T00:00:00+00:00")
+    assert [r["cve_id"] for r in rows] == ["CVE-FRESH"]
+
+
+def test_get_findings_for_export_annotated_filter(conn):
+    _insert_finding_row(conn, "CVE-NOTED", "2026-01-05T00:00:00+00:00")
+    _insert_finding_row(conn, "CVE-PLAIN", "2026-01-05T00:00:00+00:00")
+    fid = conn.execute("SELECT id FROM findings WHERE cve_id = 'CVE-NOTED'").fetchone()["id"]
+    db.set_finding_annotation(conn, fid, "note")
+
+    rows = db.get_findings_for_export(conn, annotated=True)
+    assert [r["cve_id"] for r in rows] == ["CVE-NOTED"]
+    # An empty-string annotation counts as absent, matching set_finding_annotation's clear.
+    conn.execute("UPDATE findings SET annotation = '' WHERE id = ?", (fid,))
+    assert db.get_findings_for_export(conn, annotated=True) == []
+
+
+def test_get_news_items_for_export_bookmarked_filter(conn):
+    db.insert_news_item(conn, _make_item(url="https://x/a", source="Feed A"))
+    db.insert_news_item(conn, _make_item(url="https://x/b", source="Feed B"))
+    nid = conn.execute("SELECT id FROM news_items WHERE source = 'Feed A'").fetchone()["id"]
+    db.add_bookmark(conn, nid)
+
+    rows = db.get_news_items_for_export(conn, bookmarked=True)
+    assert [r["source"] for r in rows] == ["Feed A"]
+    # Composes with the other filters rather than replacing them.
+    assert db.get_news_items_for_export(conn, bookmarked=True, source="Feed B") == []

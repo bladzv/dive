@@ -696,12 +696,25 @@ def insert_log_entry(
     )
 
 
+_LOGS_SORTS: dict[str, str] = {
+    # id (not the TEXT `timestamp` column) — monotonic, indexed as the
+    # primary key, and exactly matches insertion order.
+    "timestamp": "id",
+    "level": "level",
+    "logger": "logger_name",
+    "message": "message",
+}
+_LOGS_SORT_DEFAULT = "timestamp"
+
+
 def get_log_entries(
     conn: sqlite3.Connection,
     page: int = 1,
     per_page: int = 25,
     level: str = "",
     search: str = "",
+    sort: str | None = None,
+    direction: str | None = None,
 ) -> list[sqlite3.Row]:
     params: list[Any] = []
     where_clauses: list[str] = []
@@ -713,10 +726,11 @@ def get_log_entries(
         like = f"%{search}%"
         params.extend([like, like])
     where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    order = _order_by(_LOGS_SORTS, _LOGS_SORT_DEFAULT, sort, direction)
     offset = (page - 1) * per_page
     params.extend([per_page, offset])
     return conn.execute(
-        f"SELECT * FROM log_entries {where} ORDER BY id DESC LIMIT ? OFFSET ?",  # noqa: S608
+        f"SELECT * FROM log_entries {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -946,16 +960,67 @@ def update_latest_version_for_package(
     )
 
 
+# Public sort key -> SQL column/expression. This dict (and its siblings
+# below for secrets/logs) is the ONLY thing that may ever be interpolated
+# into an ORDER BY — SQLite can't bind an ORDER BY expression as a query
+# parameter, so an unrecognised or hostile `sort` value must fall back to
+# the table's default rather than reach the SQL string. See _order_by().
+_FINDINGS_SORTS: dict[str, str] = {
+    "priority": "priority_score",
+    "repo": "repo_full_name",
+    "package": "package_name",
+    "installed": "installed_version",
+    "fixed": "fixed_version",
+    "cvss": "cvss_score",
+    "state": "state",
+    "first_seen": "first_seen_at",
+}
+_FINDINGS_SORT_DEFAULT = "priority"
+
+# cvss_score thresholds mirror main._cvss_severity() exactly — keep both in
+# sync if the bands ever change. These are fixed literal strings selected by
+# a dict lookup on a known-safe key, never interpolated user input.
+_SEVERITY_RANGES: dict[str, str] = {
+    "critical": "cvss_score >= 9.0",
+    "high": "cvss_score >= 7.0 AND cvss_score < 9.0",
+    "medium": "cvss_score >= 4.0 AND cvss_score < 7.0",
+    "low": "cvss_score IS NOT NULL AND cvss_score < 4.0",
+    "unknown": "cvss_score IS NULL",
+}
+
+
+def _order_by(sorts: dict[str, str], default: str, sort: str | None, direction: str | None) -> str:
+    """Build a safe `ORDER BY` clause from a whitelist.
+
+    `sort` and `direction` are arbitrary query-string input — only a key
+    already present in `sorts` (or `default`, which always is) may select a
+    column; direction is reduced to a fixed ASC/DESC literal. A trailing
+    `id DESC` tiebreak keeps pagination stable when many rows share a sort
+    value (without it, rows can repeat or vanish across pages).
+    """
+    column = sorts.get(sort or "", sorts[default])
+    desc = (direction or "desc").lower() != "asc"
+    dir_sql = "DESC" if desc else "ASC"
+    nulls = " NULLS LAST" if desc else ""
+    return f"ORDER BY {column} {dir_sql}{nulls}, id DESC"
+
+
 def _findings_where(
     state: str | None,
     repo: str | None,
     since: str | None = None,
-    until: str | None = None,
+    severity: str | None = None,
 ) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause for findings list/count/export queries.
 
     Pseudo-states: 'unresolved' expands to state IN ('new','acknowledged');
-    'all' is treated as no state filter. since/until bound first_seen_at.
+    'all' is treated as no state filter. `since` lower-bounds first_seen_at
+    and is only ever set for the 'new' tab (see main._state_window) — there
+    is deliberately no upper bound, which is what makes 'unresolved' a
+    strict superset of 'new' rather than disjoint from it.
+    severity is a key into _SEVERITY_RANGES (a derived cvss_score band, not
+    a real column) — an unrecognised key is silently ignored rather than
+    raising, matching how an unrecognised state/repo behaves here.
     """
     clauses: list[str] = []
     params: list[Any] = []
@@ -967,12 +1032,11 @@ def _findings_where(
     if since:
         clauses.append("first_seen_at >= ?")
         params.append(since)
-    if until:
-        clauses.append("first_seen_at < ?")
-        params.append(until)
     if repo:
         clauses.append("repo_full_name = ?")
         params.append(repo)
+    if severity and severity in _SEVERITY_RANGES:
+        clauses.append(_SEVERITY_RANGES[severity])
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -983,15 +1047,18 @@ def get_findings(
     state: str | None = None,
     repo: str | None = None,
     since: str | None = None,
-    until: str | None = None,
+    severity: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return findings, optionally filtered by state and/or repo."""
-    where, params = _findings_where(state, repo, since=since, until=until)
+    where, params = _findings_where(state, repo, since=since, severity=severity)
+    order = _order_by(_FINDINGS_SORTS, _FINDINGS_SORT_DEFAULT, sort, direction)
     params.extend([limit, offset])
     return conn.execute(
-        f"SELECT * FROM findings {where} ORDER BY priority_score DESC NULLS LAST LIMIT ? OFFSET ?",
+        f"SELECT * FROM findings {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -1002,12 +1069,37 @@ def get_findings_count(
     state: str | None = None,
     repo: str | None = None,
     since: str | None = None,
-    until: str | None = None,
+    severity: str | None = None,
 ) -> int:
     """Return total count of findings matching the given filters."""
-    where, params = _findings_where(state, repo, since=since, until=until)
+    where, params = _findings_where(state, repo, since=since, severity=severity)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM findings {where}", params).fetchone()
     return int(row["n"] or 0)
+
+
+def get_finding_repos(
+    conn: sqlite3.Connection,
+    *,
+    state: str | None = None,
+    since: str | None = None,
+) -> list[str]:
+    """Distinct repo names among findings matching the state/time filter.
+
+    Backs the /findings repo dropdown, which must not offer a repo that
+    would yield an empty table under the active state tab.
+
+    Deliberately takes no `severity`: filtering by it looks correct but
+    would make the *currently selected* repo vanish from its own dropdown
+    whenever that repo has no findings in the selected severity band. The
+    proper fix is to union the active repo_filter back in; until then this
+    over-offers rather than dropping the user's own selection.
+    """
+    where, params = _findings_where(state, repo=None, since=since)
+    rows = conn.execute(
+        f"SELECT DISTINCT repo_full_name FROM findings {where} ORDER BY repo_full_name",  # noqa: S608
+        params,
+    ).fetchall()
+    return [r["repo_full_name"] for r in rows]
 
 
 def get_new_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1185,16 +1277,30 @@ def upsert_secret_finding(conn: sqlite3.Connection, finding: dict) -> bool:
     return False
 
 
+_SECRETS_SORTS: dict[str, str] = {
+    "repo": "repo_full_name",
+    "secret_type": "secret_type",
+    "file": "file_path",
+    "line": "line_number",
+    "commit": "commit_sha",
+    "first_seen": "first_seen_at",
+    "state": "state",
+}
+_SECRETS_SORT_DEFAULT = "first_seen"
+
+
 def _secrets_where(
     state: str | None,
     repo: str | None,
     since: str | None = None,
-    until: str | None = None,
 ) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause for secret findings queries.
 
     Pseudo-states: 'unresolved' maps to state='new'; 'all' means no state filter.
-    since/until bound first_seen_at (used by New and Unresolved tabs).
+    `since` lower-bounds first_seen_at and is only ever set for the 'new' tab
+    (see main._state_window) — there is deliberately no upper bound, which is
+    what makes 'unresolved' a strict superset of 'new' rather than disjoint
+    from it.
     """
     clauses: list[str] = []
     params: list[Any] = []
@@ -1206,9 +1312,6 @@ def _secrets_where(
     if since:
         clauses.append("first_seen_at >= ?")
         params.append(since)
-    if until:
-        clauses.append("first_seen_at < ?")
-        params.append(until)
     if repo:
         clauses.append("repo_full_name = ?")
         params.append(repo)
@@ -1222,15 +1325,17 @@ def get_secret_findings(
     state: str | None = None,
     repo: str | None = None,
     since: str | None = None,
-    until: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> list[sqlite3.Row]:
     """Return secret findings, optionally filtered by state and/or repo."""
-    where, params = _secrets_where(state, repo, since=since, until=until)
+    where, params = _secrets_where(state, repo, since=since)
+    order = _order_by(_SECRETS_SORTS, _SECRETS_SORT_DEFAULT, sort, direction)
     params.extend([limit, offset])
     return conn.execute(
-        f"SELECT * FROM secret_findings {where} ORDER BY first_seen_at DESC LIMIT ? OFFSET ?",
+        f"SELECT * FROM secret_findings {where} {order} LIMIT ? OFFSET ?",  # noqa: S608
         params,
     ).fetchall()
 
@@ -1241,12 +1346,30 @@ def get_secret_findings_count(
     state: str | None = None,
     repo: str | None = None,
     since: str | None = None,
-    until: str | None = None,
 ) -> int:
     """Return total count of secret findings matching the given filters."""
-    where, params = _secrets_where(state, repo, since=since, until=until)
+    where, params = _secrets_where(state, repo, since=since)
     row = conn.execute(f"SELECT COUNT(*) AS n FROM secret_findings {where}", params).fetchone()
     return int(row["n"] or 0)
+
+
+def get_secret_repos(
+    conn: sqlite3.Connection,
+    *,
+    state: str | None = None,
+    since: str | None = None,
+) -> list[str]:
+    """Distinct repo names among secret findings matching the state/time filter.
+
+    The /secrets counterpart of get_finding_repos() — backs the repo
+    dropdown, which must not offer a repo with no rows under the active tab.
+    """
+    where, params = _secrets_where(state, repo=None, since=since)
+    rows = conn.execute(
+        f"SELECT DISTINCT repo_full_name FROM secret_findings {where} ORDER BY repo_full_name",  # noqa: S608
+        params,
+    ).fetchall()
+    return [r["repo_full_name"] for r in rows]
 
 
 def get_unnotified_secret_findings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1338,13 +1461,34 @@ def bulk_update_secret_state(conn: sqlite3.Connection, ids: list[int], action: s
             ids,
         )
     elif action == "resolve":
+        # `state != 'resolved'`, not `state = 'new'`: the single-item
+        # mark_secret_finding_resolved() accepts anything but 'resolved', so
+        # guarding on 'new' here meant bulk-resolving a false_positive row
+        # silently reported {"updated": 0} while doing the same thing
+        # one-at-a-time worked. Keep the two paths on the same guard.
         cur = conn.execute(
-            f"UPDATE secret_findings SET state = 'resolved' WHERE id IN ({ph}) AND state = 'new'",
+            f"UPDATE secret_findings SET state = 'resolved' WHERE id IN ({ph}) AND state != 'resolved'",
             ids,
         )
     else:
         return 0
     return cur.rowcount
+
+
+def reopen_secret_finding(conn: sqlite3.Connection, finding_id: int) -> bool:
+    """Revert a resolved secret finding back to 'new'. Returns True if updated.
+
+    Clears notified_at so the notifier re-alerts on it, mirroring how
+    bulk_update_finding_state()'s reopen treats dependency findings. Without
+    this a resolved secret was a dead end — findings have always offered
+    Reopen from any non-new state.
+    """
+    cur = conn.execute(
+        "UPDATE secret_findings SET state = 'new', notified_at = NULL "
+        "WHERE id = ? AND state = 'resolved'",
+        (finding_id,),
+    )
+    return cur.rowcount > 0
 
 
 def get_false_positive_fingerprints(conn: sqlite3.Connection) -> set[str]:
@@ -1684,10 +1828,20 @@ def get_news_items_for_export(
     severity: str | None = None,
     source: str | None = None,
     search: str | None = None,
+    bookmarked: bool = False,
 ) -> list[sqlite3.Row]:
     """Return news items for data export (JSON/CSV), honoring the same filters
-    as the news list view so an export matches what the user is viewing."""
+    as the news list view so an export matches what the user is viewing.
+
+    `bookmarked` restricts to saved items, which is what the /personal
+    page's "Bookmarks" export means. The clause lives here rather than in
+    _news_where() because that builder is shared with the list/count
+    queries and must not grow page-specific predicates.
+    """
     where, params = _news_where(category, severity, source, search)
+    if bookmarked:
+        clause = "EXISTS (SELECT 1 FROM bookmarks b WHERE b.news_item_id = news_items.id)"
+        where = f"{where} AND {clause}" if where else f"WHERE {clause}"
     return conn.execute(
         f"""
         SELECT id, title, url, source, published_at, fetched_at,
@@ -1721,10 +1875,27 @@ def get_findings_for_export(
     *,
     state: str | None = None,
     repo: str | None = None,
+    severity: str | None = None,
+    since: str | None = None,
+    annotated: bool = False,
 ) -> list[sqlite3.Row]:
     """Return findings for data export (JSON/CSV), honoring the same filters
-    as the findings list view so an export matches what the user is viewing."""
-    where, params = _findings_where(state, repo)
+    as the findings list view so an export matches what the user is viewing.
+
+    `since` is the pseudo-state window (see main._state_window). The export
+    route computes it from the same helper the page route uses, so exporting
+    from the New tab yields the New tab's rows rather than every all-time
+    row in state='new'.
+
+    `annotated` restricts to findings carrying a note, which is what the
+    /personal page's "Findings with notes" export means. The clause lives
+    here rather than in _findings_where() because that builder is shared
+    with the list/count queries and must not grow page-specific predicates.
+    """
+    where, params = _findings_where(state, repo, since=since, severity=severity)
+    if annotated:
+        clause = "annotation IS NOT NULL AND annotation != ''"
+        where = f"{where} AND {clause}" if where else f"WHERE {clause}"
     return conn.execute(
         f"""
         SELECT id, repo_full_name, cve_id, ghsa_id, package_name,
@@ -1734,6 +1905,46 @@ def get_findings_for_export(
                manifest_path, annotation, github_issue_url
         FROM findings {where}
         ORDER BY priority_score DESC NULLS LAST
+        """,
+        params,
+    ).fetchall()
+
+
+def get_secret_findings_for_export(
+    conn: sqlite3.Connection,
+    *,
+    state: str | None = None,
+    repo: str | None = None,
+    since: str | None = None,
+) -> list[sqlite3.Row]:
+    """Return secret findings for data export (JSON/CSV), honoring the same
+    state/repo filters as the secrets list view.
+
+    The column list is explicit and deliberately narrower than SELECT * —
+    an explicit list is the only thing that stops a future schema migration
+    from silently widening the export.
+
+    No column here can hold secret material: gitleaks runs with --redact
+    (see CLAUDE.md M6), so the credential itself is never stored. Live
+    secret text exists only behind GET /api/secrets/{id}/snippet, which
+    fetches it from GitHub on demand — never call that from an export, and
+    never derive an export column from it.
+
+    `fingerprint` and `match_key` are excluded: not for leakage reasons
+    (neither holds secret text), but because both are internal dedup keys
+    whose meaning has already shifted once (see the match_key fallback in
+    upsert_secret_finding). Shipping one in an export would freeze an
+    implementation detail into a public contract; `id` plus the natural key
+    (repo/file/line/commit/rule) is what a consumer actually needs.
+    """
+    where, params = _secrets_where(state, repo, since=since)
+    return conn.execute(
+        f"""
+        SELECT id, repo_full_name, file_path, line_number, commit_sha,
+               secret_type, rule_id, state, first_seen_at, last_seen_at,
+               notified_at
+        FROM secret_findings {where}
+        ORDER BY first_seen_at DESC, id DESC
         """,
         params,
     ).fetchall()

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Dashboard — DIVE{% endblock %}
 {% block topbar_title %}Dashboard{% endblock %}
 
@@ -93,7 +94,7 @@
     {% if repo_total > 0 %}
     {% set C = 263.894 %}
     <div class="donut-wrap">
-      <svg class="donut" viewBox="0 0 120 120" aria-hidden="true">
+      <svg class="donut" viewBox="0 0 120 120" style="--donut-c:{{ C }}" aria-hidden="true">
         <circle cx="60" cy="60" r="42" fill="none" stroke="var(--panel-3)" stroke-width="14"/>
         {% set ns = namespace(off=0) %}
         {% for r in top_repos %}
@@ -152,7 +153,7 @@
       <li class="top-cve-row tier-{{ ptier }}">
         <span class="rank">{{ '%02d' % loop.index }}</span>
         <div class="bar-wrap" title="Priority {{ pscore }}">
-          <span class="bar" style="width:{{ (pscore | int) if pscore < 100 else 100 }}%"></span>
+          <span class="bar" style="--bar-pct:{{ (pscore | int) if pscore < 100 else 100 }}%;--i:{{ loop.index0 }}"></span>
         </div>
         <div class="top-cve-body">
           <strong>{{ f.cve_id or f.ghsa_id or f.package_name }}</strong>
@@ -240,7 +241,7 @@
         <h2>Open findings</h2>
       </div>
       <div class="panel-actions">
-        <a href="/api/export/findings?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+        {{ ui.export_menu('/api/export/findings') }}
         <a href="/findings?state=new" class="btn btn-primary btn-sm">View All</a>
       </div>
     </div>
@@ -312,7 +313,7 @@
       <h2>Security news</h2>
     </div>
     <div class="panel-actions">
-      <a href="/api/export/news?format=csv" class="btn btn-outline btn-sm">Export CSV</a>
+      {{ ui.export_menu('/api/export/news') }}
       <a href="/news" class="btn btn-outline btn-sm">Open feed</a>
     </div>
   </div>
@@ -361,5 +362,10 @@ function toggleBookmark(itemId) {
   })
   .catch(() => DIVE.showToast('Failed to toggle bookmark', 'error'));
 }
+
+DIVE.staggerIn('.exposure-pill');
+DIVE.staggerIn('.viz-panel, .ops-grid > .panel', { delayMs: 70 });
+DIVE.countUp('.exposure-hero-score, .exposure-pill .value');
+DIVE.revealFill('.exposure-hero-stack, .top-cve-list, .donut');
 </script>
 {% endblock %}

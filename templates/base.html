@@ -19,6 +19,7 @@
   </script>
 </head>
 <body class="page-{{ nav_active or 'default' }}">
+<a href="#page-main" class="skip-link sr-only">Skip to main content</a>
 
 {# ── Reusable SVG icon symbols ───────────────────────── #}
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -60,6 +61,15 @@
     <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor">
       <path d="M8 5.5v13c0 .8.9 1.3 1.6.9l11-6.5a1 1 0 0 0 0-1.8l-11-6.5A1 1 0 0 0 8 5.5z"/>
     </symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>
+    </symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="2"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12.5l5.5 5.5L20 6.5"/>
+    </symbol>
     <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>
     </symbol>
@@ -94,7 +104,8 @@
 <div class="app-shell">
   <header class="workspace-topbar">
     <div class="topbar-brand">
-      <button class="mobile-menu-btn" id="nav-toggle" aria-label="Open navigation" onclick="toggleNav()">
+      <button class="mobile-menu-btn" id="nav-toggle" aria-label="Open navigation"
+              aria-expanded="false" onclick="toggleNav()">
         <svg width="18" height="18"><use href="#i-menu"/></svg>
       </button>
       <a class="brand" href="/" aria-label="DIVE dashboard">
@@ -115,11 +126,20 @@
     <div class="topbar-spacer"></div>
 
     <button type="button" class="topbar-meta pipeline-status-chip" title="Pipeline status — click to view progress"
+            aria-haspopup="true" aria-expanded="false" aria-controls="pipeline-drawer"
             onclick="openPipelineDrawer()">
       <span class="status-dot idle" id="status-dot"></span>
       <span class="topbar-meta-label">Last run</span>
       <strong id="status-text">—</strong>
     </button>
+    {# A live region separate from #status-text on purpose: that node is
+       rewritten by DIVE.timeAgo() on every poll (every 5-60s) even while
+       idle, so making IT aria-live would announce "5m ago… 6m ago…" forever
+       — exactly the noisy-countdown problem next-run-text is deliberately
+       spared from. This one is only ever touched once, at the
+       running→finished edge (see updatePipelineControls), so a screen
+       reader hears "Pipeline run finished successfully" a single time. #}
+    <span id="run-status-live" class="sr-only" aria-live="polite"></span>
 
     <span class="topbar-meta optional" title="Scheduled next run">
       <svg><use href="#i-clock"/></svg>
@@ -137,26 +157,34 @@
     <span class="topbar-divider"></span>
 
     <div class="topbar-actions">
-      <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme">
+      <button class="btn-theme" id="theme-btn" onclick="toggleTheme()" title="Toggle light/dark mode"
+              aria-label="Toggle theme" aria-pressed="true">
         <svg id="theme-icon"><use href="#i-sun"/></svg>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl is-hidden" id="pause-btn"
-              onclick="togglePause()" title="Pause / resume pipeline">
-        <span id="pause-btn-label">Pause</span>
+      <button class="btn btn-outline btn-sm btn-icon pipeline-ctl is-hidden" id="pause-btn"
+              onclick="togglePause()" title="Pause pipeline" aria-label="Pause pipeline">
+        <svg id="pause-btn-icon"><use href="#i-pause"/></svg>
       </button>
-      <button class="btn btn-outline btn-sm pipeline-ctl pipeline-ctl-cancel is-hidden"
-              id="cancel-btn" onclick="cancelRun()" title="Cancel pipeline run">
-        Cancel
+      <button class="btn btn-outline btn-sm btn-icon pipeline-ctl pipeline-ctl-cancel is-hidden"
+              id="cancel-btn" onclick="cancelRun()" title="Cancel pipeline run" aria-label="Cancel pipeline run">
+        <svg><use href="#i-stop"/></svg>
       </button>
       <button class="btn-pipeline-mobile" id="pipeline-status-mobile"
+              aria-haspopup="true" aria-expanded="false" aria-controls="pipeline-drawer"
               onclick="openPipelineDrawer()" title="View pipeline progress" aria-label="View pipeline progress">
         <span class="status-dot idle" id="status-dot-mobile"></span>
         Pipeline
       </button>
-      <button class="btn btn-primary btn-sm btn-run" id="run-now-btn" onclick="triggerRun()">
-        <svg><use href="#i-play"/></svg>RUN
+      <button class="btn btn-primary btn-sm btn-run" id="run-now-btn" onclick="triggerRun()" data-state="idle">
+        <span class="run-icon"><svg><use href="#i-play"/></svg></span><span class="run-label">RUN</span>
       </button>
     </div>
+
+    {# Run progress, drawn on the topbar's bottom border. Visibility and the
+       determinate/indeterminate choice are driven by body[data-run] (see
+       _updateRunBar() below); role=progressbar needs a real element, not a
+       ::after, so this carries the ARIA state and the CSS paints on it. #}
+    <div class="run-bar" id="run-bar" role="progressbar" aria-label="Pipeline run progress"></div>
   </header>
 
   <!-- ── Pipeline progress drawer ── -->
@@ -225,7 +253,7 @@
   <div class="mobile-scrim" onclick="toggleNav()" aria-hidden="true"></div>
 
   <section class="app-workspace">
-    <main class="page-main">
+    <main class="page-main" id="page-main" tabindex="-1">
       {% block content %}{% endblock %}
     </main>
 
@@ -235,7 +263,11 @@
   </section>
 </div>
 
-<div id="toast" role="status" aria-live="polite"></div>
+{# Stacked toasts: each DIVE.showToast() call appends its own .toast-item
+   here, with role="status"/"alert" set per item in app.js — not aria-live
+   on this container, which would create a second, redundant live region
+   announcing the same insertions the item's own role already announces. #}
+<div id="toast-stack" class="toast-stack"></div>
 
 <div class="modal-backdrop" id="logout-modal" role="dialog" aria-modal="true" aria-labelledby="logout-modal-title">
   <div class="modal-panel" tabindex="-1">
@@ -293,6 +325,11 @@ function _applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   const icon = document.getElementById('theme-icon');
   if (icon) icon.innerHTML = '<use href="#' + (t === 'dark' ? 'i-sun' : 'i-moon') + '"/>';
+  // aria-pressed="true" means "dark mode is on" — a two-state toggle with no
+  // pressed state at all previously left screen-reader users unable to tell
+  // which mode was active without opening the icon's tooltip.
+  const btn = document.getElementById('theme-btn');
+  if (btn) btn.setAttribute('aria-pressed', String(t === 'dark'));
 }
 
 function toggleTheme() {
@@ -310,8 +347,15 @@ _applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
 
 /* ── Mobile nav ─────────────────────────────────────── */
 function toggleNav() {
-  document.getElementById('site-nav').classList.toggle('nav-open');
+  const isOpen = document.getElementById('site-nav').classList.toggle('nav-open');
   document.body.classList.toggle('nav-open');
+  // The trigger's label and expanded state used to stay frozen at "Open
+  // navigation" / false regardless of the actual (open or closed) state.
+  const btn = document.getElementById('nav-toggle');
+  if (btn) {
+    btn.setAttribute('aria-expanded', String(isOpen));
+    btn.setAttribute('aria-label', isOpen ? 'Close navigation' : 'Open navigation');
+  }
 }
 
 document.getElementById('site-nav').addEventListener('click', function(e) {
@@ -514,25 +558,106 @@ document.addEventListener('visibilitychange', function() {
   if (!document.hidden) pollStatus();
 });
 
-/* ── Pipeline pause / cancel controls ────────────────── */
+/* ── Pipeline pause / cancel controls, and RUN button state ──────────
+   The RUN button now stays visible for the entire run instead of being
+   swapped out for Pause/Cancel — it doubles as the run's status pill via
+   data-state (idle/loading/success/error), so its spinner actually tracks
+   the work instead of the click's ~200ms round trip. _runWasRunning is
+   what lets us detect the running→finished edge (to flash success/error)
+   without flashing it again on a plain page load right after a run. */
+let _pipelinePaused = false;
+let _runWasRunning = false;
+let _runResetTimer = null;
+
+const _RUN_ICON_HREF = { idle: '#i-play', loading: '#i-play', success: '#i-check', error: '#i-stop' };
+
+function _setRunState(state, label) {
+  clearTimeout(_runResetTimer);
+  const runBtn = document.getElementById('run-now-btn');
+  if (!runBtn) return;
+  runBtn.dataset.state = state;
+  runBtn.disabled = (state === 'loading');
+  const labelEl = runBtn.querySelector('.run-label');
+  if (labelEl) labelEl.textContent = label;
+  const use = runBtn.querySelector('.run-icon use');
+  if (use) use.setAttribute('href', _RUN_ICON_HREF[state] || '#i-play');
+  if (state === 'success' || state === 'error') {
+    _runResetTimer = setTimeout(() => _setRunState('idle', 'RUN'), 3000);
+  }
+}
+
+/* Topbar run bar: determinate (scaleX of the current step's done/total)
+ * when the running step reports a total, indeterminate sweep otherwise.
+ * Reuses the same pipeline payload updatePipelineControls() already has —
+ * no separate poll. */
+function _updateRunBar(pipeline) {
+  const bar = document.getElementById('run-bar');
+  const topbar = document.querySelector('.workspace-topbar');
+  if (!bar || !topbar) return;
+
+  if (!pipeline.running) {
+    document.body.dataset.run = 'idle';
+    bar.removeAttribute('aria-valuenow');
+    bar.removeAttribute('aria-valuemin');
+    bar.removeAttribute('aria-valuemax');
+    bar.removeAttribute('aria-valuetext');
+    return;
+  }
+
+  const stepKey = pipeline.current_step;
+  const prog = stepKey && pipeline.step_progress ? pipeline.step_progress[stepKey] : null;
+  if (prog && prog.total > 0) {
+    document.body.dataset.run = 'running';
+    const ratio = Math.max(0, Math.min(1, prog.done / prog.total));
+    topbar.style.setProperty('--run-progress', String(ratio));
+    bar.setAttribute('aria-valuemin', '0');
+    bar.setAttribute('aria-valuemax', String(prog.total));
+    bar.setAttribute('aria-valuenow', String(prog.done));
+    bar.removeAttribute('aria-valuetext');
+  } else {
+    document.body.dataset.run = 'indeterminate';
+    bar.removeAttribute('aria-valuenow');
+    bar.removeAttribute('aria-valuemin');
+    bar.removeAttribute('aria-valuemax');
+    bar.setAttribute('aria-valuetext', 'Running');
+  }
+}
+
 function updatePipelineControls(pipeline) {
   const pauseBtn = document.getElementById('pause-btn');
   const cancelBtn = document.getElementById('cancel-btn');
   const runBtn = document.getElementById('run-now-btn');
   if (!pauseBtn || !cancelBtn || !runBtn) return;
 
+  _updateRunBar(pipeline);
   pauseBtn.classList.toggle('is-hidden', !pipeline.running);
   cancelBtn.classList.toggle('is-hidden', !pipeline.running);
-  runBtn.classList.toggle('is-hidden', pipeline.running);
   if (pipeline.running) {
-    document.getElementById('pause-btn-label').textContent = pipeline.paused ? 'Resume' : 'Pause';
-    pauseBtn.classList.toggle('is-paused', !!pipeline.paused);
+    _pipelinePaused = !!pipeline.paused;
+    pauseBtn.querySelector('use').setAttribute('href', _pipelinePaused ? '#i-play' : '#i-pause');
+    pauseBtn.title = _pipelinePaused ? 'Resume pipeline' : 'Pause pipeline';
+    pauseBtn.setAttribute('aria-label', pauseBtn.title);
+    pauseBtn.classList.toggle('is-paused', _pipelinePaused);
+    _setRunState('loading', 'RUNNING');
+  } else if (_runWasRunning) {
+    const live = document.getElementById('run-status-live');
+    if (pipeline.last_status === 'success') {
+      _setRunState('success', 'DONE');
+      if (live) live.textContent = 'Pipeline run finished successfully.';
+    } else if (pipeline.last_status === 'error') {
+      _setRunState('error', 'FAILED');
+      if (live) live.textContent = 'Pipeline run failed.';
+    } else {
+      _setRunState('idle', 'RUN');
+    }
+  } else if (runBtn.dataset.state !== 'success' && runBtn.dataset.state !== 'error') {
+    _setRunState('idle', 'RUN');
   }
+  _runWasRunning = !!pipeline.running;
 }
 
 function togglePause() {
-  const label = document.getElementById('pause-btn-label').textContent;
-  const wantPause = label === 'Pause';
+  const wantPause = !_pipelinePaused;
   DIVE.apiFetch('/api/run/pause', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -613,12 +738,20 @@ window.addEventListener('beforeunload', function(e) {
 });
 
 /* ── Pipeline drawer ─────────────────────────────────── */
+function _setDrawerTriggersExpanded(expanded) {
+  ['.pipeline-status-chip', '#pipeline-status-mobile'].forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.setAttribute('aria-expanded', String(expanded));
+  });
+}
+
 function openPipelineDrawer() {
   const drawer = document.getElementById('pipeline-drawer');
   if (!drawer) return;
   drawer.classList.add('open');
   drawer.removeAttribute('aria-hidden');
   drawer.inert = false;
+  _setDrawerTriggersExpanded(true);
 }
 
 function closePipelineDrawer() {
@@ -628,6 +761,7 @@ function closePipelineDrawer() {
   drawer.setAttribute('aria-hidden', 'true');
   drawer.inert = true;
   _drawerUserClosed = true;
+  _setDrawerTriggersExpanded(false);
 }
 
 document.addEventListener('click', function(e) {
@@ -843,7 +977,13 @@ pollStatus();
 
   function canIntercept(a) {
     const href = a.getAttribute('href');
-    if (!href || href === '#' || href.startsWith('javascript:')) return false;
+    // Any same-page anchor (not just the bare "#" this already excluded) —
+    // otherwise pjax hijacks it into a full re-fetch-and-replace of
+    // .page-main, which drops the native browser behavior a fragment link
+    // depends on (scroll + move focus to the target). This is exactly what
+    // broke the skip link: activating it silently re-fetched the current
+    // page instead of ever focusing #page-main.
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return false;
     if (a.target === '_blank' || a.hasAttribute('download')) return false;
     try { if (new URL(href).origin !== location.origin) return false; } catch (_) {}
     const path = href.split('?')[0];
@@ -879,6 +1019,11 @@ pollStatus();
   async function navigate(url) {
     if (busy) return;
     busy = true;
+    // Close any open menu before swapping .page-main — a portal-mode menu
+    // panel (see DIVE.menu in app.js) lives in #menu-layer, OUTSIDE
+    // .page-main, so it would otherwise survive the innerHTML swap below as
+    // an orphaned, unclosable panel.
+    if (window.DIVE && DIVE.closeAllMenus) DIVE.closeAllMenus();
     _unsavedDirty = false;
     _unsavedOnSave = null;
     try {
@@ -948,6 +1093,7 @@ pollStatus();
   async function refreshCurrentPage() {
     if (busy) return;
     busy = true;
+    if (window.DIVE && DIVE.closeAllMenus) DIVE.closeAllMenus();
     const scrollY = window.scrollY;
     try {
       const res = await fetch(currentUrl, { credentials: 'same-origin' });
@@ -968,13 +1114,17 @@ pollStatus();
   }
   window.DIVE = window.DIVE || {};
   DIVE.refreshPage = refreshCurrentPage;
+  /* Exposed for the ⌘K command palette (static/app.js), which navigates to
+     destinations that have no anchor to click — a filter jump like
+     /findings?state=new isn't a link anywhere in the UI. Going through this
+     function rather than assigning window.location is what keeps a palette
+     jump a pjax swap instead of a full reload. */
+  DIVE.navigate = navigate;
 })();
 
 /* ── Run Now ─────────────────────────────────────────── */
 function triggerRun() {
-  const btn = document.getElementById('run-now-btn');
-  btn.disabled = true;
-  btn.classList.add('is-loading');
+  _setRunState('loading', 'RUNNING');
   DIVE.apiFetch('/api/run', { method: 'POST' })
   .then(r => r.json())
   .then(data => {
@@ -984,27 +1134,50 @@ function triggerRun() {
       _pollDelay = 2000;
       pollStatus();
       setTimeout(() => { _pollDelay = POLL_BASE_DELAY; }, 60000);
-      // Left disabled/loading — updatePipelineControls() hides this button
-      // as soon as the next poll confirms the run is underway.
+      // Left in the loading state — updatePipelineControls() picks up
+      // pipeline.running on the next poll and keeps it there (or flashes
+      // success/error) for the life of the run.
     } else if (data.status === 'already_running') {
       DIVE.showToast('Pipeline is already running', 'info');
-      btn.disabled = false;
-      btn.classList.remove('is-loading');
+      _setRunState('idle', 'RUN');
     } else {
       DIVE.showToast(data.message || 'Unknown response', 'info');
-      btn.disabled = false;
-      btn.classList.remove('is-loading');
+      _setRunState('idle', 'RUN');
     }
   })
   .catch(() => {
     DIVE.showToast('Failed to trigger run', 'error');
-    btn.disabled = false;
-    btn.classList.remove('is-loading');
+    _setRunState('idle', 'RUN');
   });
 }
 </script>
 
 <script id="page-scripts-fence"></script>
 {% block scripts %}{% endblock %}
+
+<!-- Portal target for menu panels that would otherwise be clipped by an
+     ancestor's overflow:hidden/auto (table cards, .table-wrap). See
+     DIVE.menu (static/app.js) and the "Menu component" block in style.css. -->
+<div id="menu-layer"></div>
+
+<!-- ⌘K command palette. Lives outside .page-main so the pjax swap never
+     touches it, and is driven entirely from static/app.js (loaded once,
+     without data-pjax) so its single keydown listener is never re-registered.
+
+     Combobox + listbox, NOT role=menu: focus stays on the input while
+     aria-activedescendant points at the highlighted option, which is the
+     pattern screen readers expect for a filter-as-you-type list. -->
+<div id="command-palette" class="command-palette" aria-hidden="true">
+  <div class="command-scrim" data-role="scrim"></div>
+  <div class="command-panel" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input type="text" id="command-input" class="command-input"
+           role="combobox" aria-expanded="true" aria-controls="command-list"
+           aria-autocomplete="list" aria-label="Search commands"
+           placeholder="Search commands…" autocomplete="off" spellcheck="false">
+    <ul id="command-list" class="command-list" role="listbox" aria-label="Commands"></ul>
+    <p class="command-empty" hidden>No matching commands</p>
+    <div id="command-status" class="sr-only" aria-live="polite"></div>
+  </div>
+</div>
 </body>
 </html>

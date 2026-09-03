@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Vulnerabilities — DIVE{% endblock %}
 {% block topbar_title %}Vulnerabilities{% endblock %}
 
@@ -8,34 +9,39 @@
     <h1 class="sr-only">Vulnerabilities</h1>
     <p class="heading-copy">Prioritised by exploitability, KEV signal, patch availability, and repository ownership.</p>
   </div>
-  {# Carry the active filters into the export URL so exports match the view. #}
+  {# Carry the active filters into the export URL: the export returns the same
+     ROWS as the view (all pages, priority-ordered), not the same page or the
+     same sort order. The New tab's time window is recomputed server-side from
+     `state` via main._state_window(), so it is deliberately not a URL param. #}
   {% set _exp = (('&state=' ~ state_filter|urlencode) if state_filter and state_filter != 'all' else '')
-              ~ (('&repo='  ~ repo_filter|urlencode)  if repo_filter  else '') %}
+              ~ (('&repo='  ~ repo_filter|urlencode)  if repo_filter  else '')
+              ~ (('&severity=' ~ severity_filter|urlencode) if severity_filter else '') %}
   <div class="hero-actions">
     <span class="badge badge-unknown">{{ pagination.total }} total</span>
-    <a href="/api/export/findings?format=json{{ _exp }}" class="btn btn-outline btn-sm">Export JSON</a>
-    <a href="/api/export/findings?format=csv{{ _exp }}"  class="btn btn-outline btn-sm">Export CSV</a>
+    {{ ui.export_menu('/api/export/findings', _exp) }}
   </div>
 </section>
 
 <!-- ── Filter bar ───────────────────────────────────── -->
-{# Preserve repo filter across state changes so the two filters compose. #}
-{% set _r_first = ('?repo=' ~ repo_filter|urlencode) if repo_filter else '' %}
-{% set _r_and   = ('&repo=' ~ repo_filter|urlencode) if repo_filter else '' %}
+{# "Open" is every unresolved finding; "New this run" is the subset first seen
+   in the latest successful scan. Open is a strict SUPERSET of New — the two
+   used to be disjoint, which hid brand-new findings from the Open view. #}
+{% set _state_options = [('all','All'),('unresolved','Open'),('new','New this run'),('acknowledged','Acknowledged'),('resolved','Resolved')] %}
+{% set _state_tips = {'all':'Every finding, any state','unresolved':'All findings still open (new or acknowledged)','new':'Open findings first seen in the latest successful scan','acknowledged':'Seen and triaged, not yet resolved','resolved':'No longer present, or manually resolved'} %}
 <div class="filter-bar">
-  <a href="/findings?state=all{{ _r_and }}"            class="btn btn-sm {{ 'btn-primary' if state_filter == 'all'          else 'btn-outline' }}">All</a>
-  <a href="/findings?state=unresolved{{ _r_and }}"     class="btn btn-sm {{ 'btn-primary' if state_filter == 'unresolved'   else 'btn-outline' }}">Unresolved</a>
-  <a href="/findings?state=new{{ _r_and }}"            class="btn btn-sm {{ 'btn-primary' if state_filter == 'new'          else 'btn-outline' }}">New</a>
-  <a href="/findings?state=acknowledged{{ _r_and }}"   class="btn btn-sm {{ 'btn-primary' if state_filter == 'acknowledged' else 'btn-outline' }}">Acknowledged</a>
-  <a href="/findings?state=resolved{{ _r_and }}"       class="btn btn-sm {{ 'btn-primary' if state_filter == 'resolved'     else 'btn-outline' }}">Resolved</a>
+  {# Every href is built by the with_params filter, so switching state now
+     KEEPS severity/sort/direction/per_page instead of silently dropping
+     them — the old hand-built href carried only `repo`. #}
+  {{ ui.param_menu(request.url, 'state', _state_options, state_filter or 'unresolved',
+                   prefix='State: ', tips=_state_tips, aria_label='Filter by state') }}
 
   {% if repos %}
-  <select onchange="applyRepoFilter(this.value)" style="max-width:220px" aria-label="Filter by repository">
-    <option value="">All repos</option>
-    {% for r in repos %}
-    <option value="{{ r }}" {{ 'selected' if repo_filter == r else '' }}>{{ r }}</option>
-    {% endfor %}
-  </select>
+  {# data-filter-source="repo" is the contract static/table-tools.js scrapes
+     to build the Repo column-header filter. Changing it here without
+     changing _filterOptions('repo') there silently deletes that feature. #}
+  {{ ui.param_menu(request.url, 'repo', repos, repo_filter or '',
+                   empty_label='All repos', prefix='Repo: ',
+                   filter_source='repo', aria_label='Filter by repository') }}
   {% endif %}
 
   <span id="bulk-inline" style="display:none;align-items:center;gap:0.4rem;margin-left:auto">
@@ -47,29 +53,39 @@
   </span>
 </div>
 
+{# Severity is settable ONLY from the Severity column-header menu, which is
+   hidden entirely below 700px (thead is display:none there). Without these
+   chips an active severity filter is invisible and unremovable on mobile. #}
+{% set _chips = [] %}
+{% if state_filter and state_filter != 'unresolved' %}{% set _ = _chips.append({'label': 'State: ' ~ _state_options | selectattr('0','equalto',state_filter) | map(attribute='1') | first | default(state_filter), 'href': request.url | with_params(state=None)}) %}{% endif %}
+{% if repo_filter %}{% set _ = _chips.append({'label': 'Repo: ' ~ repo_filter, 'href': request.url | with_params(repo=None)}) %}{% endif %}
+{% if severity_filter %}{% set _ = _chips.append({'label': 'Severity: ' ~ severity_filter | capitalize, 'href': request.url | with_params(severity=None)}) %}{% endif %}
+{{ ui.filter_chips(_chips, '/findings') }}
+
 
 <!-- ── Table ────────────────────────────────────────── -->
 {% if findings %}
 <div class="card" style="padding:0;overflow:hidden">
   <div class="table-wrap">
-    <table class="table-stack">
+    <table class="table-stack" data-table-tools="findings" data-mode="server"
+           data-default-sort="priority" data-default-direction="desc">
       <thead>
         <tr>
-          <th style="width:2rem;padding-right:0">
+          <th style="width:2rem;padding-right:0" data-no-resize>
             <input type="checkbox" id="select-all" title="Select all"
                    onchange="toggleAll(this.checked)"
                    style="cursor:pointer">
           </th>
-          <th>Priority</th>
-          <th>Repo</th>
-          <th>Package</th>
-          <th data-tip="Version in the repository's manifest">Installed</th>
+          <th data-col="priority">Priority</th>
+          <th data-col="repo" data-filter="repo">Repo</th>
+          <th data-col="package">Package</th>
+          <th data-col="installed" data-tip="Version in the repository's manifest">Installed</th>
           <th data-tip="Vulnerable version range">Affected</th>
-          <th data-tip="First release that includes the patch">Patched</th>
+          <th data-col="fixed" data-tip="First release that includes the patch">Patched</th>
           <th data-tip="Latest release on the package registry">Latest</th>
           <th>CVE / GHSA</th>
-          <th>Severity</th>
-          <th>State</th>
+          <th data-col="cvss" data-filter="severity">Severity</th>
+          <th data-col="state">State</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -194,20 +210,42 @@
           </td>
 
           <!-- Actions -->
-          <td data-label="Actions" onclick="event.stopPropagation()">
-            <div class="td-actions">
+          <td data-label="Actions">
+            {# No stopPropagation needed: the row's own click guard already
+               excludes clicks on <a>/<button> (openBestSource above), and
+               stopPropagation here would stop the click from ever bubbling
+               to document — where DIVE's menu click-delegation lives. #}
+            {# Quick actions: the state-appropriate primary action(s), one
+               click instead of two. Hidden until hover/focus above 700px
+               (see .row-quick); the ⋯ menu keeps every action regardless,
+               so nothing here is hover-only reachable. Same doAction() as
+               the menu items below — same Submit States + Undo behavior. #}
+            <span class="row-quick">
               {% if f.state == 'new' %}
-                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Ack</button>
-                <button class="btn btn-success btn-sm" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
-              {% elif f.state == 'acknowledged' %}
-                <button class="btn btn-success btn-sm" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
-                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Acknowledge</button>
+                <button type="button" class="btn btn-success btn-sm" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
               {% elif f.state == 'resolved' %}
-                <button class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
               {% endif %}
-              <button class="btn btn-outline btn-sm"
-                      onclick='openAnnotation({{ f.id }}, {{ f.annotation | tojson }})'
-                      title="Add/edit note" aria-label="Add or edit note">Note</button>
+            </span>
+            <div class="menu" data-menu="portal">
+              <button type="button" class="btn btn-outline btn-sm btn-icon menu-trigger"
+                      aria-haspopup="menu" aria-expanded="false"
+                      aria-label="Actions for {{ f.package_name }}">⋯</button>
+              <div class="menu-panel" role="menu">
+                {% if f.state == 'new' %}
+                  <button type="button" role="menuitem" style="--i:0" onclick="doAction(this, {{ f.id }}, 'acknowledge')">Acknowledge</button>
+                  <button type="button" role="menuitem" class="is-success" style="--i:1" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
+                {% elif f.state == 'acknowledged' %}
+                  <button type="button" role="menuitem" class="is-success" style="--i:0" onclick="doAction(this, {{ f.id }}, 'resolve')">Resolve</button>
+                  <button type="button" role="menuitem" style="--i:1" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
+                {% elif f.state == 'resolved' %}
+                  <button type="button" role="menuitem" style="--i:0" onclick="doAction(this, {{ f.id }}, 'reopen')">Reopen</button>
+                {% endif %}
+                <div class="menu-sep" role="separator"></div>
+                <button type="button" role="menuitem" style="--i:2"
+                        onclick='openAnnotation({{ f.id }}, {{ f.annotation | tojson }})'>Note…</button>
+              </div>
             </div>
           </td>
 
@@ -251,11 +289,7 @@
     {% endif %}
   </div>
   <div class="pagination-size">
-    <select onchange="DIVE.setPageSize(this.value)" title="Rows per page" aria-label="Rows per page">
-      {% for s in pagination.page_size_options %}
-      <option value="{{ s }}" {{ 'selected' if s == pagination.per_page else '' }}>{{ s }} / page</option>
-      {% endfor %}
-    </select>
+    {{ ui.page_size_menu(request.url, pagination) }}
   </div>
 </div>
 {% endif %}
@@ -277,6 +311,7 @@
 
 {% block scripts %}
 <script src="/static/bulk-selection.js" data-pjax></script>
+<script src="/static/table-tools.js" data-pjax></script>
 <script>
 /* ── Row click — open best external source directly ─── */
 function openBestSource(cveId, ghsaId) {
@@ -286,44 +321,73 @@ function openBestSource(cveId, ghsaId) {
   if (url) window.open(url, '_blank', 'noopener');
 }
 
-/* Bulk selection helpers (_selected, toggleRow, toggleAll, _updateBulkBar,
-   applyRepoFilter, setPageSize) live in /static/bulk-selection.js. */
+/* Bulk selection helpers (_selected, toggleRow, toggleAll, _updateBulkBar)
+   live in /static/bulk-selection.js. The repo and per-page controls no
+   longer call into JS at all — they are ui.param_menu link menus whose
+   hrefs are built server-side by the with_params filter. */
+/* Past-tense labels — 'reopen' + 'd' used to render "Finding reopend". */
+var _FINDING_ACTION_LABELS = { acknowledge: 'acknowledged', resolve: 'resolved', reopen: 'reopened' };
+/* Only acknowledge/resolve are undoable (reopen back to 'new' is itself
+   often the undo of one of those, and there's no further undo behind it). */
+var _FINDING_UNDOABLE = { acknowledge: true, resolve: true };
+
 function bulkAction(action) {
   if (!_selected.size) { DIVE.showToast('No rows selected', 'info'); return; }
-  DIVE.apiFetch('/api/findings/bulk', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids: [..._selected], action }),
-  })
-  .then(r => {
-    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
-    return r.json();
-  })
-  .then(d => {
-    DIVE.showToast(d.updated + ' finding(s) updated', 'success');
-    setTimeout(() => DIVE.refreshPage(), 700);
-  })
-  .catch(err => DIVE.showToast(err.message, 'error'));
+  const ids = [..._selected];
+  const label = _FINDING_ACTION_LABELS[action] || action;
+  DIVE.postAction('/api/findings/bulk', { ids, action })
+    .then((d) => {
+      const message = d.updated + ' finding(s) ' + label;
+      if (_FINDING_UNDOABLE[action]) {
+        // Bulk refreshes immediately (per-row Undo instead delays the
+        // refresh — see doAction) since there's no single row to hold
+        // steady here; Undo re-fetches and refreshes again itself.
+        DIVE.undoSnackbar(message, () => {
+          DIVE.postAction('/api/findings/bulk', { ids, action: 'reopen' })
+            .then(() => DIVE.showToast('Restored', 'success'))
+            .catch(() => DIVE.showToast('Could not undo', 'error'))
+            .finally(() => DIVE.refreshPage());
+        });
+      } else {
+        DIVE.showToast(message, 'success');
+      }
+      DIVE.refreshPage();
+    })
+    .catch((err) => DIVE.showToast(err.message, 'error'));
 }
 
 function doAction(btn, id, action) {
-  btn.disabled = true;
-  btn.classList.add('is-loading');
-  DIVE.apiFetch('/api/findings/' + id + '/' + action, {
-    method: 'POST',
-  })
-  .then(r => {
-    if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Request failed'); });
-    return r.json();
-  })
-  .then(() => {
-    DIVE.showToast('Finding ' + action + 'd', 'success');
-    setTimeout(() => DIVE.refreshPage(), 700);
-  })
-  .catch(err => {
-    DIVE.showToast(err.message, 'error');
-    btn.disabled = false;
-    btn.classList.remove('is-loading');
+  const label = _FINDING_ACTION_LABELS[action] || action;
+  DIVE.submitButton(btn, DIVE.postAction('/api/findings/' + id + '/' + action), {
+    onSuccess: () => {
+      DIVE.closeAllMenus();
+      if (_FINDING_UNDOABLE[action]) {
+        // Refresh only on expiry/undo, not immediately: the row stays
+        // exactly as-is for the whole undo window instead of vanishing (or
+        // the list re-sorting under it) the instant the action fires.
+        DIVE.undoSnackbar('Finding ' + label, () => {
+          DIVE.postAction('/api/findings/' + id + '/reopen')
+            .then(() => DIVE.showToast('Restored', 'success'))
+            .catch(() => DIVE.showToast('Could not undo — refreshing', 'error'))
+            .finally(() => DIVE.refreshPage());
+        }, { onExpire: () => DIVE.refreshPage() });
+      } else {
+        DIVE.showToast('Finding ' + label, 'success');
+        DIVE.refreshPage();
+      }
+    },
+    onError: (err) => {
+      // acknowledge/resolve/reopen all guard on the finding's CURRENT
+      // state (lifecycle.py), so acting on one already changed elsewhere
+      // returns 404, not a generic failure — the view is just stale.
+      if (err.status === 404) {
+        DIVE.showToast('Already changed — refreshing', 'info');
+        DIVE.closeAllMenus();
+        DIVE.refreshPage();
+      } else {
+        DIVE.showToast(err.message, 'error');
+      }
+    },
   });
 }
 
@@ -331,6 +395,7 @@ function doAction(btn, id, action) {
 var _annotatingId = null;
 
 function openAnnotation(id, current) {
+  DIVE.closeAllMenus();
   _annotatingId = id;
   document.getElementById('annotation-input').value = current || '';
   DIVE.openModal('annotation-modal');

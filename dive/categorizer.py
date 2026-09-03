@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_BATCH_SIZE = 10
 MAX_RETRIES = 2
 HTTP_TIMEOUT = 120.0  # Ollama on Pi 4 can be slow — 2 min budget per batch
 UNCATEGORIZED_WARNING_THRESHOLD = 0.20  # warn if >20% of items fall back
@@ -83,17 +82,22 @@ def run(
     conn: sqlite3.Connection,
     config: AppConfig,
     on_progress: Callable[[int, int], None] | None = None,
+    max_items: int | None = None,
 ) -> CategorizerStats:
-    """Categorize all pending news items and write results to the database.
+    """Categorize pending news items and write results to the database.
 
     Processes items in batches of BATCH_SIZE. Never raises — individual batch
     failures fall back to Uncategorized/Unknown.
 
     on_progress(done, total) is called after each batch so callers can track
     real-time progress (e.g. to update the pipeline drawer).
+
+    max_items caps how many pending items are fetched (default 500, the
+    pipeline step's full-catchup cap). Pass the batch size to process at most
+    one batch — used by the idle catch-up job so a single tick can't run long.
     """
     stats = CategorizerStats()
-    items = db.get_uncategorized_items(conn, limit=500)
+    items = db.get_uncategorized_items(conn, limit=max_items or 500)
 
     if not items:
         logger.info("No uncategorized items — nothing to do")

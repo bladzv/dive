@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}History — DIVE{% endblock %}
 {% block topbar_title %}History{% endblock %}
 
@@ -9,14 +10,14 @@
     <p class="heading-copy">Collection volume, source health, and pipeline run history.</p>
   </div>
   <div class="hero-actions">
-    <label for="days-select" style="color:var(--text-subtle);font-size:0.74rem;font-weight:600;text-transform:uppercase;letter-spacing:0.08em">Window</label>
-    <select id="days-select" style="max-width:120px"
-            onchange="loadAll()">
-      <option value="7">7 days</option>
-      <option value="14">14 days</option>
-      <option value="30" selected>30 days</option>
-      <option value="90">90 days</option>
-    </select>
+    {# field_menu, not <select>: getDays() below still reads
+       #days-select's .value — that id is now a hidden <input> mirror, and
+       the label must target the trigger (a hidden input isn't focusable). #}
+    <label for="days-select-trigger" style="color:var(--text-subtle);font-size:0.74rem;font-weight:600;text-transform:uppercase;letter-spacing:0.08em">Window</label>
+    {{ ui.field_menu('days-select',
+                     [('7','7 days'), ('14','14 days'), ('30','30 days'), ('90','90 days')],
+                     '30', onchange='loadAll()', label_text='Window',
+                     trigger_class='btn btn-outline btn-sm is-field') }}
   </div>
 </section>
 
@@ -109,6 +110,19 @@ function _chartColors() {
   };
 }
 
+/* Shared animation config for all three charts below — one source of
+   truth for duration/easing, and the one place the reduced-motion gate
+   lives. Chart.js animates entirely inside the <canvas> bitmap it draws,
+   so none of style.css (including its blanket prefers-reduced-motion
+   rule at the bottom of that file) can reach it — this JS-side check is
+   the only way to honour that preference for these three charts.
+   `false` disables Chart.js animation outright, the closest equivalent
+   to what the CSS blanket rule does for everything else on the page. */
+function _chartAnimation() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  return { duration: 700, easing: 'easeOutQuart' };
+}
+
 /* Chart.js tracks its own instance-per-canvas registry (Chart.getChart),
    so destroy-before-recreate doesn't need a module-level variable that
    would otherwise get silently re-declared (harmlessly, but sloppily) on
@@ -166,6 +180,7 @@ function renderNewsChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { labels: { color: C.legend, font: { size: 11 } } },
         tooltip: { mode: 'index' },
@@ -207,6 +222,7 @@ function renderFindingsChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { display: false },
         tooltip: { mode: 'index' },
@@ -406,6 +422,7 @@ function renderFeedChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { labels: { color: C.legend, font: { size: 10 }, boxWidth: 12 } },
         tooltip: { mode: 'index' },

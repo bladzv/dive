@@ -1,0 +1,189 @@
+{# Shared Jinja macros for the menu-based UI controls (see static/app.js DIVE.menu
+   and the "Menu component" block in static/style.css). Import with:
+     {% import "_macros.html" as ui %}
+
+   IMPORTANT — conditional attributes must use {% if %}, never
+   {{ 'attr="val"' if cond }}. Jinja autoescapes the latter, so the quotes
+   become &#34; and the attribute value ends up literally '"val"'. That is
+   how aria-current silently never matched its CSS selector for months.
+#}
+
+{% macro menu_caret() -%}
+<svg class="menu-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+{%- endmacro %}
+
+{% macro export_menu(base_url, extra_qs='', label='Export') -%}
+<div class="menu" data-menu>
+  <button type="button" class="btn btn-outline btn-sm menu-trigger" aria-haspopup="menu" aria-expanded="false">
+    {{ label }} {{ menu_caret() }}
+  </button>
+  <div class="menu-panel" role="menu">
+    <a role="menuitem" style="--i:0" href="{{ base_url }}?format=json{{ extra_qs }}">Download JSON</a>
+    <a role="menuitem" style="--i:1" href="{{ base_url }}?format=csv{{ extra_qs }}">Download CSV</a>
+  </div>
+</div>
+{%- endmacro %}
+
+
+{# ── Shared menu shell ────────────────────────────────────────────────────
+   Emits the markup contract every menu uses:
+     .menu[data-menu] > .menu-trigger + .menu-panel[role=menu] > [role=menuitem]
+
+   `items` is a list of dicts: {value, label, href?, title?}. An item with
+   `href` renders as a real <a> (keeps middle-click / ⌘-click / open-in-new-tab
+   and is intercepted by base.html's pjax router); one without renders as a
+   <button> whose selection is handled by the data-field branch in app.js.
+
+   `--i` on each item drives the staggered reveal (see style.css).
+   title=, not data-tip: .menu-panel is overflow-y:auto, which clips a
+   tooltip bubble.
+#}
+{# `field` / `filter_source` are real parameters rather than a raw
+   `extra='data-x="y"'` string: Jinja autoescapes {{ }}, so passing attribute
+   markup through it renders data-x=&#34;y&#34; — the attribute name ends up
+   `data-x` with value `"y"` (quotes included) and every selector misses. #}
+{% macro _menu_shell(trigger_label, items, current, field='', filter_source='', trigger_class='btn btn-outline btn-sm', trigger_id='', aria_label='') -%}
+<div class="menu" data-menu
+     {% if field %}data-field="{{ field }}"{% endif %}
+     {% if filter_source %}data-filter-source="{{ filter_source }}"{% endif %}>
+  <button type="button" class="{{ trigger_class }} menu-trigger"
+          {% if trigger_id %}id="{{ trigger_id }}"{% endif %}
+          {% if aria_label %}aria-label="{{ aria_label }}"{% endif %}
+          aria-haspopup="menu" aria-expanded="false">
+    <span class="menu-trigger-label">{{ trigger_label }}</span> {{ menu_caret() }}
+  </button>
+  <div class="menu-panel" role="menu">
+    {% for it in items %}
+      {% if it.href %}
+      <a role="menuitem" style="--i:{{ loop.index0 }}" href="{{ it.href }}"
+         data-value="{{ it.value }}"
+         {% if it.title %}title="{{ it.title }}"{% endif %}
+         {% if it.value == current %}aria-current="true"{% endif %}>{{ it.label }}</a>
+      {% else %}
+      <button type="button" role="menuitem" style="--i:{{ loop.index0 }}"
+              data-value="{{ it.value }}"
+              {% if it.title %}title="{{ it.title }}"{% endif %}
+              {% if it.value == current %}aria-current="true"{% endif %}>{{ it.label }}</button>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{%- endmacro %}
+
+
+{# ── param_menu — a filter/sort/page-size control that NAVIGATES ──────────
+   Replaces a native <select> whose only job was "set a query param and go".
+   Items are real hrefs built through the with_params filter, so every OTHER
+   active param survives the click and `page` always resets.
+
+   Strictly better than the <select> it replaces: the native popup covers its
+   own control (unfixable in CSS, which is the whole reason for this macro),
+   full-reloads via window.location, and never supported middle-click.
+
+   Args:
+     url         — request.url, threaded in by the caller
+     param       — the query-string key this control drives
+     options     — list of (value, label) tuples, OR a plain list of strings
+                   when value == label (categories, sources, …)
+     current     — the active value ('' when unset)
+     empty_label — when given, prepends an ('', empty_label) "clear" option
+                   (e.g. 'All repos'); omit for controls with no empty state
+     prefix      — trigger-label prefix, e.g. 'State: '
+     tips        — optional {value: title} map for per-item explanations
+     suffix      — appended to every label, e.g. ' / page'
+#}
+{% macro param_menu(url, param, options, current, empty_label=none, prefix='', tips=none, suffix='', filter_source='', aria_label='') -%}
+{#- Normalise: a bare string or number means value == label, so callers can
+    pass a plain list (categories, sources, page sizes) without zipping it
+    into pairs. Anything else is treated as a (value, label) pair. -#}
+{%- set pairs = [] -%}
+{%- if empty_label is not none -%}
+  {%- set _ = pairs.append(('', empty_label)) -%}
+{%- endif -%}
+{%- for o in options -%}
+  {%- if o is string or o is number -%}
+    {%- set _ = pairs.append((o, o)) -%}
+  {%- else -%}
+    {%- set _ = pairs.append((o[0], o[1])) -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set items = [] -%}
+{%- for value, label in pairs -%}
+  {%- set _ = items.append({
+        'value': value,
+        'label': label ~ suffix,
+        'href': url | with_params(**{param: value or None}),
+        'title': (tips.get(value, '') if tips else ''),
+      }) -%}
+{%- endfor -%}
+{%- set _matched = pairs | selectattr('0', 'equalto', current) | map(attribute='1') | list -%}
+{%- set cur_label = (_matched | first) if _matched else pairs[0][1] -%}
+{{ _menu_shell(prefix ~ cur_label ~ suffix, items, current, filter_source=filter_source, aria_label=aria_label) }}
+{%- endmacro %}
+
+
+{# ── page_size_menu — the rows-per-page control, identical on 4 pages ────
+   Thin wrapper over param_menu so the shape lives in one place rather than
+   being re-typed per template. Replaced DIVE.setPageSize(), which assigned
+   window.location and so defeated the pjax router.
+#}
+{% macro page_size_menu(url, pagination) -%}
+{{ param_menu(url, 'per_page', pagination.page_size_options, pagination.per_page,
+              suffix=' / page', aria_label='Rows per page') }}
+{%- endmacro %}
+
+
+{# ── field_menu — a form control whose value is read later by page JS ─────
+   Renders a hidden <input> mirror carrying the id, the value and the
+   caller's own onchange, plus a visual menu bound to it via data-field.
+
+   Picking an item writes input.value, repaints the trigger, and dispatches a
+   synthetic 'change' — which DOES fire an inline onchange= attribute on the
+   hidden input. So `onchange="handleIntervalChange(this.value); markDirty(…)"`
+   moves off the <select> character-for-character and every existing
+   `getElementById(id).value` read keeps working unchanged.
+
+   A hidden input is NOT focusable, so <label for=…> must target `trigger_id`
+   (default "<id>-trigger"), never `id`, or the label is inert.
+
+   After ANY programmatic `input.value = …`, call DIVE.syncMenuField(id) —
+   otherwise the trigger keeps showing the server-rendered label while the
+   stored value has changed.
+#}
+{% macro field_menu(id, options, current, onchange='', trigger_id=none, label_text='', trigger_class='btn btn-outline btn-sm') -%}
+{%- set tid = trigger_id or (id ~ '-trigger') -%}
+<input type="hidden" id="{{ id }}" value="{{ current }}"
+       {% if onchange %}onchange="{{ onchange }}"{% endif %}>
+{%- set items = [] -%}
+{%- for value, label in options -%}
+  {%- set _ = items.append({'value': value, 'label': label}) -%}
+{%- endfor -%}
+{%- set _matched = options | selectattr('0', 'equalto', current) | map(attribute='1') | list -%}
+{%- set cur_label = (_matched | first) if _matched else options[0][1] -%}
+{{ _menu_shell(cur_label, items, current, field=id,
+               trigger_class=trigger_class, trigger_id=tid,
+               aria_label=label_text) }}
+{%- endmacro %}
+
+
+{# ── filter_chips — one dismissible pill per active filter + Clear all ────
+   `chips`: list of {label, href} where href is the current URL WITHOUT that
+   filter (build with `request.url | with_params(key=None)`).
+   `clear_href`: the bare page path.
+   Renders nothing at all when chips is empty.
+
+   This is the only visible indication that a severity filter is active —
+   it is settable from the column-header menu, which is hidden entirely
+   below 700px where <thead> is display:none.
+#}
+{% macro filter_chips(chips, clear_href) -%}
+{% if chips %}
+<div class="filter-chips" role="group" aria-label="Active filters">
+  {% for c in chips %}
+  <span class="tag">{{ c.label }}<a class="tag-x" href="{{ c.href }}"
+        aria-label="Remove filter {{ c.label }}">✕</a></span>
+  {% endfor %}
+  <a href="{{ clear_href }}" class="btn btn-outline btn-sm">Clear filters</a>
+</div>
+{% endif %}
+{%- endmacro %}

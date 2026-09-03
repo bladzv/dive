@@ -1209,6 +1209,29 @@ html.sidebar-collapsed .page-footer {
   transition: width 0.5s var(--ease-glide), left 0.5s var(--ease-glide);
 }
 
+/* ─── Fill-in reveal (DIVE.revealFill) ──────────────────
+   Three dashboard visuals grow from zero up to their server-rendered
+   value on load: this severity stack, the Top-CVE priority bars, and the
+   repo-concentration donut. The mechanism is identical in all three and
+   deliberately reuses each element's EXISTING width/stroke transition
+   rather than adding a competing animation — DIVE.revealFill() adds
+   .is-pending (which pins the visual to zero), forces one style flush,
+   then removes it in the same tick, so the existing transition
+   interpolates from 0 up to the real value.
+
+   Every .is-pending rule below is wrapped in `prefers-reduced-motion:
+   no-preference` on purpose, and that is load-bearing. The global
+   blanket rule at the bottom of this file collapses transitions to
+   0.01ms rather than disabling them, so a zero start state would
+   otherwise FREEZE AT ZERO for reduced-motion users — an invisible bar
+   that reads as "no data" instead of showing the real number. Scoping
+   the zero state to no-preference means it simply never exists for those
+   users, whatever the JS does. revealFill() skips them too, but that is
+   only an optimisation; this is the correctness guarantee. */
+@media (prefers-reduced-motion: no-preference) {
+  .exposure-hero-stack.is-pending .exposure-stack-seg { width: 0; }
+}
+
 .exposure-stack-seg.is-critical { background: var(--critical); }
 .exposure-stack-seg.is-high     { background: var(--high); }
 .exposure-stack-seg.is-medium   { background: var(--medium); }
@@ -1360,6 +1383,34 @@ html.sidebar-collapsed .page-footer {
 
 .donut { width: 130px; height: 130px; }
 
+/* Donut arc reveal. The [stroke-dasharray] attribute selector is what
+   restricts this to the segment arcs and excludes the background track
+   circle (index.html), which carries no dasharray — without it the
+   track would animate too and the ring would appear to vanish.
+
+   --donut-c is the arc circumference, passed in from index.html so that
+   constant lives in exactly one place rather than being duplicated here.
+
+   Why this needs no !important: stroke-dasharray is written on each
+   circle as an SVG *presentation attribute*, which loses to any CSS
+   declaration. So .is-pending overrides it cleanly, and removing the
+   class falls back to the attribute's own value — a computed-value
+   change like any other, which the transition below then interpolates.
+   Each arc therefore grows clockwise from its own start angle (its
+   stroke-dashoffset is untouched) and the ring assembles in place.
+
+   Colours are deliberately not referenced here: the arcs' stroke stays
+   on the --chart-cat-* palette set in the template, which is what lets
+   this SVG re-colour itself on theme toggle with no JS re-render. */
+.donut circle[stroke-dasharray] {
+  transition: stroke-dasharray 0.9s var(--ease-glide);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .donut.is-pending circle[stroke-dasharray] {
+    stroke-dasharray: 0 var(--donut-c);
+  }
+}
+
 .donut-legend {
   list-style: none;
   margin: 0;
@@ -1464,8 +1515,23 @@ html.sidebar-collapsed .page-footer {
   height: 100%;
   border-radius: 999px;
   background: var(--text-muted);
-  transition: width 0.3s ease;
+  /* Width arrives as a custom property rather than an inline `width`
+     (set in index.html) so the .is-pending zero state below can override
+     it without !important — an inline width would beat any class
+     selector. Same pattern .exposure-stack-seg already uses.
+     --i is the row index, giving the bars a staggered waterfall on
+     reveal; migrated off a freehand `0.3s ease` onto the --ease-glide
+     token per the note at the top of this file. */
+  width: var(--bar-pct, 0%);
+  transition: width 0.45s var(--ease-glide) calc(var(--i, 0) * 55ms);
 }
+/* Zero start state — see the revealFill comment above
+   .exposure-hero-stack.is-pending for why this is scoped to
+   no-preference rather than given a reduced-motion override. */
+@media (prefers-reduced-motion: no-preference) {
+  .top-cve-list.is-pending .bar { width: 0; }
+}
+
 .top-cve-row.tier-crit .bar { background: var(--critical); }
 .top-cve-row.tier-high .bar { background: var(--high); }
 .top-cve-row.tier-med  .bar { background: var(--medium); }
@@ -2617,6 +2683,7 @@ html.sidebar-collapsed .page-footer {
    rather than copied), applied here ONLY to Run, per the plan's own
    "use restraint" instruction. Every other button stays as-is. */
 .btn-run {
+  position: relative; /* containing block for the idle beam ::after below */
   gap: 0.45rem;
   font-family: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   letter-spacing: 0.08em;
@@ -2665,6 +2732,58 @@ html.sidebar-collapsed .page-footer {
 }
 .btn-run[data-state="success"] { background: var(--success); border-color: var(--success); }
 .btn-run[data-state="error"] { background: var(--error); border-color: var(--error); }
+
+/* Idle-only border beam — an "attract" state so the single most primary
+   action in the app asserts itself while nothing is happening, rather
+   than sitting flat until clicked. Deliberately gone the instant a run
+   starts: body[data-run] (see _updateRunBar in base.html) and
+   data-state (see _setRunState) already carry every state this needs,
+   so no new JS. Stopping the beam during a run also avoids it competing
+   with the two motion signals that already mean "a run is in progress"
+   (this button's own spinner, the topbar run-bar) and the drawer's own
+   border beam, which uses this exact technique to mean that instead —
+   one meaning per signal.
+
+   Same masked-gradient-sweep technique as the pipeline drawer above
+   (body[data-run="running"] .pipeline-drawer::after), not the
+   overflow:hidden + inset:-50% recipe some border-beam writeups use —
+   that would clip this button's own focus ring. A button's border is a
+   far shorter loop than the drawer's, so the sweep runs slower here
+   (4.2s vs the drawer's 2.4s); at the drawer's pace it read as frantic
+   on something this small. */
+body[data-run="idle"] .btn-run[data-state="idle"]:not(:disabled)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 1.5px;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) 0 0 / 200% 100%;
+  animation: border-beam-sweep 4.2s linear infinite;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Drop the beam entirely rather than freeze it mid-gradient (the
+     blanket reduced-motion rule collapses, it does not disable). No
+     substitute tint is added here, unlike the drawer's: .btn-run is
+     already .btn-primary with a var(--text-bright) border — swapping
+     that to the softer var(--accent) would make it LESS prominent for
+     reduced-motion users, the opposite of the point. The button's
+     existing bold treatment (uppercase mono, primary colours, hover
+     lift) carries the emphasis on its own with no beam at all.
+
+     The selector below must match the base rule's EXACTLY, including
+     :not(:disabled) — dropping it looked harmless but silently lowers
+     this rule's specificity below the base rule's, so the override
+     lost the cascade regardless of source order and the beam kept
+     animating under reduced motion. Confirmed by direct cascade testing
+     before this comment was written. */
+  body[data-run="idle"] .btn-run[data-state="idle"]:not(:disabled)::after {
+    display: none;
+  }
+}
 
 /* Mobile pipeline status button — hidden on desktop, shown on small screens */
 .btn-pipeline-mobile {

@@ -630,6 +630,95 @@
     items.forEach((el) => observer.observe(el));
   }
 
+  /* Animate a server-rendered integer up from zero when it scrolls into
+   * view (dashboard hero score, exposure pills). The value is read from
+   * the DOM, never fetched, so the number that ends up on screen is
+   * always exactly what the server rendered — including its "or 0"
+   * fallback and any non-numeric placeholder, which this simply skips.
+   * Mirrors staggerIn's IntersectionObserver/REDUCE_MOTION shape. */
+  function countUp(selector, opts) {
+    const items = Array.from(document.querySelectorAll(selector));
+    if (!items.length) return;
+    const duration = (opts && opts.duration) || 1200;
+    // Under reduced motion the correct value is already painted — this is
+    // a no-op, not a fallback, so the DOM is never touched.
+    if (REDUCE_MOTION) return;
+
+    const targets = items
+      .map((el) => ({ el, raw: el.textContent, target: parseInt(el.textContent.trim(), 10) }))
+      .filter((t) => /^\d+$/.test(t.raw.trim()) && Number.isFinite(t.target));
+    if (!targets.length) return;
+
+    const observer = new IntersectionObserver((entries, obs) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const t = targets.find((x) => x.el === entry.target);
+        if (!t) return;
+        obs.unobserve(entry.target);
+        // A hidden document suspends requestAnimationFrame outright, so
+        // never start a tween that cannot be finished — the
+        // server-rendered value is already correct and simply stays put.
+        if (document.hidden) return;
+
+        let settled = false;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          // Write back the stashed original string, not the computed
+          // number, so formatting the server rendered (thousands
+          // separators, the raw "0" fallback text) survives exactly.
+          entry.target.textContent = t.raw;
+        };
+
+        const t0 = performance.now();
+        const step = (now) => {
+          if (settled) return;
+          const p = Math.min((now - t0) / duration, 1);
+          if (p < 1) {
+            const eased = 1 - Math.pow(1 - p, 3);
+            entry.target.textContent = Math.round(t.target * eased).toLocaleString();
+            requestAnimationFrame(step);
+          } else {
+            settle();
+          }
+        };
+        requestAnimationFrame(step);
+        // Backstop, and not a theoretical one: if the tab is backgrounded
+        // mid-tween, rAF stops firing and the loop dies on whatever frame
+        // it reached, leaving a WRONG number on screen permanently (seen
+        // in testing: a frozen 26 where the real figure was 30). A
+        // setTimeout still fires while hidden, so the true value always
+        // lands regardless of what happens to the frame loop.
+        setTimeout(settle, duration + 150);
+      });
+    }, { threshold: 0.2 });
+    targets.forEach((t) => observer.observe(t.el));
+  }
+
+  /* Grow a server-rendered visual from zero up to its real value once,
+   * on load — the dashboard severity stack, priority bars and donut.
+   * The caller passes the CONTAINER selector(s); the zero state and the
+   * transition both live in style.css (see the "Fill-in reveal" block
+   * there), so this only has to add .is-pending and take it away again.
+   *
+   * No requestAnimationFrame: rAF does not fire at all while a document
+   * is hidden, which would leave a background-tab load pinned at zero.
+   * Forcing one synchronous style flush instead makes the zero state the
+   * transition's start value in the same tick — the same
+   * `void offsetWidth` idiom submitButton() uses above.
+   *
+   * The REDUCE_MOTION check here only avoids pointless DOM work; the
+   * actual correctness guarantee is that every .is-pending rule in
+   * style.css is scoped to prefers-reduced-motion: no-preference, so the
+   * zero state cannot exist for those users even if this runs. */
+  function revealFill(selector) {
+    const items = Array.from(document.querySelectorAll(selector));
+    if (!items.length || REDUCE_MOTION) return;
+    items.forEach((el) => el.classList.add('is-pending'));
+    void document.body.offsetWidth;
+    items.forEach((el) => el.classList.remove('is-pending'));
+  }
+
   /* ── ⌘K command palette ────────────────────────────────
    * Markup lives in base.html outside .page-main, so a pjax swap never
    * touches it and this module (loaded once, without data-pjax) never
@@ -889,6 +978,6 @@
     setFieldError, clearFieldError,
     openMenu, closeMenu, closeAllMenus, syncMenuField,
     submitButton, undoSnackbar,
-    openPalette, closePalette, staggerIn,
+    openPalette, closePalette, staggerIn, countUp, revealFill,
   };
 })();

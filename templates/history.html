@@ -110,6 +110,19 @@ function _chartColors() {
   };
 }
 
+/* Shared animation config for all three charts below — one source of
+   truth for duration/easing, and the one place the reduced-motion gate
+   lives. Chart.js animates entirely inside the <canvas> bitmap it draws,
+   so none of style.css (including its blanket prefers-reduced-motion
+   rule at the bottom of that file) can reach it — this JS-side check is
+   the only way to honour that preference for these three charts.
+   `false` disables Chart.js animation outright, the closest equivalent
+   to what the CSS blanket rule does for everything else on the page. */
+function _chartAnimation() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  return { duration: 700, easing: 'easeOutQuart' };
+}
+
 /* Chart.js tracks its own instance-per-canvas registry (Chart.getChart),
    so destroy-before-recreate doesn't need a module-level variable that
    would otherwise get silently re-declared (harmlessly, but sloppily) on
@@ -167,6 +180,7 @@ function renderNewsChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { labels: { color: C.legend, font: { size: 11 } } },
         tooltip: { mode: 'index' },
@@ -208,6 +222,7 @@ function renderFindingsChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { display: false },
         tooltip: { mode: 'index' },
@@ -407,6 +422,7 @@ function renderFeedChart(rows) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      animation: _chartAnimation(),
       plugins: {
         legend: { labels: { color: C.legend, font: { size: 10 }, boxWidth: 12 } },
         tooltip: { mode: 'index' },

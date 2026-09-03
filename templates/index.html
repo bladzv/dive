@@ -94,7 +94,7 @@
     {% if repo_total > 0 %}
     {% set C = 263.894 %}
     <div class="donut-wrap">
-      <svg class="donut" viewBox="0 0 120 120" aria-hidden="true">
+      <svg class="donut" viewBox="0 0 120 120" style="--donut-c:{{ C }}" aria-hidden="true">
         <circle cx="60" cy="60" r="42" fill="none" stroke="var(--panel-3)" stroke-width="14"/>
         {% set ns = namespace(off=0) %}
         {% for r in top_repos %}
@@ -153,7 +153,7 @@
       <li class="top-cve-row tier-{{ ptier }}">
         <span class="rank">{{ '%02d' % loop.index }}</span>
         <div class="bar-wrap" title="Priority {{ pscore }}">
-          <span class="bar" style="width:{{ (pscore | int) if pscore < 100 else 100 }}%"></span>
+          <span class="bar" style="--bar-pct:{{ (pscore | int) if pscore < 100 else 100 }}%;--i:{{ loop.index0 }}"></span>
         </div>
         <div class="top-cve-body">
           <strong>{{ f.cve_id or f.ghsa_id or f.package_name }}</strong>
@@ -364,5 +364,8 @@ function toggleBookmark(itemId) {
 }
 
 DIVE.staggerIn('.exposure-pill');
+DIVE.staggerIn('.viz-panel, .ops-grid > .panel', { delayMs: 70 });
+DIVE.countUp('.exposure-hero-score, .exposure-pill .value');
+DIVE.revealFill('.exposure-hero-stack, .top-cve-list, .donut');
 </script>
 {% endblock %}
